@@ -25,7 +25,8 @@ templates = Jinja2Templates(directory=BASE_DIR / "templates")
 # ─── Hilfsfunktion DB-Verbindungsstring ──────────────────────────────────────
 
 def _build_db_conn(server: str, db: str, uid: str, pwd: str) -> str:
-    return f"DRIVER={{SQL Server}};SERVER={server};DATABASE={db};UID={uid};PWD={pwd}"
+    driver = os.environ.get("EJ_DB_DRIVER", "ODBC Driver 18 for SQL Server")
+    return f"DRIVER={{{driver}}};SERVER={server};DATABASE={db};UID={uid};PWD={pwd};TrustServerCertificate=yes"
 
 
 # ─── State ────────────────────────────────────────────────────────────────────
@@ -52,7 +53,7 @@ class State:
     progress:   MatchProgress          = MatchProgress()
     # Einstellungen
     ej_url:             str  = os.environ.get("EJ_BASE_URL", "http://EASYJOB-TEST:8008")
-    ej_user:            str  = os.environ.get("EJ_USERNAME", "")
+    ej_user:            str  = ""
     ej_pass:            str  = ""
     use_train_mappings: bool = True
     use_gui_mappings:   bool = True

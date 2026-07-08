@@ -111,13 +111,6 @@ Danach ist der Code auf GitHub — nur für dich sichtbar.
 Zuerst SSH-Schlüssel auf dem Server einrichten (Schritt 1.2 wiederholen für den Server).
 Dann:
 
-```bash
-cd /opt
-git clone git@github.com:dein-username/gaeb-ej.git
-cd gaeb-ej
-```
-
----
 
 ### 1.7 Wenn du Änderungen machst (normaler Workflow)
 
@@ -132,7 +125,7 @@ git push
 **Auf dem Server** zum Einspielen:
 
 ```bash
-cd /opt/gaeb-ej
+cd ~/gaeb-ej
 git pull
 docker compose up -d --build
 ```
@@ -156,7 +149,7 @@ docker compose up -d --build
 ## 2. Ordnerstruktur auf dem Server
 
 ```
-/opt/gaeb-ej/              ← Haupt-Ordner (Git-Repository)
+~/gaeb-ej/              ← Haupt-Ordner (Git-Repository)
 ├── data/                  ← Persistente Daten (KEIN Git, bleiben bei Updates erhalten)
 │   ├── mappings_gui.json  ← Gelernte Zuordnungen (wird zur Laufzeit verändert)
 │   ├── mappings.json      ← Basis-Mappings
@@ -178,8 +171,8 @@ docker compose up -d --build
 ### 3.1 Repository klonen
 
 ```bash
-# In /opt wechseln (oder einen anderen Ordner deiner Wahl)
-cd /opt
+# Dorthin wechseln wo deine anderen docker-compose.yml Dateien liegen
+cd ~   # oder z.B. cd ~/docker falls du sie dort sammelst
 
 # Repository herunterladen – du bekommst einen Ordner "gaeb-ej"
 git clone https://github.com/DEIN-REPO/gaeb-ej.git
@@ -301,7 +294,7 @@ Die App ist jetzt unter `https://gaeb.deine-domain.de` erreichbar.
 Das ist der normale Ablauf wenn es eine neue Version gibt:
 
 ```bash
-cd /opt/gaeb-ej
+cd ~/gaeb-ej
 
 # 1. Neuesten Code holen
 git pull

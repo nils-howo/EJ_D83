@@ -1,7 +1,7 @@
 services:
   gaeb-ej:
     build: .
-    container_name: gaeb-ej
+    container_name: EJ_D83
     restart: unless-stopped
     environment:
       - TZ=Europe/Berlin
