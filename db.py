@@ -239,17 +239,38 @@ def migrate_from_json(
     personal_path:      Path | None = None,
     train_path:         Path | None = None,
     gui_path:           Path | None = None,
+    force:              bool = False,
 ) -> dict[str, int]:
     """
-    Liest vorhandene JSON-Dateien und befüllt leere DB-Tabellen.
-    Bereits befüllte Tabellen werden NICHT überschrieben.
+    Liest vorhandene JSON-Dateien und befüllt DB-Tabellen.
+    force=True: Tabellen vorher leeren (für Neuimport nach kaputten Daten).
+    Ohne force: bereits befüllte Tabellen werden NICHT überschrieben.
     """
-    base  = Path(__file__).parent
+    base     = Path(__file__).parent
+    data_dir = DB_PATH.parent   # data/ Volume in Docker, data/ lokal
+
+    def _find(*candidates: str) -> Path | None:
+        """Gibt erste existierende Datei zurück (data_dir zuerst, dann base)."""
+        for rel in candidates:
+            for root in (data_dir, base):
+                p = root / rel
+                if p.exists():
+                    return p
+        return None
+
+    if force:
+        with get_conn() as conn:
+            conn.execute("DELETE FROM articles")
+            conn.execute("DELETE FROM personal")
+            conn.execute("DELETE FROM mappings_train")
+            conn.execute("DELETE FROM mappings_train_extras")
+            conn.execute("DELETE FROM mappings_train_sections")
+
     stats: dict[str, int] = {}
 
     # Artikel
-    ap = artikel_path or base / "infos" / "artikel.json"
-    if ap.exists() and article_count() == 0:
+    ap = artikel_path or _find("infos/artikel.json")
+    if ap and (force or article_count() == 0):
         with open(ap, encoding="utf-8") as f:
             raw = json.load(f)
         items = raw if isinstance(raw, list) else raw.get("items", [])
@@ -272,8 +293,8 @@ def migrate_from_json(
         stats["articles"] = upsert_articles(rows)
 
     # Personal
-    pp = personal_path or base / "infos" / "personal.json"
-    if pp.exists() and personal_count() == 0:
+    pp = personal_path or _find("infos/personal.json")
+    if pp and (force or personal_count() == 0):
         with open(pp, encoding="utf-8") as f:
             raw = json.load(f)
         rows_r = raw if isinstance(raw, list) else raw.get("rows", [])
@@ -290,8 +311,8 @@ def migrate_from_json(
         stats["personal"] = upsert_personal(rows_p)
 
     # Train-Mappings
-    tp = train_path or base / "mappings.json"
-    if tp.exists() and train_mapping_count() == 0:
+    tp = train_path or _find("mappings.json")
+    if tp and (force or train_mapping_count() == 0):
         with open(tp, encoding="utf-8") as f:
             m = json.load(f)
         primary  = m.get("article_resolutions", {})
@@ -317,9 +338,9 @@ def migrate_from_json(
                 )
         stats["train_mappings"] = len(primary)
 
-    # GUI-Mappings
-    gp = gui_path or base / "mappings_gui.json"
-    if gp.exists() and gui_mapping_count() == 0:
+    # GUI-Mappings (nie force-löschen — enthält gelernte Zuordnungen)
+    gp = gui_path or _find("mappings_gui.json")
+    if gp and gui_mapping_count() == 0:
         with open(gp, encoding="utf-8") as f:
             m = json.load(f)
         primary = m.get("article_resolutions", {})

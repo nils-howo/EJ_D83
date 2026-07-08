@@ -116,6 +116,18 @@ app.add_middleware(
     max_age=8 * 3600,
 )
 
+# ─── Admin-Endpunkte ──────────────────────────────────────────────────────────
+
+from fastapi.responses import JSONResponse
+
+@app.post("/api/admin/resync")
+async def admin_resync(force: bool = False):
+    """Manueller Sync-Trigger. force=true löscht Artikel/Personal vorher."""
+    loop = asyncio.get_event_loop()
+    stats = await loop.run_in_executor(None, lambda: db.migrate_from_json(force=force))
+    return JSONResponse({"ok": True, "stats": stats})
+
+
 # ─── Router ───────────────────────────────────────────────────────────────────
 
 app.include_router(auth_router)
