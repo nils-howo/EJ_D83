@@ -1,0 +1,104 @@
+<div class="pos-row{% if is_alt_item %} pos-row-alt{% endif %}{% if is_inactive %} pos-row-inactive{% endif %}">
+
+  {# ── Links: GAEB-Info ─────────────────────────────────────────────────── #}
+  <div class="pos-left" style="border-left-color: {% if is_alt_item %}#e65100{% else %}{{ item.score_border }}{% endif %}">
+    {% if is_alt_item %}<span class="alt-badge">⇄ Alternativ</span>{% endif %}
+    {% if item.oz %}<span class="oz-badge">{{ item.oz }}</span>{% endif %}
+    <div class="pos-desc">{{ item.description }}</div>
+    <div class="pos-meta">
+      Menge: <b>{{ item.qty }} {{ item.unit }}</b>{{ item.lfm_hint }}
+      &nbsp;·&nbsp; Kosten: <b>{{ item.cost_str }}</b>
+    </div>
+    {% if item.lt_snippet %}<div class="pos-lt">{{ item.lt_snippet }}</div>{% endif %}
+
+    {# Score / Status #}
+    {% if item.is_kalkpos %}
+      <span class="score-badge score-mid">📊 Kalkpos</span>
+    {% elif item.has_bundle %}
+      <span class="score-badge {{ item.score_css }}">{{ item.score|int }}% · {{ item.method }}</span>
+
+      {# Warum? #}
+      {% if item.bd %}
+      <details class="warum">
+        <summary>🔍 Warum?</summary>
+        <div class="warum-body">
+          {% if item.bd.query_de %}<div style="font-size:.72rem;color:#555">Anfrage (DE): {{ item.bd.query_de }}</div>{% endif %}
+          {% if item.bd.search_text %}<div style="font-size:.72rem;color:#777">Artikel-Text: {{ item.bd.search_text }}</div>{% endif %}
+          {% if item.bd.detected %}<div style="font-size:.72rem;color:#1565c0">Erkannt: {{ item.bd.detected | join(' · ') }}</div>{% endif %}
+          {% if item.breakdown_rows %}
+          <table class="bd-table">
+            {% for row in item.breakdown_rows %}
+            <tr><td>{{ row.val }}</td><td>{% if row.bold %}<b>{{ row.lbl }}</b>{% else %}{{ row.lbl }}{% endif %}</td></tr>
+            {% endfor %}
+          </table>
+          {% endif %}
+          {% if item.bd_json %}
+          <details style="margin-top:4px">
+            <summary style="font-size:.7rem;color:#888;cursor:pointer">JSON</summary>
+            <pre class="bd-json">{{ item.bd_json }}</pre>
+          </details>
+          {% endif %}
+        </div>
+      </details>
+      {% endif %}
+
+    {% else %}
+      <span class="score-badge score-low">⚠ Nicht zugeordnet</span>
+    {% endif %}
+  </div>
+
+  {# ── Rechts: Bundle-Editor ────────────────────────────────────────────── #}
+  <div class="pos-right">
+
+    {# EJ-Buttons #}
+    {% if item.has_ej %}
+    <div style="display:flex;gap:5px;flex-wrap:wrap">
+      <button class="btn btn-flat btn-sm"
+              hx-get="/api/ej/dialog/{{ item.item_id }}"
+              hx-target="#ej-modal-body"
+              hx-swap="innerHTML"
+              title="Match ersetzen">
+        🔄 Artikel ersetzen
+      </button>
+      <button class="btn btn-flat btn-sm"
+              hx-get="/api/ej/add-dialog/{{ item.item_id }}"
+              hx-target="#ej-add-modal-body"
+              hx-swap="innerHTML"
+              title="Artikel zum Bundle hinzufügen">
+        ➕ Artikel hinzufügen
+      </button>
+    </div>
+    {% endif %}
+
+    {% if item.is_kalkpos %}
+      <span style="font-size:.78rem;color:#1565c0">📊 Kalkulationsposition</span>
+    {% elif not item.has_bundle %}
+      <span style="font-size:.78rem;color:#c00">⚠ Kein Artikel zugeordnet</span>
+    {% else %}
+
+      {# Bundle-Artikel #}
+      {% for b in item.bundle %}
+      <div class="bundle-card {% if b.is_fremd %}fremd{% endif %}">
+        <div class="bundle-info">
+          <span class="bundle-id">[{{ b.id }}]</span> {{ b.name }}
+          {% if b.is_fremd %}<span style="color:#e65100">🔶 Fremdgerät</span>{% endif %}
+          <br>
+          <span style="color:#555;font-size:.75rem">
+            <input type="number" class="bundle-qty" value="{{ b.qty|int }}" min="0" step="1"
+                   onchange="bundleQtyChanged('{{ item.item_id }}', {{ b.idx }}, this.value)">
+            × {{ b.preis_str }}
+            {% if b.kosten %} = {{ b.kosten }}{% endif %}
+            <i style="color:#888"> · {{ b.type }}</i>
+          </span>
+        </div>
+        <form hx-post="/api/position/{{ item.item_id }}/remove/{{ b.idx }}"
+              hx-target="#main-area" hx-swap="innerHTML">
+          <button type="submit" class="btn btn-red">✕</button>
+        </form>
+      </div>
+      {% endfor %}
+    {% endif %}
+
+
+  </div>
+</div>

@@ -1,0 +1,11 @@
+<div class="metrics-row" id="metrics-row">
+{% if metrics %}
+  <div class="metric-card"><div class="metric-val">{{ metrics.total }}</div><div class="metric-lbl">Positionen</div></div>
+  <div class="metric-card"><div class="metric-val">{{ metrics.matched }}/{{ metrics.total }}</div><div class="metric-lbl">Zugeordnet</div></div>
+  <div class="metric-card"><div class="metric-val">{{ metrics.confident }}</div><div class="metric-lbl">Sicher (≥85%)</div></div>
+  <div class="metric-card"><div class="metric-val">{{ metrics.art_count }}</div><div class="metric-lbl">Artikel</div></div>
+  <div class="metric-card"><div class="metric-val">{{ metrics.res_count }}</div><div class="metric-lbl">Personal</div></div>
+  {% if metrics.cost_mat %}<div class="metric-card"><div class="metric-val" style="font-size:1rem">{{ "%.0f €"|format(metrics.cost_mat) }}</div><div class="metric-lbl">Mat.-Kosten</div></div>{% endif %}
+  {% if metrics.cost_pers %}<div class="metric-card"><div class="metric-val" style="font-size:1rem">{{ "%.0f €"|format(metrics.cost_pers) }}</div><div class="metric-lbl">Pers.-Kosten</div></div>{% endif %}
+{% endif %}
+</div>

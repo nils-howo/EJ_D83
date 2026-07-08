@@ -1,0 +1,79 @@
+<div class="dialog-header">
+  <h2>🔄 Artikel ersetzen</h2>
+  <p style="margin:0;font-size:.82rem;color:#555">{{ item_desc[:120] }}</p>
+</div>
+
+<div class="dialog-body">
+
+  {% if suggestions_error %}
+  <div style="font-size:.75rem;color:#c00;margin-bottom:8px;padding:4px 8px;background:#fde;border-radius:4px">
+    ⚠ Vorschläge-Fehler: {{ suggestions_error }}
+  </div>
+  {% endif %}
+
+  {% if suggestions %}
+  <div style="margin-bottom:10px">
+    <div style="font-size:.74rem;font-weight:700;color:#1a237e;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">
+      Top-5 Ranking-Empfehlungen
+    </div>
+    <div class="ej-table-wrap">
+      <table class="ej-table">
+        <thead><tr><th>Score</th><th>Nummer</th><th>Bezeichnung</th><th>Inv.</th></tr></thead>
+        <tbody>
+        {% for r in suggestions %}
+          <tr data-num="{{ r.nummer }}" data-raw="{{ r._raw_json }}"
+              onclick="ejRowClick(this, this.dataset.num, this.dataset.raw)">
+            <td style="text-align:right;font-variant-numeric:tabular-nums">
+              <span style="color:{% if r.score >= 70 %}#1a7a1a{% elif r.score >= 40 %}#b36b00{% else %}#cc2222{% endif %}">
+                {{ r.score }}%
+              </span>
+            </td>
+            <td style="font-family:monospace;white-space:nowrap">{{ r.nummer }}</td>
+            <td>{{ r.bezeichnung }}</td>
+            <td style="text-align:right">{{ r.inv }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div style="font-size:.74rem;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">
+    EJ-Suche
+  </div>
+  {% endif %}
+
+  <input type="text"
+         id="ej-search-input"
+         value=""
+         placeholder="Suchbegriff eingeben …"
+         hx-get="/api/ej/search/{{ item_id }}"
+         hx-trigger="keyup changed delay:350ms"
+         hx-target="#ej-results-wrap"
+         hx-swap="innerHTML"
+         name="q"
+         style="width:100%;font-size:.9rem;padding:7px 10px"
+         autofocus>
+  <div id="ej-results-wrap">
+    {% include "partials/ej_results.html" %}
+  </div>
+
+  <div id="ej-replace-related"></div>
+</div>
+
+<div class="dialog-footer">
+  <form id="ej-set-form"
+        hx-post="/api/position/{{ item_id }}/set-match"
+        hx-target="#main-area"
+        hx-swap="innerHTML"
+        style="display:flex;align-items:center;gap:10px;flex:1">
+    <input type="hidden" name="ej_num"     value="">
+    <input type="hidden" name="raw_json"   value="">
+    <input type="hidden" name="extra_nums" id="replace-extra-nums" value="">
+    <input type="hidden" name="extra_qtys" id="replace-extra-qtys" value="">
+    <label style="font-size:.82rem">Menge:</label>
+    <input type="number" name="qty" value="{{ default_qty|int }}" min="0" step="1" style="width:80px">
+    <button type="submit" id="ej-set-btn" class="btn btn-green" disabled>✅ Als Match setzen</button>
+  </form>
+  <button class="btn btn-grey"
+          onclick="document.getElementById('ej-modal').close()">Schließen</button>
+</div>

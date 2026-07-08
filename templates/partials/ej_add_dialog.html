@@ -1,0 +1,43 @@
+<div class="dialog-header">
+  <h2>➕ Artikel hinzufügen</h2>
+  <p style="margin:0;font-size:.82rem;color:#555">{{ item_desc[:100] }}</p>
+</div>
+
+<div class="dialog-body">
+  <input type="text"
+         id="ej-add-search-input"
+         value=""
+         placeholder="Suchbegriff eingeben …"
+         hx-get="/api/ej/add-search/{{ item_id }}"
+         hx-trigger="keyup changed delay:350ms"
+         hx-target="#ej-add-results-wrap"
+         hx-swap="innerHTML"
+         name="q"
+         style="width:100%;font-size:.9rem;padding:7px 10px"
+         autofocus>
+  <div id="ej-add-results-wrap" style="margin-top:6px">
+    {% include "partials/ej_add_results.html" %}
+  </div>
+</div>
+
+<div class="dialog-footer" style="flex-direction:column;align-items:stretch;gap:8px">
+  <form id="ej-add-form"
+        hx-post="/api/position/{{ item_id }}/add-ej"
+        hx-target="#main-area"
+        hx-swap="innerHTML">
+    <input type="hidden" name="ej_num"     value="">
+    <input type="hidden" name="raw_json"   value="">
+    <input type="hidden" name="extra_nums" id="add-extra-nums" value="">
+    <input type="hidden" name="extra_qtys" id="add-extra-qtys" value="">
+
+    <div id="ej-add-related"></div>
+
+    <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+      <label style="font-size:.82rem">Menge:</label>
+      <input type="number" name="qty" value="{{ default_qty|int }}" min="0" step="1" style="width:80px">
+      <button type="submit" id="ej-add-btn" class="btn btn-green" disabled>➕ Hinzufügen</button>
+      <button type="button" class="btn btn-grey"
+              onclick="document.getElementById('ej-add-modal').close()">Schließen</button>
+    </div>
+  </form>
+</div>

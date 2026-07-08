@@ -1,0 +1,20 @@
+services:
+  gaeb-ej:
+    build: .
+    container_name: gaeb-ej
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Berlin
+      - DB_PATH=/app/data/gaeb.db
+    env_file: .env
+    volumes:
+      - ./data:/app/data          # gaeb.db + JSON-Backups (persistent)
+    networks:
+      - proxy
+    # Falls der EJ-Server per Windows-Hostname erreichbar sein muss (statt IP):
+    # extra_hosts:
+    #   - "EASYJOB-TEST:192.168.1.xxx"
+
+networks:
+  proxy:
+    external: true

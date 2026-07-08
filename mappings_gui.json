@@ -1,0 +1,18 @@
+{
+  "article_resolutions": {
+    "Concsole - MA Lighting GrandMA3": "1009770.00",
+    "Uninterruptible power supply device": "1009700.00",
+    "Elation KL PROFILE FC": "1010238.00",
+    "Alternativ (to Elation KL PROFILE FC)": "1010238.00",
+    "Aluminium-Traverse, 4-Punkt, 290mm, schwarz Länge 3m": "1006467.00",
+    "Aluminium-Traverse, 4-Punkt, 290mm, schwarz Länge 1,5m": "1006464.00",
+    "Traverse": "1006467.00"
+  },
+  "section_articles": {},
+  "query_boosts": {},
+  "bundle_extras": {
+    "Alternativ (to Elation KL PROFILE FC)": [
+      "1011230.00"
+    ]
+  }
+}

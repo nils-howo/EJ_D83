@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(cd \"c:\\\\Users\\\\ngrossmann\\\\Documents\\\\python\\\\d84\"; python \"C:\\\\Users\\\\NGROSS~1\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-ngrossmann-Documents-python-d84\\\\4914e732-20be-4fcd-9a2d-2f9ef9d43a5b\\\\scratchpad\\\\test_issues.py\" 2>&1 | foreach { $_ -replace '[^\\\\x00-\\\\x7F]','?' })",
+      "PowerShell(cd \"c:\\\\Users\\\\ngrossmann\\\\Documents\\\\python\\\\d84\"; python \"C:\\\\Users\\\\NGROSS~1\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-ngrossmann-Documents-python-d84\\\\4914e732-20be-4fcd-9a2d-2f9ef9d43a5b\\\\scratchpad\\\\test_lt_fix.py\" 2>&1 | foreach { $_ -replace '[^\\\\x00-\\\\x7F]','?' })",
+      "PowerShell(cd \"c:\\\\Users\\\\ngrossmann\\\\Documents\\\\python\\\\d84\"; python -W ignore -c \"from matcher import load_articles, UnifiedMatcher, traverse_piece_count; from pathlib import Path; arts = load_articles\\('infos/artikel.json'\\); m = UnifiedMatcher\\(arts, [], Path\\('mappings.json'\\)\\); lt = '4-point truss 300mm black Eurotruss FD34'; hits = m.match\\('4-point truss 300mm, black', limit=3, long_text=lt\\); [print\\(f'  #{i+1} {mr.score:.0f}%%  [{art.warengruppe[:18]}]  {art.bezeichnung[:50]}'\\) for i,\\(mr,art\\) in enumerate\\(hits\\)]; print\\(\\); print\\('rm unit:', traverse_piece_count\\(30.0, 'rm'\\), 'Stk'\\)\" 2>&1 | foreach { $_ -replace '[^\\\\x00-\\\\x7F]','?' })"
+    ]
+  }
+}

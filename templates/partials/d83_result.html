@@ -1,0 +1,10 @@
+{% for line in log %}
+<div class="log-line {% if line.indent %}indent{% endif %}">
+  {% if line.ok %}
+    <span class="log-ok">✓</span>
+  {% else %}
+    <span class="log-err">✗</span>
+  {% endif %}
+  <span>{{ line.text }}</span>
+</div>
+{% endfor %}

@@ -1,0 +1,15 @@
+<div class="progress-card"
+     hx-get="/api/match/progress"
+     hx-trigger="every 600ms"
+     hx-swap="outerHTML"
+     hx-target="this">
+  <div class="spinner" style="margin:0 auto 14px"></div>
+  <h2>Matching läuft …</h2>
+  {% if total %}
+    <p style="font-size:.85rem;color:#555;margin-top:6px">{{ done }} / {{ total }} Positionen</p>
+    <progress value="{{ pct }}" max="100"></progress>
+  {% else %}
+    <p style="font-size:.85rem;color:#555;margin-top:6px">Lade Dateien &amp; Stammdaten …</p>
+    <progress></progress>
+  {% endif %}
+</div>

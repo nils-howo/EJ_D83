@@ -1,0 +1,70 @@
+{% if not groups %}
+  <p style="color:#888;font-size:.85rem">Keine Gruppen gefunden.</p>
+
+{% else %}
+{% for hg in groups %}
+{% set hg_idx = loop.index0 %}
+<div class="category-group">
+  <div class="category-header" onclick="toggleCat(this)">
+    <span>▼</span>
+    <span>📁
+      {% if hg.num %}<span style="font-family:monospace;font-weight:700">[{{ hg.num }}]</span>  {% endif %}
+      {{ hg.name }}
+    </span>
+    <span style="font-size:.72rem;font-weight:400;color:#5c6bc0;margin-left:auto;flex-shrink:0">{{ hg.count }} Pos.</span>
+    <form hx-post="/api/d83/group/remove" hx-target="#d83-groups" hx-swap="innerHTML"
+          style="display:inline;margin-left:6px">
+      <input type="hidden" name="hg_idx" value="{{ hg_idx }}">
+      <input type="hidden" name="g_idx"  value="-1">
+      <button type="submit" class="rm-btn" title="Gruppe entfernen">✕</button>
+    </form>
+  </div>
+  <div class="category-body">
+    {% if hg.sub %}
+      {% for g in hg.sub %}{% set g_idx = loop.index0 %}
+      <div class="category-group" style="margin:4px 6px;border-radius:5px">
+        <div class="category-header" onclick="toggleCat(this)" style="padding:4px 8px;font-size:.85rem">
+          <span>▶</span>
+          <span>
+            {% if g.num %}<span style="font-family:monospace;font-weight:600">[{{ g.num }}]</span>  {% endif %}
+            {{ g.name }}
+          </span>
+          <span style="font-size:.72rem;color:#5c6bc0;margin-left:auto;flex-shrink:0">{{ g.count }} Pos.</span>
+          <form hx-post="/api/d83/group/remove" hx-target="#d83-groups" hx-swap="innerHTML"
+                style="display:inline;margin-left:6px">
+            <input type="hidden" name="hg_idx" value="{{ hg_idx }}">
+            <input type="hidden" name="g_idx"  value="{{ g_idx }}">
+            <button type="submit" class="rm-btn">✕</button>
+          </form>
+        </div>
+        <div class="category-body" style="display:none">
+          {% for pos in g.positions %}
+          <div style="display:flex;align-items:center;gap:8px;padding:2px 10px;font-size:.8rem;border-bottom:1px solid #f0f0f7">
+            <span style="font-family:monospace;color:#888;flex-shrink:0">{{ pos.oz }}</span>
+            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ pos.desc }}">{{ pos.desc }}</span>
+            <span style="flex-shrink:0;color:#555">{{ pos.qty }} {{ pos.unit }}</span>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      {% for pos in hg.positions %}
+      <div style="display:flex;align-items:center;gap:8px;padding:2px 10px;font-size:.8rem;border-bottom:1px solid #f0f0f7">
+        <span style="font-family:monospace;color:#888;flex-shrink:0">{{ pos.oz }}</span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ pos.desc }}">{{ pos.desc }}</span>
+        <span style="flex-shrink:0;color:#555">{{ pos.qty }} {{ pos.unit }}</span>
+        <form hx-post="/api/d83/position/remove" hx-target="#d83-groups" hx-swap="innerHTML"
+              style="display:inline;flex-shrink:0">
+          <input type="hidden" name="hg_idx" value="{{ hg_idx }}">
+          <input type="hidden" name="g_idx"  value="-1">
+          <input type="hidden" name="pos_idx" value="{{ loop.index0 }}">
+          <button type="submit" class="rm-btn" title="Position entfernen">✕</button>
+        </form>
+      </div>
+      {% endfor %}
+    {% endif %}
+  </div>
+</div>
+{% endfor %}
+{% endif %}

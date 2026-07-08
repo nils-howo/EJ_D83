@@ -1,0 +1,59 @@
+{% if not positions %}
+  <p style="color:#888;margin-top:20px">Noch keine Positionen geladen. Datei hochladen und Matching starten.</p>
+{% else %}
+{% for cat in positions %}
+<div class="category-group">
+  <div class="category-header" onclick="toggleCat(this)">
+    <span>▼</span>
+    <span>📁 {{ cat.label }}</span>
+  </div>
+  <div class="category-body">
+  {% for block in cat.blocks %}
+
+    {# ── Alternativblock ──────────────────────────────────────────────── #}
+    {% if block.has_alt %}
+    <div class="alt-block" style="margin:6px 8px">
+      <div class="alt-label">🔀 Alternativpositionen</div>
+      <div class="alt-btns">
+        {% for val, lbl in [('primary','Nur Hauptpos.'),('alt','Nur Alternative'),('both','Beide')] %}
+        <form hx-post="/api/alt/{{ block.alt_key }}"
+              hx-target="#main-area" hx-swap="innerHTML" style="display:inline">
+          <input type="hidden" name="choice" value="{{ val }}">
+          <button type="submit" class="btn btn-sm {% if block.alt_choice == val %}btn-primary{% else %}btn-grey{% endif %}">{{ lbl }}</button>
+        </form>
+        {% endfor %}
+      </div>
+    </div>
+
+    {% set item = block.primary %}
+    {% set is_alt_item = false %}
+    {% set is_inactive = not block.render_primary %}
+    {% include "partials/position_row.html" %}
+
+    {% set item = block.alt %}
+    {% set is_alt_item = true %}
+    {% set is_inactive = not block.render_alt %}
+    {% include "partials/position_row.html" %}
+
+    {# ── Einfache Position ───────────────────────────────────────────── #}
+    {% else %}
+    {% set item = block.primary %}
+    {% set is_alt_item = false %}
+    {% include "partials/position_row.html" %}
+    {% endif %}
+
+  {% endfor %}
+  </div>
+</div>
+{% endfor %}
+{% endif %}
+
+<script>
+function toggleCat(header) {
+  const arrow = header.querySelector('span:first-child');
+  const body  = header.nextElementSibling;
+  const open  = body.style.display !== 'none';
+  body.style.display  = open ? 'none' : '';
+  arrow.textContent   = open ? '▶' : '▼';
+}
+</script>

@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GAEB → Easyjob</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
+</head>
+<body>
+
+<header class="app-header">
+  <h1>GAEB → Easyjob</h1>
+  <a href="/d83" style="font-size:.82rem;color:#90caf9;text-decoration:none;border:1px solid #90caf9;border-radius:4px;padding:2px 9px">📂 D83 Import</a>
+  <span class="header-status" id="header-status">
+    {% if S.project %}{{ S.project.name }} · {{ S.project.items|length }} Positionen{% else %}Keine Datei geladen{% endif %}
+  </span>
+  <a href="/logout" style="font-size:.78rem;color:#ffcdd2;text-decoration:none;border:1px solid #ef9a9a;border-radius:4px;padding:2px 9px;margin-left:auto">Abmelden</a>
+</header>
+
+<div class="app-body">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+
+    <div class="sidebar-section">
+      <label>GAEB-Dateien</label>
+
+      <div style="margin-bottom:6px">
+        <span id="x83-status">
+          {% if S.x83_name %}<span class="file-ok">✓ {{ S.x83_name }}</span>{% else %}<span style="color:#c00;font-size:.8rem">Keine X83-Datei</span>{% endif %}
+        </span>
+        <form hx-post="/api/upload/x83"
+              hx-encoding="multipart/form-data"
+              hx-target="#x83-status"
+              hx-swap="innerHTML">
+          <input type="file" name="file" accept=".x83,.xml"
+                 onchange="this.form.requestSubmit()" style="margin-top:3px">
+        </form>
+      </div>
+
+      <div>
+        <span id="x84-status">
+          {% if S.x84_name %}<span class="file-ok">✓ {{ S.x84_name }}</span>{% else %}<span style="color:#888;font-size:.8rem">X84 optional</span>{% endif %}
+        </span>
+        <form hx-post="/api/upload/x84"
+              hx-encoding="multipart/form-data"
+              hx-target="#x84-status"
+              hx-swap="innerHTML">
+          <input type="file" name="file" accept=".x84,.xml"
+                 onchange="this.form.requestSubmit()" style="margin-top:3px">
+        </form>
+      </div>
+    </div>
+
+    <hr>
+
+    <div class="sidebar-section">
+      <label>Mapping-Quellen</label>
+      <form hx-post="/api/settings/mappings"
+            hx-target="#mapping-save"
+            hx-swap="innerHTML"
+            hx-trigger="change">
+        <label class="toggle-label">
+          <input type="checkbox" name="use_train" value="1"
+                 {% if S.use_train_mappings %}checked{% endif %}
+                 onchange="this.form.dispatchEvent(new Event('change'))">
+          Training-Mappings
+        </label>
+        <label class="toggle-label">
+          <input type="checkbox" name="use_gui" value="1"
+                 {% if S.use_gui_mappings %}checked{% endif %}
+                 onchange="this.form.dispatchEvent(new Event('change'))">
+          GUI-Korrekturen
+        </label>
+        <span id="mapping-save" style="font-size:.75rem;display:block;margin-top:3px"></span>
+      </form>
+      <p style="font-size:.72rem;color:#888;margin-top:4px">
+        Wirkt beim nächsten Matching-Start
+      </p>
+    </div>
+
+    <hr>
+
+    <button class="btn btn-primary btn-full"
+            hx-post="/api/match/start"
+            hx-target="#main-area"
+            hx-swap="innerHTML">
+      ▶ Laden &amp; Matching starten
+    </button>
+
+  </aside>
+
+  <!-- Hauptbereich -->
+  <main class="main-content">
+    <div id="main-area">
+      {% block main %}{% endblock %}
+    </div>
+  </main>
+</div>
+
+<!-- EJ Match-Modal -->
+<dialog id="ej-modal">
+  <div id="ej-modal-body" class="dialog-inner">
+    <!-- wird per HTMX befüllt -->
+  </div>
+</dialog>
+
+<!-- EJ Hinzufügen-Modal -->
+<dialog id="ej-add-modal">
+  <div id="ej-add-modal-body" class="dialog-inner">
+    <!-- wird per HTMX befüllt -->
+  </div>
+</dialog>
+
+<script>
+// Modals öffnen wenn Body befüllt wurde
+document.body.addEventListener('htmx:afterSettle', function(e) {
+  if (!e.detail.target) return;
+  if (e.detail.target.id === 'ej-modal-body') {
+    document.getElementById('ej-modal').showModal();
+  }
+  if (e.detail.target.id === 'ej-add-modal-body') {
+    document.getElementById('ej-add-modal').showModal();
+  }
+});
+
+// Modals schließen wenn #main-area neu geswappt wurde
+document.body.addEventListener('htmx:afterSwap', function(e) {
+  if (e.detail.target && e.detail.target.id === 'main-area') {
+    ['ej-modal', 'ej-add-modal'].forEach(function(id) {
+      var m = document.getElementById(id);
+      if (m && m.open) m.close();
+    });
+  }
+});
+
+// Qty-Änderung per debounce an Server melden + Kosten aktualisieren
+let qtyTimers = {};
+function bundleQtyChanged(itemId, idx, val) {
+  clearTimeout(qtyTimers[itemId + '_' + idx]);
+  qtyTimers[itemId + '_' + idx] = setTimeout(function() {
+    htmx.ajax('POST', '/api/position/' + itemId + '/set-qty/' + idx, {
+      target: '#main-area',
+      swap: 'innerHTML',
+      values: {qty: val}
+    });
+  }, 600);
+}
+
+// Hilfsfunktion: Referenzartikel laden + extra-hidden-fields befüllen
+function _loadRefs(ejId, articleName, relWrapId, updateFn) {
+  var relWrap = document.getElementById(relWrapId);
+  if (!relWrap) return;
+  if (!ejId) { relWrap.innerHTML = ''; updateFn(); return; }
+  relWrap.innerHTML = '<span style="font-size:.78rem;color:#888">⏳ Referenzartikel …</span>';
+  var url = '/api/ej/related/' + ejId + (articleName ? '?name=' + encodeURIComponent(articleName) : '');
+  htmx.ajax('GET', url, {target: '#' + relWrapId, swap: 'innerHTML'}).then(updateFn);
+}
+
+// Sammelt auto-refs (× Hauptartikel-Menge) + optionale qty-Inputs > 0
+function ejUpdateExtraHidden(elOrContext) {
+  var context;
+  if (typeof elOrContext === 'string') {
+    context = elOrContext;
+  } else if (elOrContext && elOrContext.closest) {
+    context = elOrContext.closest('#ej-add-related') ? 'add' : 'replace';
+  } else {
+    context = 'replace';
+  }
+  var scope   = context === 'add' ? '#ej-add-related'  : '#ej-replace-related';
+  var numsId  = context === 'add' ? 'add-extra-nums'   : 'replace-extra-nums';
+  var qtysId  = context === 'add' ? 'add-extra-qtys'   : 'replace-extra-qtys';
+  var formId  = context === 'add' ? 'ej-add-form'      : 'ej-set-form';
+  var mainQty = parseFloat(document.getElementById(formId)?.querySelector('[name=qty]')?.value) || 1;
+  var nums = [], qtys = [];
+  // Auto-Refs: qty = factor × Hauptartikel-Menge
+  document.querySelectorAll(scope + ' .auto-ref-num').forEach(function(el) { nums.push(el.value); });
+  document.querySelectorAll(scope + ' .auto-ref-qty').forEach(function(el) {
+    qtys.push(String(parseFloat(el.value) * mainQty));
+  });
+  // Optionale Refs: eingegebene qty, optional × Hauptartikel-Menge (globale Checkbox)
+  var multiplyBox = document.querySelector(scope + ' .opt-ref-multiply');
+  var multiply = multiplyBox ? multiplyBox.checked : false;
+  document.querySelectorAll(scope + ' .opt-ref-qty-input').forEach(function(inp) {
+    var v = parseFloat(inp.value) || 0;
+    if (v > 0) {
+      nums.push(inp.dataset.num);
+      qtys.push(String(multiply ? v * mainQty : v));
+    }
+  });
+  var numsEl = document.getElementById(numsId);
+  var qtysEl = document.getElementById(qtysId);
+  if (numsEl) numsEl.value = nums.join(',');
+  if (qtysEl) qtysEl.value = qtys.join(',');
+}
+
+// Hilfsfunktion: Lookup IdStockType per Artikelnummer, dann Refs laden
+function _loadRefsOrLookup(num, caption, relWrapId, context) {
+  var relWrap = document.getElementById(relWrapId);
+  if (relWrap) relWrap.innerHTML = '<span style="font-size:.78rem;color:#888">⏳ Referenzartikel …</span>';
+  fetch('/api/ej/lookup?num=' + encodeURIComponent(num))
+    .then(function(r) { return r.json(); })
+    .then(function(info) {
+      _loadRefs(info.IdStockType || 0, info.Caption || caption || num,
+                relWrapId, function() { ejUpdateExtraHidden(context); });
+    });
+}
+
+// EJ Hinzufügen-Dialog: Zeile anklicken
+function ejAddRowClick(tr, num, rawJson) {
+  document.querySelectorAll('#ej-add-modal-body tr.selected').forEach(r => r.classList.remove('selected'));
+  tr.classList.add('selected');
+  var form = document.getElementById('ej-add-form');
+  if (!form) return;
+  form.querySelector('[name=ej_num]').value   = num;
+  form.querySelector('[name=raw_json]').value = rawJson;
+  document.getElementById('ej-add-btn').disabled = false;
+  var parsed = JSON.parse(rawJson);
+  var ejId = parsed.IdStockType || 0;
+  if (ejId) {
+    _loadRefs(ejId, parsed.Caption || num, 'ej-add-related',
+              function() { ejUpdateExtraHidden('add'); });
+  } else if (num) {
+    _loadRefsOrLookup(num, parsed.Caption, 'ej-add-related', 'add');
+  }
+}
+
+// EJ Match-Dialog: Zeile anklicken + Referenzartikel laden
+function ejRowClick(tr, num, rawJson) {
+  document.querySelectorAll('#ej-modal-body tr.selected').forEach(r => r.classList.remove('selected'));
+  tr.classList.add('selected');
+  var form = document.getElementById('ej-set-form');
+  if (form) {
+    form.querySelector('[name=ej_num]').value   = num;
+    form.querySelector('[name=raw_json]').value = rawJson;
+    document.getElementById('ej-set-btn').disabled = false;
+  }
+  var parsed = JSON.parse(rawJson);
+  var ejId = parsed.IdStockType || 0;
+  if (ejId) {
+    _loadRefs(ejId, parsed.Caption || num, 'ej-replace-related',
+              function() { ejUpdateExtraHidden('replace'); });
+  } else if (num) {
+    _loadRefsOrLookup(num, parsed.Caption, 'ej-replace-related', 'replace');
+  }
+}
+
+</script>
+</body>
+</html>

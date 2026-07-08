@@ -1,0 +1,30 @@
+{% if not results %}
+  <p style="color:#888;font-size:.82rem;margin-top:8px">
+    {% if results is defined %}Keine Treffer.{% else %}Suche …{% endif %}
+  </p>
+{% else %}
+<div class="ej-table-wrap">
+  <table class="ej-table">
+    <thead>
+      <tr>
+        <th>Nummer</th>
+        <th>Bezeichnung</th>
+        <th>Kategorie</th>
+        <th>Inv.</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for r in results %}
+      <tr data-num="{{ r.nummer }}" data-raw="{{ r._raw_json }}"
+          onclick="ejRowClick(this, this.dataset.num, this.dataset.raw)">
+        <td style="font-family:monospace;white-space:nowrap">{{ r.nummer }}</td>
+        <td>{{ r.bezeichnung }}</td>
+        <td style="color:#666">{{ r.kategorie }}</td>
+        <td style="text-align:right">{{ r.inv }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+<div class="search-status">{{ results|length }} Treffer</div>
+{% endif %}

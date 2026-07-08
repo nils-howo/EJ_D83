@@ -1,0 +1,59 @@
+{% set normal_refs   = required | selectattr("TypeId", "equalto", 3) | list %}
+{% set gebunden_refs = required | rejectattr("TypeId", "equalto", 3) | list %}
+
+<div class="ref-card">
+  <div class="ref-card-head">
+    Referenzartikel für <strong>{{ article_name or "gewählten Artikel" }}</strong>
+  </div>
+
+  {% if normal_refs %}
+  <div class="ref-section">
+    <div class="ref-section-label ref-label-auto">✓ Wird automatisch gebucht</div>
+    {% for r in normal_refs %}
+    <div class="ref-row">
+      <span class="ref-badge ref-badge-normal">×{{ r.Factor|int if r.Factor == r.Factor|int else "%.2f"|format(r.Factor) }}</span>
+      <span class="ref-num">{{ r.Number }}</span>
+      <span class="ref-cap">{{ r.Caption }}</span>
+      <input type="hidden" class="auto-ref-num" value="{{ r.Number }}">
+      <input type="hidden" class="auto-ref-qty" value="{{ r.Factor }}">
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if gebunden_refs %}
+  <div class="ref-section">
+    <div class="ref-section-label ref-label-bound">🔗 Gebunden — EJ fügt beim Schreiben hinzu</div>
+    {% for r in gebunden_refs %}
+    <div class="ref-row ref-row-dim">
+      <span class="ref-badge ref-badge-bound">×{{ r.Factor|int if r.Factor == r.Factor|int else "%.2f"|format(r.Factor) }}</span>
+      <span class="ref-num">{{ r.Number }}</span>
+      <span class="ref-cap">{{ r.Caption }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if optional %}
+  <div class="ref-section">
+    <div class="ref-section-label ref-label-opt" style="display:flex;align-items:center;gap:8px">
+      <span>⚙ Optional</span>
+      <label style="font-size:.75rem;font-weight:400;color:#555;display:flex;align-items:center;gap:3px;cursor:pointer">
+        <input type="checkbox" class="opt-ref-multiply" onchange="ejUpdateExtraHidden(this)" style="cursor:pointer">
+        × Hauptartikel-Menge
+      </label>
+    </div>
+    {% for r in optional %}
+    <div class="ref-row ref-opt-row">
+      <input type="number" class="opt-ref-qty-input" min="0" step="1"
+             value="0"
+             data-num="{{ r.Number }}"
+             onchange="ejUpdateExtraHidden(this)"
+             style="width:46px;text-align:center;border:1px solid #90caf9;border-radius:3px;padding:2px 4px;font-size:.82rem">
+      <span class="ref-num">{{ r.Number }}</span>
+      <span class="ref-cap">{{ r.Caption }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
