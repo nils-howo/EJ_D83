@@ -12,6 +12,7 @@
 <header class="app-header">
   <h1>GAEB → Easyjob</h1>
   <a href="/d83" style="font-size:.82rem;color:#90caf9;text-decoration:none;border:1px solid #90caf9;border-radius:4px;padding:2px 9px">📂 D83 Import</a>
+  <a href="/admin" style="font-size:.82rem;color:#a5d6a7;text-decoration:none;border:1px solid #a5d6a7;border-radius:4px;padding:2px 9px">⚙ Admin</a>
   <span class="header-status" id="header-status">
     {% if S.project %}{{ S.project.name }} · {{ S.project.items|length }} Positionen{% else %}Keine Datei geladen{% endif %}
   </span>
@@ -86,6 +87,11 @@
             hx-target="#main-area"
             hx-swap="innerHTML">
       ▶ Laden &amp; Matching starten
+    </button>
+
+    <button id="btn-hide-matched" class="btn btn-grey btn-full" style="margin-top:6px"
+            onclick="toggleHideMatched(this)">
+      99% ausblenden
     </button>
 
   </aside>
@@ -192,6 +198,12 @@ function ejUpdateExtraHidden(elOrContext) {
   var qtysEl = document.getElementById(qtysId);
   if (numsEl) numsEl.value = nums.join(',');
   if (qtysEl) qtysEl.value = qtys.join(',');
+}
+
+// 99%-Match ein-/ausblenden
+function toggleHideMatched(btn) {
+  var hidden = document.body.classList.toggle('hide-matched');
+  btn.textContent = hidden ? '99% einblenden' : '99% ausblenden';
 }
 
 // Hilfsfunktion: Lookup IdStockType per Artikelnummer, dann Refs laden

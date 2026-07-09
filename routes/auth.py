@@ -5,7 +5,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from easyjob_api import EjLiveClient
-from state import S, _build_db_conn, templates
+from state import get_session, _build_db_conn, templates
 
 router = APIRouter()
 
@@ -49,12 +49,13 @@ async def login_submit(
     if not user_id:
         return _fail("Benutzername oder Passwort falsch.")
 
-    S.ej_url     = ej_url
-    S.ej_user    = ej_user
-    S.ej_pass    = ej_pass
-    S.ej_db_conn = db_conn
-    S.ej_user_id = user_id
-    S.ej_client  = client
+    ss = get_session(request.session)
+    ss.ej_url     = ej_url
+    ss.ej_user    = ej_user
+    ss.ej_pass    = ej_pass
+    ss.ej_db_conn = db_conn
+    ss.ej_user_id = user_id
+    ss.ej_client  = client
 
     request.session["authenticated"] = True
     request.session["ej_url"]        = ej_url

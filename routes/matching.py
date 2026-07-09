@@ -33,7 +33,7 @@ from state import (
     GUI_MAPPINGS_PATH,
     HAENGEPUNKT_NR,
     TRAIN_MAPPINGS_PATH,
-    S,
+    get_session,
     MatchProgress,
     templates,
 )
@@ -74,15 +74,15 @@ def _bundle_cost(bundle: list) -> float:
     return total
 
 
-def _calc_metrics() -> dict:
-    if not S.project:
+def _calc_metrics(ss) -> dict:
+    if not ss.project:
         return {}
-    total = len(S.project.items)
+    total = len(ss.project.items)
     matched = confident = art_count = res_count = 0
     cost_mat = cost_pers = 0.0
-    for it in S.project.items:
-        bundle = S.bundles.get(it.item_id, [])
-        mr     = S.matches.get(it.item_id)
+    for it in ss.project.items:
+        bundle = ss.bundles.get(it.item_id, [])
+        mr     = ss.matches.get(it.item_id)
         if bundle:
             matched += 1
             for e in bundle:
@@ -102,9 +102,9 @@ def _calc_metrics() -> dict:
     )
 
 
-def _item_view(item: GaebItem) -> dict:
-    mr     = S.matches.get(item.item_id, MatchResult(None, 0, "none", False))
-    bundle = S.bundles.setdefault(item.item_id, [])
+def _item_view(ss, item: GaebItem) -> dict:
+    mr     = ss.matches.get(item.item_id, MatchResult(None, 0, "none", False))
+    bundle = ss.bundles.setdefault(item.item_id, [])
     score  = mr.score
     cost   = _bundle_cost(bundle)
     oz     = getattr(item, "oz", "")
@@ -186,22 +186,22 @@ def _item_view(item: GaebItem) -> dict:
         "bundle":          bundle_entries,
         "has_bundle":      bool(bundle),
         "is_kalkpos":      mr.method == "kalkpos",
-        "has_ej":          bool(S.ej_client),
+        "has_ej":          bool(ss.ej_client),
     }
 
 
-def _positions_data() -> list:
-    if not S.project:
+def _positions_data(ss) -> list:
+    if not ss.project:
         return []
-    item_order = {id(it): i for i, it in enumerate(S.project.items)}
+    item_order = {id(it): i for i, it in enumerate(ss.project.items)}
     seen_cats: dict[str, int] = {}
-    for it in S.project.items:
+    for it in ss.project.items:
         k = _path_key(it)
         if k not in seen_cats:
             seen_cats[k] = len(seen_cats)
 
     sorted_items = sorted(
-        S.project.items,
+        ss.project.items,
         key=lambda it: (seen_cats[_path_key(it)], item_order[id(it)])
     )
 
@@ -217,26 +217,26 @@ def _positions_data() -> list:
         while gi < len(group):
             it = group[gi]
             if it.is_alt:
-                blocks.append({"has_alt": False, "primary": _item_view(it)})
+                blocks.append({"has_alt": False, "primary": _item_view(ss, it)})
                 gi += 1
             elif gi + 1 < len(group) and group[gi + 1].is_alt:
                 alt = group[gi + 1]
                 alt_key = f"{it.item_id}|{alt.item_id}"
-                chosen = S.alt_active.get(alt_key, "primary")
+                chosen = ss.alt_active.get(alt_key, "primary")
                 render_primary = chosen in ("primary", "both")
                 render_alt     = chosen in ("alt", "both")
                 blocks.append({
                     "has_alt":        True,
                     "alt_key":        alt_key,
                     "alt_choice":     chosen,
-                    "primary":        _item_view(it),
-                    "alt":            _item_view(alt),
+                    "primary":        _item_view(ss, it),
+                    "alt":            _item_view(ss, alt),
                     "render_primary": render_primary,
                     "render_alt":     render_alt,
                 })
                 gi += 2
             else:
-                blocks.append({"has_alt": False, "primary": _item_view(it)})
+                blocks.append({"has_alt": False, "primary": _item_view(ss, it)})
                 gi += 1
 
         result.append({
@@ -248,17 +248,17 @@ def _positions_data() -> list:
     return result
 
 
-def _learn_bundle(item_id: str, description: str) -> None:
+def _learn_bundle(ss, item_id: str, description: str) -> None:
     """Speichert den aktuellen Bundle-Zustand als gelerntes Mapping."""
-    bundle = S.bundles.get(item_id, [])
+    bundle = ss.bundles.get(item_id, [])
     numbers = [
         e["matchable"].nummer
         for e in bundle
         if hasattr(e["matchable"], "nummer") and e["matchable"].nummer.strip()
     ]
     auto_learn_bundle(description, numbers, GUI_MAPPINGS_PATH)
-    if S.matcher:
-        S.matcher.add_learned_bundle(description, numbers)
+    if ss.matcher:
+        ss.matcher.add_learned_bundle(description, numbers)
 
 
 def _run_matching(projekt: GaebProject, matcher: UnifiedMatcher,
@@ -302,7 +302,6 @@ def _run_matching(projekt: GaebProject, matcher: UnifiedMatcher,
             else:
                 bundles[item.item_id] = [{"matchable": art, "qty": item.qty, "lfm_converted": False}]
 
-            # Gelernte Zusatzartikel anhängen
             for extra_num in matcher.get_bundle_extras(item.description):
                 eidx = matcher._num_to_idx.get(extra_num)
                 if eidx is not None:
@@ -321,64 +320,69 @@ def _run_matching(projekt: GaebProject, matcher: UnifiedMatcher,
 
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request):
+    ss = get_session(request.session)
     return templates.TemplateResponse(request, "index.html", {
-        "S":         S,
-        "metrics":   _calc_metrics(),
-        "positions": _positions_data(),
+        "S":         ss,
+        "metrics":   _calc_metrics(ss),
+        "positions": _positions_data(ss),
     })
 
 
 @router.post("/api/upload/x83", response_class=HTMLResponse)
-async def upload_x83(file: UploadFile = File(...)):
-    S.x83_bytes = await file.read()
-    S.x83_name  = file.filename or "x83"
-    return f'<span class="file-ok">✓ {escape(S.x83_name)}</span>'
+async def upload_x83(request: Request, file: UploadFile = File(...)):
+    ss = get_session(request.session)
+    ss.x83_bytes = await file.read()
+    ss.x83_name  = file.filename or "x83"
+    return f'<span class="file-ok">✓ {escape(ss.x83_name)}</span>'
 
 
 @router.post("/api/upload/x84", response_class=HTMLResponse)
-async def upload_x84(file: UploadFile = File(...)):
-    S.x84_bytes = await file.read()
-    S.x84_name  = file.filename or "x84"
-    return f'<span class="file-ok">✓ {escape(S.x84_name)}</span>'
-
+async def upload_x84(request: Request, file: UploadFile = File(...)):
+    ss = get_session(request.session)
+    ss.x84_bytes = await file.read()
+    ss.x84_name  = file.filename or "x84"
+    return f'<span class="file-ok">✓ {escape(ss.x84_name)}</span>'
 
 
 @router.post("/api/settings/mappings", response_class=HTMLResponse)
 async def save_mapping_toggles(
+    request:   Request,
     use_train: str = Form(""),
     use_gui:   str = Form(""),
 ):
-    S.use_train_mappings = (use_train == "1")
-    S.use_gui_mappings   = (use_gui   == "1")
+    ss = get_session(request.session)
+    ss.use_train_mappings = (use_train == "1")
+    ss.use_gui_mappings   = (use_gui   == "1")
     labels = []
-    if S.use_train_mappings: labels.append("Training")
-    if S.use_gui_mappings:   labels.append("GUI")
+    if ss.use_train_mappings: labels.append("Training")
+    if ss.use_gui_mappings:   labels.append("GUI")
     text = "Aktiv: " + ", ".join(labels) if labels else "Alle deaktiviert"
     return f'<span class="save-ok">✓ {text}</span>'
 
 
 @router.post("/api/match/start", response_class=HTMLResponse)
 async def match_start(request: Request):
-    if not S.x83_bytes:
+    ss = get_session(request.session)
+    if not ss.x83_bytes:
         return '<p class="error-msg">Bitte zuerst eine X83-Datei hochladen.</p>'
-    if S.progress.running:
+    if ss.progress.running:
         return '<p class="error-msg">Matching läuft bereits.</p>'
 
-    S.progress = MatchProgress()
-    S.progress.running = True
+    ss.progress = MatchProgress()
+    ss.progress.running = True
 
     async def _run():
         try:
             loop = asyncio.get_event_loop()
             with tempfile.NamedTemporaryFile(suffix=".x83", delete=False) as f:
-                f.write(S.x83_bytes)
+                f.write(ss.x83_bytes)
                 tmp_path = Path(f.name)
             project = await loop.run_in_executor(None, parse_gaeb, tmp_path)
             tmp_path.unlink(missing_ok=True)
 
-            if S.x84_bytes:
+            if ss.x84_bytes:
                 with tempfile.NamedTemporaryFile(suffix=".x84", delete=False) as f:
-                    f.write(S.x84_bytes)
+                    f.write(ss.x84_bytes)
                     tmp84 = Path(f.name)
                 await loop.run_in_executor(None, merge_x84_prices, project, tmp84)
                 tmp84.unlink(missing_ok=True)
@@ -387,44 +391,44 @@ async def match_start(request: Request):
             resources = await loop.run_in_executor(None, load_resources_db)
             matcher   = UnifiedMatcher(articles, resources)
 
-            if not S.use_train_mappings or not S.use_gui_mappings:
+            if not ss.use_train_mappings or not ss.use_gui_mappings:
                 keep = [
-                    (k, n, s)
-                    for k, n, s in zip(matcher._res_keys, matcher._res_nums, matcher._res_sources)
-                    if (s == "train" and S.use_train_mappings)
-                    or (s == "gui"   and S.use_gui_mappings)
+                    (k, n, src)
+                    for k, n, src in zip(matcher._res_keys, matcher._res_nums, matcher._res_sources)
+                    if (src == "train" and ss.use_train_mappings)
+                    or (src == "gui"   and ss.use_gui_mappings)
                 ]
                 if keep:
-                    ks, ns, ss = zip(*keep)
+                    ks, ns, srcs = zip(*keep)
                     matcher._res_keys    = list(ks)
                     matcher._res_nums    = list(ns)
-                    matcher._res_sources = list(ss)
+                    matcher._res_sources = list(srcs)
                 else:
                     matcher._res_keys = matcher._res_nums = matcher._res_sources = []
 
             ej_client = None
             try:
                 ej_client = await loop.run_in_executor(
-                    None, lambda: EjLiveClient(S.ej_url, S.ej_user, S.ej_pass)
+                    None, lambda: EjLiveClient(ss.ej_url, ss.ej_user, ss.ej_pass)
                 )
             except Exception:
                 pass
 
             matches, bundles = await loop.run_in_executor(
-                None, _run_matching, project, matcher, S.progress
+                None, _run_matching, project, matcher, ss.progress
             )
 
-            S.project    = project
-            S.matcher    = matcher
-            S.matches    = matches
-            S.bundles    = bundles
-            S.ej_client  = ej_client
-            S.alt_active = {}
-            S.ej_cache   = {}
+            ss.project    = project
+            ss.matcher    = matcher
+            ss.matches    = matches
+            ss.bundles    = bundles
+            ss.ej_client  = ej_client
+            ss.alt_active = {}
+            ss.ej_cache   = {}
         except Exception as ex:
-            S.progress.error = str(ex)
+            ss.progress.error = str(ex)
         finally:
-            S.progress.running = False
+            ss.progress.running = False
 
     asyncio.ensure_future(_run())
     return templates.TemplateResponse(request, "partials/progress.html", {})
@@ -432,7 +436,8 @@ async def match_start(request: Request):
 
 @router.get("/api/match/progress", response_class=HTMLResponse)
 async def match_progress(request: Request):
-    p = S.progress
+    ss = get_session(request.session)
+    p = ss.progress
     if p.running or (p.total == 0 and not p.error):
         pct = int(100 * p.done / p.total) if p.total else 0
         return templates.TemplateResponse(request, "partials/progress.html", {
@@ -441,37 +446,40 @@ async def match_progress(request: Request):
     if p.error:
         return f'<p class="error-msg">Fehler: {escape(p.error)}</p>'
     return templates.TemplateResponse(request, "partials/main_content.html", {
-        "S": S, "metrics": _calc_metrics(), "positions": _positions_data(),
+        "S": ss, "metrics": _calc_metrics(ss), "positions": _positions_data(ss),
     })
 
 
 @router.get("/api/positions", response_class=HTMLResponse)
 async def get_positions(request: Request):
+    ss = get_session(request.session)
     return templates.TemplateResponse(request, "partials/positions.html", {
-        "positions": _positions_data(), "S": S,
+        "positions": _positions_data(ss), "S": ss,
     })
 
 
 @router.get("/api/metrics", response_class=HTMLResponse)
 async def get_metrics(request: Request):
+    ss = get_session(request.session)
     return templates.TemplateResponse(request, "partials/metrics.html", {
-        "metrics": _calc_metrics(),
+        "metrics": _calc_metrics(ss),
     })
 
 
 @router.get("/api/ej/dialog/{item_id}", response_class=HTMLResponse)
 async def ej_dialog(item_id: str, request: Request):
-    if not S.project:
+    ss = get_session(request.session)
+    if not ss.project:
         raise HTTPException(404, "Kein Projekt geladen")
-    item = next((it for it in S.project.items if it.item_id == item_id), None)
+    item = next((it for it in ss.project.items if it.item_id == item_id), None)
     if not item:
         raise HTTPException(404, "Position nicht gefunden")
 
     suggestions: list[dict] = []
     suggestions_error: str = ""
-    if S.matcher:
+    if ss.matcher:
         try:
-            _m = S.matcher
+            _m = ss.matcher
             _desc, _cat, _qty, _unit, _lt = (
                 item.description, item.category_path,
                 float(item.qty), item.unit, item.long_text,
@@ -512,25 +520,26 @@ async def ej_dialog(item_id: str, request: Request):
 
 @router.get("/api/ej/search/{item_id}", response_class=HTMLResponse)
 async def ej_search(item_id: str, request: Request, q: str = ""):
-    if not S.ej_client or not q.strip():
+    ss = get_session(request.session)
+    if not ss.ej_client or not q.strip():
         return templates.TemplateResponse(request, "partials/ej_results.html", {
             "results": [], "item_id": item_id
         })
     ck = q.strip().lower()
-    if ck not in S.ej_cache:
+    if ck not in ss.ej_cache:
         loop = asyncio.get_event_loop()
-        S.ej_cache[ck] = await loop.run_in_executor(
-            None, lambda: S.ej_client.search(q, limit=40)
+        ss.ej_cache[ck] = await loop.run_in_executor(
+            None, lambda: ss.ej_client.search(q, limit=40)
         )
-    raw = S.ej_cache.get(ck, [])
+    raw = ss.ej_cache.get(ck, [])
     results = []
     for r in raw:
         num = str(r.get("Number", ""))
         inv = ""
-        if S.matcher:
-            lidx = S.matcher._num_to_idx.get(num)
+        if ss.matcher:
+            lidx = ss.matcher._num_to_idx.get(num)
             if lidx is not None:
-                inv = str(S.matcher._pool[lidx].mietinventar)
+                inv = str(ss.matcher._pool[lidx].mietinventar)
         results.append({
             "nummer":      num,
             "bezeichnung": r.get("Caption", ""),
@@ -545,9 +554,10 @@ async def ej_search(item_id: str, request: Request, q: str = ""):
 
 @router.get("/api/ej/add-dialog/{item_id}", response_class=HTMLResponse)
 async def ej_add_dialog(item_id: str, request: Request):
-    if not S.project:
+    ss = get_session(request.session)
+    if not ss.project:
         raise HTTPException(404)
-    item = next((it for it in S.project.items if it.item_id == item_id), None)
+    item = next((it for it in ss.project.items if it.item_id == item_id), None)
     if not item:
         raise HTTPException(404)
     return templates.TemplateResponse(request, "partials/ej_add_dialog.html", {
@@ -560,25 +570,26 @@ async def ej_add_dialog(item_id: str, request: Request):
 
 @router.get("/api/ej/add-search/{item_id}", response_class=HTMLResponse)
 async def ej_add_search(item_id: str, request: Request, q: str = ""):
-    if not S.ej_client or not q.strip():
+    ss = get_session(request.session)
+    if not ss.ej_client or not q.strip():
         return templates.TemplateResponse(request, "partials/ej_add_results.html", {
             "results": [], "item_id": item_id
         })
     ck = q.strip().lower()
-    if ck not in S.ej_cache:
+    if ck not in ss.ej_cache:
         loop = asyncio.get_event_loop()
-        S.ej_cache[ck] = await loop.run_in_executor(
-            None, lambda: S.ej_client.search(q, limit=40)
+        ss.ej_cache[ck] = await loop.run_in_executor(
+            None, lambda: ss.ej_client.search(q, limit=40)
         )
-    raw = S.ej_cache.get(ck, [])
+    raw = ss.ej_cache.get(ck, [])
     results = []
     for r in raw:
         num = str(r.get("Number", ""))
         inv = ""
-        if S.matcher:
-            lidx = S.matcher._num_to_idx.get(num)
+        if ss.matcher:
+            lidx = ss.matcher._num_to_idx.get(num)
             if lidx is not None:
-                inv = str(S.matcher._pool[lidx].mietinventar)
+                inv = str(ss.matcher._pool[lidx].mietinventar)
         results.append({
             "nummer":      num,
             "bezeichnung": r.get("Caption", ""),
@@ -592,12 +603,13 @@ async def ej_add_search(item_id: str, request: Request, q: str = ""):
 
 
 @router.get("/api/ej/lookup")
-async def ej_lookup_by_num(num: str = ""):
-    if not S.ej_client or not num.strip():
+async def ej_lookup_by_num(request: Request, num: str = ""):
+    ss = get_session(request.session)
+    if not ss.ej_client or not num.strip():
         return JSONResponse({"IdStockType": 0, "Caption": ""})
     try:
         loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(None, lambda: S.ej_client.search(num.strip(), limit=5))
+        results = await loop.run_in_executor(None, lambda: ss.ej_client.search(num.strip(), limit=5))
         for r in (results or []):
             if str(r.get("Number", "")).strip() == num.strip():
                 return JSONResponse({"IdStockType": r.get("IdStockType", 0), "Caption": r.get("Caption", "")})
@@ -608,10 +620,11 @@ async def ej_lookup_by_num(num: str = ""):
 
 @router.get("/api/ej/related/{ej_id}", response_class=HTMLResponse)
 async def ej_related(ej_id: int, request: Request, name: str = ""):
-    if not S.ej_client:
+    ss = get_session(request.session)
+    if not ss.ej_client:
         return ""
     loop = asyncio.get_event_loop()
-    refs = await loop.run_in_executor(None, S.ej_client.get_references, ej_id)
+    refs = await loop.run_in_executor(None, ss.ej_client.get_references, ej_id)
     required = [r for r in refs if not r["IsOptional"]]
     optional = [r for r in refs if r["IsOptional"]]
     if not required and not optional:
@@ -631,41 +644,42 @@ async def add_ej_article(
     extra_nums: str   = Form(default=""),
     extra_qtys: str   = Form(default=""),
 ):
-    if not S.project:
+    ss = get_session(request.session)
+    if not ss.project:
         raise HTTPException(400)
     if not ej_num or not raw_json:
         return '<p class="error-msg">Bitte einen Artikel auswählen.</p>'
-    item = next((it for it in S.project.items if it.item_id == item_id), None)
+    item = next((it for it in ss.project.items if it.item_id == item_id), None)
     if not item:
         raise HTTPException(404)
 
     raw_item = json.loads(raw_json)
     ej_id    = raw_item.get("IdStockType")
-    is_local = bool(S.matcher and S.matcher._num_to_idx.get(ej_num))
+    is_local = bool(ss.matcher and ss.matcher._num_to_idx.get(ej_num))
     details  = None
-    if not is_local and ej_id and S.ej_client:
+    if not is_local and ej_id and ss.ej_client:
         loop    = asyncio.get_event_loop()
-        details = await loop.run_in_executor(None, S.ej_client.get_details, ej_id)
+        details = await loop.run_in_executor(None, ss.ej_client.get_details, ej_id)
 
-    art    = make_article_from_ej(raw_item, details, S.matcher)
-    bundle = S.bundles.setdefault(item_id, [])
+    art    = make_article_from_ej(raw_item, details, ss.matcher)
+    bundle = ss.bundles.setdefault(item_id, [])
     bundle.append({"matchable": art, "qty": qty, "lfm_converted": False})
 
     nums     = [n.strip() for n in extra_nums.split(",") if n.strip()]
     qtys_raw = [q.strip() for q in extra_qtys.split(",") if q.strip()]
     for i, extra_num in enumerate(nums):
         extra_qty = float(qtys_raw[i]) if i < len(qtys_raw) else 1.0
-        idx = S.matcher._num_to_idx.get(extra_num) if S.matcher else None
+        idx = ss.matcher._num_to_idx.get(extra_num) if ss.matcher else None
         if idx is not None:
-            extra_art = S.matcher._pool[idx]
+            extra_art = ss.matcher._pool[idx]
             has_price = (isinstance(extra_art, Article) and extra_art.mietpreis) or \
                         (isinstance(extra_art, Resource) and extra_art.tagessatz)
             if has_price:
                 bundle.append({"matchable": extra_art, "qty": extra_qty, "lfm_converted": False})
 
-    _learn_bundle(item_id, item.description)
+    _learn_bundle(ss, item_id, item.description)
     return templates.TemplateResponse(request, "partials/main_content.html", {
-        "S": S, "metrics": _calc_metrics(), "positions": _positions_data(),
+        "S": ss, "metrics": _calc_metrics(ss), "positions": _positions_data(ss),
     })
 
 
@@ -679,83 +693,87 @@ async def set_match(
     extra_nums: str   = Form(default=""),
     extra_qtys: str   = Form(default=""),
 ):
-    if not S.project:
+    ss = get_session(request.session)
+    if not ss.project:
         raise HTTPException(400, "Kein Projekt geladen")
     if not ej_num or not raw_json:
         return '<p class="error-msg">Bitte zuerst einen Artikel auswählen.</p>'
-    item = next((it for it in S.project.items if it.item_id == item_id), None)
+    item = next((it for it in ss.project.items if it.item_id == item_id), None)
     if not item:
         raise HTTPException(404)
 
     raw_item = json.loads(raw_json)
     ej_id    = raw_item.get("IdStockType")
-    is_local = bool(S.matcher and S.matcher._num_to_idx.get(ej_num))
+    is_local = bool(ss.matcher and ss.matcher._num_to_idx.get(ej_num))
     details  = None
-    if not is_local and ej_id and S.ej_client:
+    if not is_local and ej_id and ss.ej_client:
         loop    = asyncio.get_event_loop()
-        details = await loop.run_in_executor(None, S.ej_client.get_details, ej_id)
+        details = await loop.run_in_executor(None, ss.ej_client.get_details, ej_id)
 
-    art = make_article_from_ej(raw_item, details, S.matcher)
-    S.matches[item_id] = MatchResult(matched=art, score=99.0, method="manual", confident=True)
+    art = make_article_from_ej(raw_item, details, ss.matcher)
+    ss.matches[item_id] = MatchResult(matched=art, score=99.0, method="manual", confident=True)
     bundle = [{"matchable": art, "qty": qty, "lfm_converted": False}]
 
     nums     = [n.strip() for n in extra_nums.split(",") if n.strip()]
     qtys_raw = [q.strip() for q in extra_qtys.split(",") if q.strip()]
     for i, extra_num in enumerate(nums):
         extra_qty = float(qtys_raw[i]) if i < len(qtys_raw) else 1.0
-        if not S.matcher:
+        if not ss.matcher:
             continue
-        idx = S.matcher._num_to_idx.get(extra_num)
+        idx = ss.matcher._num_to_idx.get(extra_num)
         if idx is not None:
-            extra_art = S.matcher._pool[idx]
+            extra_art = ss.matcher._pool[idx]
             has_price = (isinstance(extra_art, Article) and extra_art.mietpreis) or \
                         (isinstance(extra_art, Resource) and extra_art.tagessatz)
             if has_price:
                 bundle.append({"matchable": extra_art, "qty": extra_qty, "lfm_converted": False})
 
-    S.bundles[item_id] = bundle
-    _learn_bundle(item_id, item.description)
+    ss.bundles[item_id] = bundle
+    _learn_bundle(ss, item_id, item.description)
     return templates.TemplateResponse(request, "partials/main_content.html", {
-        "S": S, "metrics": _calc_metrics(), "positions": _positions_data(),
+        "S": ss, "metrics": _calc_metrics(ss), "positions": _positions_data(ss),
     })
 
 
 @router.post("/api/position/{item_id}/remove/{idx}", response_class=HTMLResponse)
 async def remove_bundle_item(item_id: str, idx: int, request: Request):
-    bundle = S.bundles.get(item_id, [])
+    ss = get_session(request.session)
+    bundle = ss.bundles.get(item_id, [])
     if 0 <= idx < len(bundle):
         bundle.pop(idx)
-    if S.project:
-        item = next((it for it in S.project.items if it.item_id == item_id), None)
+    if ss.project:
+        item = next((it for it in ss.project.items if it.item_id == item_id), None)
         if item:
-            _learn_bundle(item_id, item.description)
+            _learn_bundle(ss, item_id, item.description)
     return templates.TemplateResponse(request, "partials/main_content.html", {
-        "S": S, "metrics": _calc_metrics(), "positions": _positions_data(),
+        "S": ss, "metrics": _calc_metrics(ss), "positions": _positions_data(ss),
     })
 
 
 @router.post("/api/position/{item_id}/set-qty/{idx}", response_class=HTMLResponse)
 async def set_bundle_qty(item_id: str, idx: int, request: Request, qty: float = Form(...)):
-    bundle = S.bundles.get(item_id, [])
+    ss = get_session(request.session)
+    bundle = ss.bundles.get(item_id, [])
     if 0 <= idx < len(bundle):
         bundle[idx]["qty"] = qty
     return templates.TemplateResponse(request, "partials/main_content.html", {
-        "S": S, "metrics": _calc_metrics(), "positions": _positions_data(),
+        "S": ss, "metrics": _calc_metrics(ss), "positions": _positions_data(ss),
     })
 
 
-
 @router.get("/api/local-search")
-async def local_search(q: str = "", limit: int = 8):
-    if not S.matcher or not q.strip():
+async def local_search(request: Request, q: str = "", limit: int = 8):
+    ss = get_session(request.session)
+    if not ss.matcher or not q.strip():
         return []
-    cands = S.matcher.search(q, limit=limit, only_articles=True)
+    cands = ss.matcher.search(q, limit=limit, only_articles=True)
     return [{"nummer": c.display_id, "name": c.display_name} for c in cands]
 
 
 @router.post("/api/alt/{alt_key}", response_class=HTMLResponse)
 async def set_alt(alt_key: str, request: Request, choice: str = Form(...)):
-    S.alt_active[alt_key] = choice
+    ss = get_session(request.session)
+    ss.alt_active[alt_key] = choice
     return templates.TemplateResponse(request, "partials/main_content.html", {
-        "S": S, "metrics": _calc_metrics(), "positions": _positions_data(),
+        "S": ss, "metrics": _calc_metrics(ss), "positions": _positions_data(ss),
     })

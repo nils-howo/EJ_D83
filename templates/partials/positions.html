@@ -12,7 +12,7 @@
 
     {# ── Alternativblock ──────────────────────────────────────────────── #}
     {% if block.has_alt %}
-    <div class="alt-block" style="margin:6px 8px">
+    <div class="alt-block{% if block.primary.score >= 99 and block.alt.score >= 99 %} alt-block-done{% endif %}" style="margin:6px 8px">
       <div class="alt-label">🔀 Alternativpositionen</div>
       <div class="alt-btns">
         {% for val, lbl in [('primary','Nur Hauptpos.'),('alt','Nur Alternative'),('both','Beide')] %}

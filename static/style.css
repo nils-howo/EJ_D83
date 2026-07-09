@@ -196,3 +196,5 @@ progress::-webkit-progress-value { background: #1565c0; border-radius: 4px; }
 .gap-sm { gap: 6px; }
 .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .inactive-pos { background: #f5f5f5; border-left: 3px solid #ccc; border-radius: 4px; padding: 4px 8px; font-size: 0.75rem; color: #999; margin-bottom: 4px; }
+body.hide-matched .pos-row-done { display: none !important; }
+body.hide-matched .alt-block-done { display: none !important; }

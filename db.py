@@ -92,6 +92,18 @@ CREATE TABLE IF NOT EXISTS mappings_gui_extras (
 CREATE INDEX IF NOT EXISTS idx_art_warengruppe  ON articles(warengruppe);
 CREATE INDEX IF NOT EXISTS idx_art_bezeichnung  ON articles(bezeichnung);
 CREATE INDEX IF NOT EXISTS idx_art_hersteller   ON articles(hersteller);
+
+CREATE TABLE IF NOT EXISTS sync_log (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_type         TEXT    NOT NULL,
+    started_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    finished_at      TIMESTAMP,
+    articles_new     INTEGER DEFAULT 0,
+    articles_updated INTEGER DEFAULT 0,
+    personal_new     INTEGER DEFAULT 0,
+    personal_updated INTEGER DEFAULT 0,
+    notes            TEXT
+);
 """
 
 
@@ -360,3 +372,134 @@ def migrate_from_json(
         stats["gui_mappings"] = len(primary)
 
     return stats
+
+
+# ── Sync-Log ──────────────────────────────────────────────────────────────────
+
+def log_sync(run_type: str, articles_new: int = 0, articles_updated: int = 0,
+             personal_new: int = 0, personal_updated: int = 0, notes: str = "") -> None:
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO sync_log
+                (run_type, finished_at, articles_new, articles_updated,
+                 personal_new, personal_updated, notes)
+            VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)
+        """, (run_type, articles_new, articles_updated, personal_new, personal_updated, notes))
+
+
+def get_sync_history(limit: int = 20) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT id, run_type, finished_at,
+                   articles_new, articles_updated,
+                   personal_new, personal_updated, notes
+            FROM sync_log ORDER BY id DESC LIMIT ?
+        """, (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_db_stats() -> dict:
+    with get_conn() as conn:
+        art   = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+        pers  = conn.execute("SELECT COUNT(*) FROM personal").fetchone()[0]
+        gui   = conn.execute("SELECT COUNT(*) FROM mappings_gui").fetchone()[0]
+        train = conn.execute("SELECT COUNT(*) FROM mappings_train").fetchone()[0]
+        last_art = conn.execute(
+            "SELECT MAX(synced_at) FROM articles"
+        ).fetchone()[0]
+    return dict(articles=art, personal=pers, gui_mappings=gui,
+                train_mappings=train, last_article_sync=last_art)
+
+
+def get_recent_changes(hours: int = 48) -> list[dict]:
+    """Artikel die in den letzten N Stunden upserted wurden."""
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT nummer, bezeichnung, warengruppe, mietpreis, synced_at
+            FROM articles
+            WHERE synced_at >= datetime('now', ? || ' hours')
+            ORDER BY synced_at DESC LIMIT 200
+        """, (f"-{hours}",)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _art_sig(r: dict) -> tuple:
+    """Vergleichbarer Fingerabdruck aller relevanten Artikel-Felder."""
+    return (
+        r.get("bezeichnung", ""),
+        r.get("warengruppe", ""),
+        r.get("mutterwarengruppe", ""),
+        r.get("artikelart", ""),
+        r.get("hersteller", ""),
+        r.get("kommentar", ""),
+        r.get("detail", ""),
+        float(r.get("mietpreis") or 0),
+        r.get("einheit", ""),
+        int(r.get("mietinventar") or 0),
+    )
+
+
+def upsert_articles_tracked(rows: list[dict]) -> tuple[int, int]:
+    """Upsert mit vollständigem Change-Tracking. Gibt (neu, aktualisiert) zurück."""
+    existing: dict[str, tuple] = {}
+    with get_conn() as conn:
+        for r in conn.execute(
+            "SELECT nummer, bezeichnung, warengruppe, mutterwarengruppe, "
+            "artikelart, hersteller, kommentar, detail, mietpreis, einheit, mietinventar "
+            "FROM articles"
+        ):
+            existing[r["nummer"]] = _art_sig(dict(r))
+
+    new_rows:     list[dict] = []
+    changed_rows: list[dict] = []
+    unchanged:    list[dict] = []
+
+    for r in rows:
+        prev = existing.get(r["nummer"])
+        if prev is None:
+            new_rows.append(r)
+        elif prev != _art_sig(r):
+            changed_rows.append(r)
+        else:
+            unchanged.append(r)
+
+    # Neue + geänderte Artikel mit aktuellem synced_at schreiben
+    if new_rows or changed_rows:
+        upsert_articles(new_rows + changed_rows)
+
+    return len(new_rows), len(changed_rows)
+
+
+def _pers_sig(r: dict) -> tuple:
+    return (
+        (r.get("funktion") or "").strip(),
+        r.get("ressourcenart", ""),
+        float(r.get("tagessatz") or 0),
+        r.get("satzname", ""),
+    )
+
+
+def upsert_personal_tracked(rows: list[dict]) -> tuple[int, int]:
+    """Upsert mit vollständigem Change-Tracking. Gibt (neu, aktualisiert) zurück."""
+    existing: dict[int, tuple] = {}
+    with get_conn() as conn:
+        for r in conn.execute(
+            "SELECT id, funktion, ressourcenart, tagessatz, satzname FROM personal"
+        ):
+            existing[r["id"]] = _pers_sig(dict(r))
+
+    new_rows:     list[dict] = []
+    changed_rows: list[dict] = []
+
+    for r in rows:
+        rid  = int(r.get("id", 0))
+        prev = existing.get(rid)
+        if prev is None:
+            new_rows.append(r)
+        elif prev != _pers_sig(r):
+            changed_rows.append(r)
+
+    if new_rows or changed_rows:
+        upsert_personal(new_rows + changed_rows)
+
+    return len(new_rows), len(changed_rows)

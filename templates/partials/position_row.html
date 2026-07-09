@@ -1,4 +1,4 @@
-<div class="pos-row{% if is_alt_item %} pos-row-alt{% endif %}{% if is_inactive %} pos-row-inactive{% endif %}">
+<div class="pos-row{% if is_alt_item %} pos-row-alt{% endif %}{% if is_inactive %} pos-row-inactive{% endif %}{% if item.score >= 99 %} pos-row-done{% endif %}">
 
   {# ── Links: GAEB-Info ─────────────────────────────────────────────────── #}
   <div class="pos-left" style="border-left-color: {% if is_alt_item %}#e65100{% else %}{{ item.score_border }}{% endif %}">

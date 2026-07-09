@@ -35,7 +35,10 @@ class EasyjobClient:
             },
             headers={"Content-Type": "application/x-www-form-urlencoded", **self._EJ_HEADER},
         )
-        resp.raise_for_status()
+        if not resp.ok:
+            raise RuntimeError(
+                f"Token-Fehler {resp.status_code}: {resp.text[:300]}"
+            )
         data = resp.json()
         self._token = data["access_token"]
         self._refresh_token = data.get("refresh_token")

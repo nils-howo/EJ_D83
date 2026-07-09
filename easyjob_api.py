@@ -208,15 +208,14 @@ class EjLiveClient:
         return None
 
     def get_current_user_id(self) -> int | None:
-        """Gibt die IdUser des eingeloggten Benutzers zurück (via GetWebSettings)."""
-        try:
-            data = self._client._get("/api.json/Common/GetWebSettings", {})
-            if isinstance(data, dict):
-                for key in ("IdUser", "idUser", "id_user", "UserId"):
-                    val = data.get(key)
-                    if val:
-                        return int(val)
-        except Exception:
-            pass
+        """Gibt die IdUser des eingeloggten Benutzers zurück (via GetWebSettings).
+        Wirft Exception bei Verbindungs- oder Auth-Fehlern (kein silent catch).
+        """
+        data = self._client._get("/api.json/Common/GetWebSettings", {})
+        if isinstance(data, dict):
+            for key in ("IdUser", "idUser", "id_user", "UserId"):
+                val = data.get(key)
+                if val:
+                    return int(val)
         return None
 
