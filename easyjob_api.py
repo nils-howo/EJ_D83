@@ -207,6 +207,33 @@ class EjLiveClient:
             pass
         return None
 
+    def jobs_create(
+        self,
+        id_project: int,
+        caption: str,
+        start_date: str,
+        end_date: str,
+        id_address_delivery: int,
+    ) -> dict:
+        body = {
+            "IdProject":         id_project,
+            "Caption":           caption,
+            "DayTimeOut":        f"{start_date}T00:00:00",
+            "DayTimeIn":         f"{end_date}T00:00:00",
+            "IdAddressDelivery": id_address_delivery,
+        }
+        resp = self._client._post("/api.json/v2/rental/jobs/create", body=body)
+        # EJ zeigt bei Projekten mit EventCalendar einen Bestätigungsdialog.
+        # Bestätigung: ModelContext zurück mit Value="1" (= OK-Button).
+        # Die ID kann trotzdem im selben Response stehen.
+        if isinstance(resp, dict) and "ModelContext" in resp and not (resp.get("ID") or resp.get("IdJob")):
+            import copy
+            ctx = copy.deepcopy(resp["ModelContext"])
+            ctx["ContextMessage"]["Value"] = "1"
+            body["ModelContext"] = ctx
+            resp = self._client._post("/api.json/v2/rental/jobs/create", body=body)
+        return resp
+
     def get_current_user_id(self) -> int | None:
         """Gibt die IdUser des eingeloggten Benutzers zurück (via GetWebSettings).
         Wirft Exception bei Verbindungs- oder Auth-Fehlern (kein silent catch).

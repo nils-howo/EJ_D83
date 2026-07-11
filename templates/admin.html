@@ -63,6 +63,24 @@
 
     .section { margin-bottom: 32px; }
     .empty-hint { color: #aaa; font-size: .82rem; padding: 12px 0; }
+
+    .map-table { width: 100%; border-collapse: collapse; font-size: .82rem; background: #fff;
+                 border-radius: 8px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+    .map-table th { background: #fff8e1; padding: 7px 10px; text-align: left;
+                    font-size: .73rem; color: #333; font-weight: 600; }
+    .map-table td { padding: 5px 10px; border-bottom: 1px solid #f5f5f5; vertical-align: top; }
+    .map-table tr:last-child td { border-bottom: none; }
+    .map-table tr:hover td { background: #fffde7; }
+    .map-desc { max-width: 440px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .map-num { font-family: monospace; font-size: .78rem; color: #1565c0; }
+    .map-extras { font-size: .72rem; color: #999; }
+    .collapsible summary {
+      cursor: pointer; list-style: none; display: flex; align-items: center; gap: 6px;
+      padding: 4px 0 6px;
+    }
+    .collapsible summary::-webkit-details-marker { display: none; }
+    .collapsible summary::before { content: '▶'; font-size: .7rem; color: #888; }
+    .collapsible[open] summary::before { content: '▼'; }
   </style>
 </head>
 <body>
@@ -214,6 +232,78 @@
     {% else %}
     <p class="empty-hint">Keine Artikel in den letzten 72 Stunden synchronisiert.</p>
     {% endif %}
+  </div>
+
+  <!-- ── GUI-Korrekturen ──────────────────────────────────────────────────── -->
+  <div class="section">
+    <details class="collapsible" {% if gui_mappings %}open{% endif %}>
+      <summary>
+        <span class="section-title" style="margin:0;border:none;padding:0">
+          GUI-Korrekturen ({{ gui_mappings|length }})
+        </span>
+      </summary>
+      {% if gui_mappings %}
+      <div style="overflow-x:auto">
+      <table class="map-table" style="margin-top:8px">
+        <thead>
+          <tr>
+            <th>Beschreibung (GAEB)</th>
+            <th>Artikelnummer</th>
+            <th>Artikelname</th>
+            <th>Weitere</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for m in gui_mappings %}
+          <tr>
+            <td class="map-desc" title="{{ m.description }}">{{ m.description }}</td>
+            <td class="map-num">{{ m.nummer }}</td>
+            <td style="font-size:.8rem;color:#333">{{ m.bezeichnung or '–' }}</td>
+            <td class="map-extras">{{ m.extras | join(', ') if m.extras else '–' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+      <p class="empty-hint">Noch keine GUI-Korrekturen vorhanden.</p>
+      {% endif %}
+    </details>
+  </div>
+
+  <!-- ── Training-Mappings ─────────────────────────────────────────────────── -->
+  <div class="section">
+    <details class="collapsible">
+      <summary>
+        <span class="section-title" style="margin:0;border:none;padding:0">
+          Training-Mappings ({{ train_mappings|length }})
+        </span>
+      </summary>
+      {% if train_mappings %}
+      <div style="overflow-x:auto">
+      <table class="map-table" style="margin-top:8px">
+        <thead>
+          <tr>
+            <th>Beschreibung (GAEB)</th>
+            <th>Artikelnummer</th>
+            <th>Artikelname</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for m in train_mappings %}
+          <tr>
+            <td class="map-desc" title="{{ m.description }}">{{ m.description }}</td>
+            <td class="map-num">{{ m.nummer }}</td>
+            <td style="font-size:.8rem;color:#333">{{ m.bezeichnung or '–' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+      <p class="empty-hint">Noch keine Training-Mappings vorhanden.</p>
+      {% endif %}
+    </details>
   </div>
 
 </div>

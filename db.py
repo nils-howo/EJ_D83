@@ -411,6 +411,40 @@ def get_db_stats() -> dict:
                 train_mappings=train, last_article_sync=last_art)
 
 
+def get_gui_mappings(limit: int = 500) -> list[dict]:
+    """Gibt alle GUI-Korrekturen zurück (description → nummer + Artikelname + extras)."""
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT m.description, m.nummer, COALESCE(a.bezeichnung, '') AS bezeichnung
+            FROM mappings_gui m
+            LEFT JOIN articles a ON a.nummer = m.nummer
+            ORDER BY m.description LIMIT ?
+        """, (limit,)).fetchall()
+        extras = {}
+        for r in conn.execute(
+            "SELECT description, nummer FROM mappings_gui_extras ORDER BY sort_order"
+        ):
+            extras.setdefault(r["description"], []).append(r["nummer"])
+    result = []
+    for r in rows:
+        result.append({"description": r["description"], "nummer": r["nummer"],
+                       "bezeichnung": r["bezeichnung"],
+                       "extras": extras.get(r["description"], [])})
+    return result
+
+
+def get_train_mappings(limit: int = 500) -> list[dict]:
+    """Gibt gelernte Train-Mappings zurück."""
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT m.description, m.nummer, COALESCE(a.bezeichnung, '') AS bezeichnung
+            FROM mappings_train m
+            LEFT JOIN articles a ON a.nummer = m.nummer
+            ORDER BY m.description LIMIT ?
+        """, (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_recent_changes(hours: int = 48) -> list[dict]:
     """Artikel die in den letzten N Stunden upserted wurden."""
     with get_conn() as conn:

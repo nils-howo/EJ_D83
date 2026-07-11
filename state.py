@@ -73,6 +73,12 @@ class UserSession:
         self.d83_proj_types: list                  = []
         self.d83_events:     list                  = []
         self.d83_import_mode: str                  = "positions"
+        # D83 EJ Projekt-State (gesetzt nach Projekt-Anlage)
+        # Lokale Job-Definitionen (vor EJ-Anlage)
+        self.d83_local_jobs:       list = []   # extra jobs: [{"lid": 2, "name": "Licht"}, ...]
+        self.d83_next_lid:         int  = 2
+        self.d83_group_jobs:       dict = {}   # group_name → lid (fehlend/1 = Standard-Job)
+        self.d83_standard_job_name: str = ""   # leer = "Standard"; nach Umbenennung z.B. "Technik"
 
 
 # ─── Session-Registry ─────────────────────────────────────────────────────────

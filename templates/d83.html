@@ -126,6 +126,108 @@
     .htmx-indicator { display:none; }
     .htmx-request .htmx-indicator { display:inline; }
 
+    /* Jobs-Header (oben im Gruppen-Panel) */
+    .lj-header {
+      display:flex; align-items:center; flex-wrap:wrap; gap:4px;
+      padding:4px 2px;
+    }
+    .lj-lbl {
+      font-size:.78rem; color:#888; font-weight:600; margin-right:2px;
+    }
+    .lj-item {
+      display:inline-flex; align-items:center; gap:2px;
+    }
+    .lj-chip {
+      font-size:.78rem; padding:2px 8px; border-radius:10px;
+      background:#e8eaf6; color:#1a237e; font-weight:600;
+      cursor:pointer; user-select:none; transition:opacity .15s;
+    }
+    .lj-chip:hover { background:#c5cbe9; }
+    .lj-chip-inactive { opacity:.35; text-decoration:line-through; }
+    .rename-btn {
+      border:none; background:none; color:#ccc; cursor:pointer;
+      font-size:.8rem; padding:1px 3px; border-radius:3px; flex-shrink:0; line-height:1;
+    }
+    .rename-btn:hover { color:#3f51b5; background:#e8eaf6; }
+    .rename-input {
+      width:120px; border:1px solid #ccc; border-radius:4px;
+      padding:2px 6px; font-size:.82rem; font-weight:600;
+    }
+    .rename-input:focus { outline:2px solid #3f51b5; border-color:#3f51b5; }
+
+    /* Job-Buttons in HG-Zeile */
+    .hg-job-wrap {
+      display:flex; align-items:center; gap:3px;
+      flex-shrink:0;
+    }
+
+    /* Lokale Job-Zuweisung (separates Panel — nicht mehr aktiv) */
+    .ljr {
+      display:flex; align-items:center; gap:8px;
+      padding:5px 4px; border-bottom:1px solid #f0f0f0; font-size:.85rem;
+    }
+    .ljr:last-child { border-bottom:none; }
+    .ljr:hover { background:#fafafa; }
+    .ljr-name { flex:1; display:flex; align-items:center; gap:5px; min-width:0; }
+    .ljr-label { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .ljr-count { font-size:.72rem; color:#aaa; flex-shrink:0; }
+    .ljr-jobs { display:flex; align-items:center; gap:4px; flex-wrap:wrap; }
+    .job-btn {
+      border:1px solid #c5c9e0; background:#fff; color:#555;
+      border-radius:4px; padding:2px 9px; font-size:.78rem;
+      cursor:pointer; white-space:nowrap; transition:background .1s;
+    }
+    .job-btn:hover { background:#e8eaf6; border-color:#3f51b5; color:#3f51b5; }
+    .job-btn-active {
+      background:#3f51b5; color:#fff; border-color:#3f51b5; font-weight:600;
+    }
+    .job-btn-active:hover { background:#303f9f; }
+
+    /* Job-Assign-Zeile (altes Panel – nicht mehr aktiv) */
+    .assign-row {
+      display:flex; align-items:center; gap:8px;
+      padding:5px 6px; border-radius:5px; border-bottom:1px solid #f0f0f0;
+      font-size:.85rem;
+    }
+    .assign-row:last-child { border-bottom:none; }
+    .assign-row:hover { background:#fafafa; }
+    .assign-grp { flex:1; display:flex; align-items:center; gap:5px; }
+    .assign-grp-name { font-weight:600; }
+    .assign-grp-meta { font-size:.72rem; color:#aaa; }
+    .assign-job {
+      min-width:140px; font-size:.8rem;
+      color:#1a237e; background:#e8eaf6; border-radius:4px;
+      padding:2px 7px; white-space:nowrap;
+    }
+    .job-pfx { color:#aaa; }
+    .assign-actions { display:flex; align-items:center; gap:4px; flex-shrink:0; }
+    .btn-add-job {
+      border:1px solid #3f51b5; background:#fff; color:#3f51b5;
+      border-radius:4px; padding:2px 8px; font-size:.78rem;
+      cursor:pointer; white-space:nowrap;
+    }
+    .btn-add-job:hover { background:#e8eaf6; }
+    .new-job-pfx {
+      font-size:.78rem; color:#aaa; white-space:nowrap;
+      background:#f5f5f5; border:1px solid #ddd; border-right:none;
+      border-radius:4px 0 0 4px; padding:3px 6px;
+    }
+    .new-job-input {
+      width:90px; border:1px solid #ccc; border-radius:0 4px 4px 0;
+      padding:3px 6px; font-size:.82rem;
+    }
+    .new-job-input:focus { outline:2px solid #3f51b5; border-color:#3f51b5; }
+    .btn-confirm-job {
+      background:#3f51b5; color:#fff; border:none;
+      border-radius:4px; padding:3px 9px; font-size:.78rem; cursor:pointer;
+    }
+    .btn-confirm-job:hover { background:#303f9f; }
+    .btn-cancel-job {
+      background:none; border:none; color:#aaa;
+      font-size:.85rem; cursor:pointer; padding:2px 5px;
+    }
+    .btn-cancel-job:hover { color:#c00; }
+
     @media(max-width:900px) { .d83-body { grid-template-columns:1fr; } }
   </style>
 </head>
@@ -304,7 +406,7 @@
 
         <button type="submit" id="d83-create-btn" class="btn btn-primary btn-full"
                 {% if not S.d83_project %}disabled{% endif %}>
-          🏗 Projekt anlegen &amp; Gruppen importieren
+          🏗 Projekt anlegen
         </button>
         <span id="proj-spin" class="htmx-indicator" style="font-size:.8rem;color:#888">
           ⏳ Wird erstellt …
@@ -313,10 +415,10 @@
 
       <div id="d83-result" class="result-log"></div>
 
-    </div>
-  </div>
+    </div><!-- /d83-panel Projekt -->
+  </div><!-- /rechte Spalte -->
 
-</div>
+</div><!-- /d83-body -->
 
 <script>
 // Upload via fetch (zuverlässiger als HTMX für Datei-Uploads mit hidden input)
@@ -343,6 +445,9 @@ async function uploadD83(input) {
   }
 }
 
+// Standard-Job-Suffix (leer = kein Suffix, nur Projektname)
+let _d83StdSuffix = '';
+
 // Jobname sync mit Projektname (nur wenn noch nicht manuell geändert)
 let jobNameManual = false;
 document.getElementById('job-caption-input').addEventListener('input', function() {
@@ -350,7 +455,10 @@ document.getElementById('job-caption-input').addEventListener('input', function(
 });
 function syncJobName(val) {
   if (!jobNameManual) {
-    document.getElementById('job-caption-input').value = val;
+    const jcap = document.getElementById('job-caption-input');
+    jcap.value = (_d83StdSuffix && _d83StdSuffix !== 'Standard')
+      ? val + ' ' + _d83StdSuffix
+      : val;
   }
 }
 
@@ -425,14 +533,76 @@ document.addEventListener('click', function(e) {
   });
 });
 
-// Gruppe auf-/zuklappen — identisch mit Hauptseite
-// Button-Text nach Projekt-Erstellung zurücksetzen
+// Button-Text nach Projekt-Erstellung zurücksetzen (falls Fehler)
 document.addEventListener('htmx:afterRequest', function(e) {
   if (e.detail.pathInfo && e.detail.pathInfo.requestPath === '/api/d83/create-project') {
     const btn = document.getElementById('d83-create-btn');
-    if (btn) btn.textContent = '🏗 Projekt anlegen & Gruppen importieren';
+    if (btn) btn.textContent = '🏗 Projekt anlegen';
   }
 });
+
+// Job-Rename-Chip ein-/ausblenden (lid=0 → Standard-Job)
+function toggleJobRename(lid) {
+  const chip = document.getElementById(lid === 0 ? 'ljchip-0' : 'ljchip-' + lid);
+  const form = document.getElementById(lid === 0 ? 'ljrnf-0'  : 'ljrnf-' + lid);
+  if (!form) return;
+  const visible = form.style.display !== 'none';
+  form.style.display = visible ? 'none' : 'flex';
+  if (chip) chip.style.display = visible ? '' : 'none';
+  if (!visible) {
+    const inp = form.querySelector('input[name=new_name]');
+    if (inp) { inp.select(); inp.focus(); }
+  }
+}
+
+// + Job aus Header-Bar
+function toggleAddJobForm() {
+  const form = document.getElementById('ljf-hdr');
+  const btn  = document.getElementById('lja-btn-hdr');
+  if (!form) return;
+  const visible = form.style.display !== 'none';
+  form.style.display = visible ? 'none' : 'flex';
+  if (btn) btn.style.display = visible ? '' : 'none';
+  if (!visible) {
+    const inp = form.querySelector('input[name=job_name]');
+    if (inp) { inp.value = ''; inp.focus(); }
+  }
+}
+
+// + Job-Formular pro HG-Zeile ein-/ausblenden
+function toggleLjForm(i) {
+  const form = document.getElementById('ljf-' + i);
+  const btn  = document.getElementById('lja-btn-' + i);
+  if (!form) return;
+  const visible = form.style.display !== 'none';
+  form.style.display = visible ? 'none' : 'flex';
+  if (btn) btn.style.display = visible ? '' : 'none';
+  if (!visible) {
+    const inp = form.querySelector('input[name=job_name]');
+    if (inp) { inp.value = ''; inp.focus(); }
+  }
+}
+
+// Gruppen-Filter per Job
+let _d83HiddenLids = new Set();
+function d83ToggleLidFilter(lid) {
+  if (_d83HiddenLids.has(lid)) {
+    _d83HiddenLids.delete(lid);
+  } else {
+    _d83HiddenLids.add(lid);
+  }
+  d83ApplyFilter();
+}
+function d83ApplyFilter() {
+  document.querySelectorAll('.category-group[data-lid]').forEach(function(el) {
+    const lid = parseInt(el.dataset.lid);
+    el.style.display = _d83HiddenLids.has(lid) ? 'none' : '';
+  });
+  document.querySelectorAll('.lj-filter-chip').forEach(function(chip) {
+    const lid = parseInt(chip.dataset.lid);
+    chip.classList.toggle('lj-chip-inactive', _d83HiddenLids.has(lid));
+  });
+}
 
 function toggleCat(header) {
   const arrow = header.querySelector('span:first-child');
@@ -442,6 +612,36 @@ function toggleCat(header) {
   body.style.display = open ? 'none' : '';
   arrow.textContent  = open ? '▶' : '▼';
 }
+
+// Scroll-Position + Suffix + Filter über #d83-groups-Swaps hinweg erhalten
+let _d83ScrollY = 0;
+let _d83LastPath = '';
+
+// mousedown speichert ScrollY BEVOR der Browser den Button-Fokus setzt
+document.addEventListener('mousedown', function(e) {
+  const grp = document.getElementById('d83-groups');
+  if (grp && grp.contains(e.target)) {
+    _d83ScrollY = window.scrollY;
+  }
+}, true);
+
+document.addEventListener('htmx:beforeRequest', function(evt) {
+  if (evt.detail.target && evt.detail.target.id === 'd83-groups') {
+    _d83LastPath = (evt.detail.requestConfig && evt.detail.requestConfig.path) || '';
+  }
+});
+document.addEventListener('htmx:afterSettle', function(evt) {
+  if (evt.detail.target && evt.detail.target.id === 'd83-groups') {
+    window.scrollTo({ top: _d83ScrollY, behavior: 'instant' });
+    const marker = document.getElementById('d83-std-job-data');
+    if (marker) _d83StdSuffix = marker.dataset.suffix || '';
+    if (_d83LastPath === '/api/d83/rename-standard-job') {
+      jobNameManual = false;
+      syncJobName(document.getElementById('proj-name-input').value);
+    }
+    d83ApplyFilter();
+  }
+});
 </script>
 
 </body>

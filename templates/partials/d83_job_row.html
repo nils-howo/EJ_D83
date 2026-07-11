@@ -1,0 +1,51 @@
+{% set cur_job_id = group_jobs.get(grp.name) %}
+{% if cur_job_id %}
+  {% set cur_caption = ej_jobs.get(cur_job_id, '—') %}
+{% else %}
+  {% set cur_caption = first_job_caption %}
+{% endif %}
+
+<div class="assign-row" id="grp-row-{{ i }}">
+
+  <!-- Gruppenname -->
+  <div class="assign-grp">
+    {% if grp.num %}<span class="hg-oznum">{{ grp.num }}</span>{% endif %}
+    <span class="assign-grp-name">{{ grp.name }}</span>
+    <span class="assign-grp-meta">{{ grp.count }} Pos.</span>
+  </div>
+
+  <!-- Aktueller Job -->
+  <div class="assign-job">
+    {% if cur_caption.startswith(proj_name) %}
+      <span class="job-pfx">{{ proj_name }}</span>{{ cur_caption[proj_name|length:] }}
+    {% else %}
+      {{ cur_caption }}
+    {% endif %}
+  </div>
+
+  <!-- Aktionen -->
+  <div class="assign-actions">
+    <button type="button"
+            id="add-job-btn-{{ i }}"
+            class="btn-add-job"
+            onclick="toggleNewJobForm({{ i }})">＋ Job</button>
+
+    <form id="new-job-form-{{ i }}"
+          style="display:none;align-items:center;gap:4px"
+          hx-post="/api/d83/add-job"
+          hx-target="#grp-row-{{ i }}"
+          hx-swap="outerHTML">
+      <input type="hidden" name="hg_idx"  value="{{ i }}">
+      <input type="hidden" name="grp_name" value="{{ grp.name }}">
+      <span class="new-job-pfx">{{ proj_name }}</span>
+      <input type="text" name="job_suffix"
+             class="new-job-input"
+             placeholder="z.B. Licht"
+             autocomplete="off">
+      <button type="submit" class="btn-confirm-job">Anlegen</button>
+      <button type="button" class="btn-cancel-job"
+              onclick="toggleNewJobForm({{ i }})">✕</button>
+    </form>
+  </div>
+
+</div>

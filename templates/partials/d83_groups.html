@@ -1,37 +1,148 @@
+{# Marker: JS liest data-suffix für syncJobName #}
+<span id="d83-std-job-data" data-suffix="{{ standard_job_name }}" style="display:none"></span>
+
+<div class="lj-header">
+  <span class="lj-lbl">Jobs:</span>
+
+  {# Standard-Job #}
+  <span class="lj-item">
+    <span class="lj-chip lj-filter-chip" data-lid="1" id="ljchip-0"
+          onclick="d83ToggleLidFilter(1)" title="Klicken zum Ein-/Ausblenden">
+      {{ standard_job_name or "Standard" }}
+    </span>
+    <button type="button" class="rename-btn" onclick="toggleJobRename(0)" title="Umbenennen">✏</button>
+    <form id="ljrnf-0"
+          hx-post="/api/d83/rename-standard-job"
+          hx-target="#d83-groups"
+          hx-swap="innerHTML focus-scroll:false"
+          style="display:none;align-items:center;gap:3px">
+      <input type="text" name="new_name" class="rename-input"
+             value="{{ standard_job_name }}" placeholder="Standard" autocomplete="off">
+      <button type="submit" class="btn-confirm-job">✓</button>
+      <button type="button" class="btn-cancel-job" onclick="toggleJobRename(0)">✕</button>
+    </form>
+  </span>
+
+  {# Extra Jobs #}
+  {% for job in local_jobs %}
+  <span class="lj-item">
+    <span class="lj-chip lj-filter-chip" data-lid="{{ job.lid }}" id="ljchip-{{ job.lid }}"
+          onclick="d83ToggleLidFilter({{ job.lid }})" title="Klicken zum Ein-/Ausblenden">
+      {{ job.name }}
+    </span>
+    <button type="button" class="rename-btn" onclick="toggleJobRename({{ job.lid }})" title="Umbenennen">✏</button>
+    <form id="ljrnf-{{ job.lid }}"
+          hx-post="/api/d83/rename-local-job"
+          hx-target="#d83-groups"
+          hx-swap="innerHTML focus-scroll:false"
+          style="display:none;align-items:center;gap:3px">
+      <input type="hidden" name="lid" value="{{ job.lid }}">
+      <input type="text" name="new_name" class="rename-input"
+             value="{{ job.name }}" autocomplete="off">
+      <button type="submit" class="btn-confirm-job">✓</button>
+      <button type="button" class="btn-cancel-job" onclick="toggleJobRename({{ job.lid }})">✕</button>
+    </form>
+  </span>
+  {% endfor %}
+
+  {# + Job (globaler Hinzufügen-Button) #}
+  <button type="button" id="lja-btn-hdr" class="btn-add-job"
+          onclick="toggleAddJobForm()">＋ Job</button>
+  <form id="ljf-hdr"
+        hx-post="/api/d83/local-add-job"
+        hx-target="#d83-groups"
+        hx-swap="innerHTML focus-scroll:false"
+        style="display:none;align-items:center;gap:3px">
+    <input type="text" name="job_name" class="new-job-input"
+           placeholder="z.B. Licht" autocomplete="off">
+    <button type="submit" class="btn-confirm-job">Anlegen</button>
+    <button type="button" class="btn-cancel-job" onclick="toggleAddJobForm()">✕</button>
+  </form>
+</div>
+<hr style="border:none;border-top:1px solid #e8eaf6;margin:4px 0 8px">
+
 {% if not groups %}
   <p style="color:#888;font-size:.85rem">Keine Gruppen gefunden.</p>
-
 {% else %}
+
 {% for hg in groups %}
 {% set hg_idx = loop.index0 %}
-<div class="category-group">
+{% set cur_lid = group_jobs.get(hg.name, 1) %}
+<div class="category-group" data-lid="{{ cur_lid }}">
   <div class="category-header" onclick="toggleCat(this)">
     <span>▼</span>
-    <span>📁
+    <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📁
       {% if hg.num %}<span style="font-family:monospace;font-weight:700">[{{ hg.num }}]</span>  {% endif %}
       {{ hg.name }}
     </span>
-    <span style="font-size:.72rem;font-weight:400;color:#5c6bc0;margin-left:auto;flex-shrink:0">{{ hg.count }} Pos.</span>
-    <form hx-post="/api/d83/group/remove" hx-target="#d83-groups" hx-swap="innerHTML"
-          style="display:inline;margin-left:6px">
+
+    <!-- Job-Zuweisung -->
+    <div class="hg-job-wrap" onclick="event.stopPropagation()">
+      <form hx-post="/api/d83/local-assign"
+            hx-target="#d83-groups"
+            hx-swap="innerHTML focus-scroll:false"
+            style="display:inline">
+        <input type="hidden" name="grp_name" value="{{ hg.name }}">
+        <input type="hidden" name="lid" value="1">
+        <button type="submit" class="job-btn {% if cur_lid == 1 %}job-btn-active{% endif %}">
+          {{ standard_job_name or "Standard" }}
+        </button>
+      </form>
+      {% for job in local_jobs %}
+      <form hx-post="/api/d83/local-assign"
+            hx-target="#d83-groups"
+            hx-swap="innerHTML focus-scroll:false"
+            style="display:inline">
+        <input type="hidden" name="grp_name" value="{{ hg.name }}">
+        <input type="hidden" name="lid" value="{{ job.lid }}">
+        <button type="submit" class="job-btn {% if cur_lid == job.lid %}job-btn-active{% endif %}">{{ job.name }}</button>
+      </form>
+      {% endfor %}
+      <button type="button" id="lja-btn-{{ hg_idx }}" class="btn-add-job"
+              onclick="toggleLjForm({{ hg_idx }})">＋ Job</button>
+      <form id="ljf-{{ hg_idx }}"
+            hx-post="/api/d83/local-add-job"
+            hx-target="#d83-groups"
+            hx-swap="innerHTML focus-scroll:false"
+            style="display:none;align-items:center;gap:3px">
+        <input type="hidden" name="grp_name" value="{{ hg.name }}">
+        <input type="text" name="job_name" class="new-job-input"
+               placeholder="z.B. Licht" autocomplete="off">
+        <button type="submit" class="btn-confirm-job">Anlegen</button>
+        <button type="button" class="btn-cancel-job"
+                onclick="toggleLjForm({{ hg_idx }})">✕</button>
+      </form>
+    </div>
+
+    <span style="font-size:.72rem;font-weight:400;color:#5c6bc0;flex-shrink:0">{{ hg.count }} Pos.</span>
+
+    <form hx-post="/api/d83/group/remove"
+          hx-target="#d83-groups"
+          hx-swap="innerHTML focus-scroll:false"
+          style="display:inline;margin-left:4px"
+          onclick="event.stopPropagation()">
       <input type="hidden" name="hg_idx" value="{{ hg_idx }}">
       <input type="hidden" name="g_idx"  value="-1">
       <button type="submit" class="rm-btn" title="Gruppe entfernen">✕</button>
     </form>
   </div>
+
   <div class="category-body">
     {% if hg.sub %}
       {% for g in hg.sub %}{% set g_idx = loop.index0 %}
       <div class="category-group" style="margin:4px 6px;border-radius:5px">
         <div class="category-header" onclick="toggleCat(this)" style="padding:4px 8px;font-size:.85rem">
           <span>▶</span>
-          <span>
+          <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
             {% if g.num %}<span style="font-family:monospace;font-weight:600">[{{ g.num }}]</span>  {% endif %}
             {{ g.name }}
           </span>
-          <span style="font-size:.72rem;color:#5c6bc0;margin-left:auto;flex-shrink:0">{{ g.count }} Pos.</span>
-          <form hx-post="/api/d83/group/remove" hx-target="#d83-groups" hx-swap="innerHTML"
-                style="display:inline;margin-left:6px">
+          <span style="font-size:.72rem;color:#5c6bc0;flex-shrink:0">{{ g.count }} Pos.</span>
+          <form hx-post="/api/d83/group/remove"
+                hx-target="#d83-groups"
+                hx-swap="innerHTML focus-scroll:false"
+                style="display:inline;margin-left:6px"
+                onclick="event.stopPropagation()">
             <input type="hidden" name="hg_idx" value="{{ hg_idx }}">
             <input type="hidden" name="g_idx"  value="{{ g_idx }}">
             <button type="submit" class="rm-btn">✕</button>
@@ -54,8 +165,11 @@
         <span style="font-family:monospace;color:#888;flex-shrink:0">{{ pos.oz }}</span>
         <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ pos.desc }}">{{ pos.desc }}</span>
         <span style="flex-shrink:0;color:#555">{{ pos.qty }} {{ pos.unit }}</span>
-        <form hx-post="/api/d83/position/remove" hx-target="#d83-groups" hx-swap="innerHTML"
-              style="display:inline;flex-shrink:0">
+        <form hx-post="/api/d83/position/remove"
+              hx-target="#d83-groups"
+              hx-swap="innerHTML focus-scroll:false"
+              style="display:inline;flex-shrink:0"
+              onclick="event.stopPropagation()">
           <input type="hidden" name="hg_idx" value="{{ hg_idx }}">
           <input type="hidden" name="g_idx"  value="-1">
           <input type="hidden" name="pos_idx" value="{{ loop.index0 }}">

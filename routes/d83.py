@@ -76,8 +76,17 @@ def _gaeb_groups(project: GaebProject, level: int = 0) -> list[dict]:
     return result
 
 
-def _groups_display(groups: list, mode: str) -> dict:
-    return {"mode": mode, "groups": groups}
+def _groups_display(groups: list, mode: str, ss=None) -> dict:
+    d: dict = {"mode": mode, "groups": groups}
+    if ss is not None:
+        d["local_jobs"]        = ss.d83_local_jobs
+        d["group_jobs"]        = ss.d83_group_jobs
+        d["standard_job_name"] = ss.d83_standard_job_name
+    else:
+        d["local_jobs"]        = []
+        d["group_jobs"]        = {}
+        d["standard_job_name"] = ""
+    return d
 
 
 # ─── Routen ───────────────────────────────────────────────────────────────────
@@ -124,6 +133,8 @@ async def d83_page(request: Request):
     return templates.TemplateResponse(request, "d83.html", {
         "S":          ss,
         "groups":     ss.d83_groups,
+        "local_jobs": ss.d83_local_jobs,
+        "group_jobs": ss.d83_group_jobs,
         "proj_types": ss.d83_proj_types,
         "events":     ss.d83_events,
     })
@@ -144,12 +155,47 @@ async def d83_upload(request: Request, file: UploadFile = File(...)):
         level = 1 if ss.d83_import_mode == "groups" else 0
         ss.d83_groups  = _gaeb_groups(ss.d83_project, level)
         _pl.Path(tmp).unlink(missing_ok=True)
-        ctx = _groups_display(ss.d83_groups, ss.d83_import_mode)
+        # Job-State zurücksetzen
+        ss.d83_local_jobs        = []
+        ss.d83_group_jobs        = {}
+        ss.d83_next_lid          = 2
+        ss.d83_standard_job_name = ""
+        ctx = _groups_display(ss.d83_groups, ss.d83_import_mode, ss)
         return templates.TemplateResponse(request, "partials/d83_groups.html",
                                           {**ctx, "d83_name": ss.d83_name})
     except Exception as e:
         traceback.print_exc()
         return HTMLResponse(f'<div class="error-msg">Fehler beim Einlesen: {e}</div>')
+
+
+@router.post("/api/d83/rename-local-job", response_class=HTMLResponse)
+async def d83_rename_local_job(
+    request:  Request,
+    lid:      int = Form(...),
+    new_name: str = Form(...),
+):
+    ss = get_session(request.session)
+    name = new_name.strip()
+    if name:
+        for job in ss.d83_local_jobs:
+            if job["lid"] == lid:
+                job["name"] = name
+                break
+    ctx = _groups_display(ss.d83_groups, ss.d83_import_mode, ss)
+    return templates.TemplateResponse(request, "partials/d83_groups.html",
+                                      {**ctx, "d83_name": ss.d83_name})
+
+
+@router.post("/api/d83/rename-standard-job", response_class=HTMLResponse)
+async def d83_rename_standard_job(
+    request:  Request,
+    new_name: str = Form(...),
+):
+    ss = get_session(request.session)
+    ss.d83_standard_job_name = new_name.strip()
+    ctx = _groups_display(ss.d83_groups, ss.d83_import_mode, ss)
+    return templates.TemplateResponse(request, "partials/d83_groups.html",
+                                      {**ctx, "d83_name": ss.d83_name})
 
 
 @router.post("/api/d83/group/remove", response_class=HTMLResponse)
@@ -168,7 +214,7 @@ async def d83_group_remove(
                 sub.pop(g_idx)
             if not sub and not ss.d83_groups[hg_idx].get("count", 0):
                 ss.d83_groups.pop(hg_idx)
-    ctx = _groups_display(ss.d83_groups, ss.d83_import_mode)
+    ctx = _groups_display(ss.d83_groups, ss.d83_import_mode, ss)
     return templates.TemplateResponse(request, "partials/d83_groups.html",
                                       {**ctx, "d83_name": ss.d83_name})
 
@@ -181,7 +227,8 @@ async def d83_groups_display(request: Request, mode: str = "positions"):
     ss.d83_import_mode = mode
     if level != prev_level and ss.d83_project:
         ss.d83_groups = _gaeb_groups(ss.d83_project, level)
-    ctx = _groups_display(ss.d83_groups, mode)
+        ss.d83_group_jobs = {}  # Zuweisung zurücksetzen wenn Struktur wechselt
+    ctx = _groups_display(ss.d83_groups, mode, ss)
     return templates.TemplateResponse(request, "partials/d83_groups.html",
                                       {**ctx, "d83_name": ss.d83_name})
 
@@ -208,7 +255,7 @@ async def d83_position_remove(
         hg["count"] = len(hg.get("positions", [])) + sum(
             s.get("count", 0) for s in hg.get("sub", [])
         )
-    ctx = _groups_display(ss.d83_groups, ss.d83_import_mode)
+    ctx = _groups_display(ss.d83_groups, ss.d83_import_mode, ss)
     return templates.TemplateResponse(request, "partials/d83_groups.html",
                                       {**ctx, "d83_name": ss.d83_name})
 
@@ -247,6 +294,40 @@ async def d83_event_search(request: Request, q: str = "", limit: int = 15):
         return JSONResponse([])
 
 
+@router.post("/api/d83/local-add-job", response_class=HTMLResponse)
+async def d83_local_add_job(
+    request:  Request,
+    job_name: str = Form(""),
+    grp_name: str = Form(""),
+):
+    ss = get_session(request.session)
+    name = job_name.strip() or f"Job {ss.d83_next_lid}"
+    lid  = ss.d83_next_lid
+    ss.d83_local_jobs.append({"lid": lid, "name": name})
+    ss.d83_next_lid += 1
+    if grp_name:
+        ss.d83_group_jobs[grp_name] = lid
+    ctx = _groups_display(ss.d83_groups, ss.d83_import_mode, ss)
+    return templates.TemplateResponse(request, "partials/d83_groups.html",
+                                      {**ctx, "d83_name": ss.d83_name})
+
+
+@router.post("/api/d83/local-assign", response_class=HTMLResponse)
+async def d83_local_assign(
+    request:  Request,
+    grp_name: str = Form(...),
+    lid:      int = Form(...),
+):
+    ss = get_session(request.session)
+    if lid == 1:
+        ss.d83_group_jobs.pop(grp_name, None)
+    else:
+        ss.d83_group_jobs[grp_name] = lid
+    ctx = _groups_display(ss.d83_groups, ss.d83_import_mode, ss)
+    return templates.TemplateResponse(request, "partials/d83_groups.html",
+                                      {**ctx, "d83_name": ss.d83_name})
+
+
 @router.post("/api/d83/create-project", response_class=HTMLResponse)
 async def d83_create_project(
     request:           Request,
@@ -263,11 +344,11 @@ async def d83_create_project(
 ):
     ss = get_session(request.session)
     if not ss.d83_groups:
-        return '<div class="error-msg">Bitte zuerst eine D83-Datei laden.</div>'
+        return HTMLResponse('<div class="error-msg">Bitte zuerst eine D83-Datei laden.</div>')
     if not ss.ej_client:
-        return '<div class="error-msg">EJ-Verbindung nicht konfiguriert.</div>'
+        return HTMLResponse('<div class="error-msg">EJ-Verbindung nicht konfiguriert.</div>')
 
-    groups = ss.d83_groups
+    ss.d83_import_mode = import_mode
     log: list[dict] = []
 
     id_payment_condition = 2
@@ -278,7 +359,7 @@ async def d83_create_project(
         if val:
             id_payment_condition = val
 
-    # 1. Projekt anlegen
+    # ── 1. Projekt + ersten Job anlegen ──────────────────────────────────────
     try:
         loop = asyncio.get_event_loop()
         def _create():
@@ -318,89 +399,128 @@ async def d83_create_project(
         log.append({"ok": False, "text": f"Projekt-Anlage fehlgeschlagen: {e}", "indent": False})
         return templates.TemplateResponse(request, "partials/d83_result.html", {"log": log})
 
-    # 2. Job-ID per DB holen, Gruppen anlegen
+    # ── 2. Erste Job-ID ermitteln + extra Jobs via API anlegen ──────────────
     try:
         import pyodbc
         from datetime import datetime
         cn  = pyodbc.connect(ss.ej_db_conn)
         cur = cn.cursor()
+
         cur.execute(
             "SELECT TOP 1 IdJob, IdJobPartOutDefault, IdJobPartInDefault "
-            "FROM Job WHERE IdProject = ? ORDER BY IdJob DESC",
+            "FROM Job WHERE IdProject = ? ORDER BY IdJob ASC",
             id_project,
         )
         row = cur.fetchone()
         if not row:
-            log.append({"ok": False, "text": "Job nicht in DB gefunden — Gruppen übersprungen.", "indent": False})
+            log.append({"ok": False, "text": "Erster Job nicht in DB gefunden.", "indent": False})
             cn.close()
             return templates.TemplateResponse(request, "partials/d83_result.html", {"log": log})
 
-        id_job, id_part_out, id_part_in = row
-        log.append({"ok": True, "text": f'Job gefunden (ID: {id_job})', "indent": False})
+        first_job_id = int(row[0])
+        log.append({"ok": True, "text": f'Erster Job: "{job_caption}" (ID: {first_job_id})', "indent": False})
+
+        # lid=1 → first_job_id; extra jobs → API
+        lid_map: dict[int, int] = {1: first_job_id}
+        uid = ss.ej_user_id
+        id_deliv = id_delivery or id_address
+
+        for extra in ss.d83_local_jobs:
+            name    = extra["name"]
+            caption = f"{proj_name} {name}"
+            resp = await loop.run_in_executor(
+                None,
+                lambda c=caption: ss.ej_client.jobs_create(
+                    id_project=id_project,
+                    caption=c,
+                    start_date=start_date,
+                    end_date=end_date,
+                    id_address_delivery=id_deliv,
+                ),
+            )
+            new_id = int(resp.get("ID") or resp.get("IdJob") or 0)
+            if not new_id:
+                raise ValueError(f"API gab keine Job-ID zurueck: {resp}")
+            lid_map[extra["lid"]] = new_id
+            log.append({"ok": True, "text": f'Job "{caption}" angelegt (ID: {new_id})', "indent": False})
+
+    except Exception as e:
+        traceback.print_exc()
+        log.append({"ok": False, "text": f"Fehler (Job-Anlage): {e}", "indent": False})
+        return templates.TemplateResponse(request, "partials/d83_result.html", {"log": log})
+
+    # ── 3. Gruppen in Jobs eintragen ─────────────────────────────────────────
+    try:
+        now         = datetime.now()
+        all_job_ids = set(lid_map.values())
 
         if ref_number:
-            cur.execute("UPDATE Job SET RefNumber = ? WHERE IdJob = ?", ref_number, id_job)
+            cur.execute(
+                "UPDATE Job SET RefNumber = ? WHERE IdProject = ?",
+                ref_number, id_project,
+            )
 
-        now = datetime.now()
-        uid = ss.ej_user_id
+        for job_id in all_job_ids:
+            cur.execute("DELETE FROM StockType2JobGroup WHERE IdJob=?", job_id)
+            cur.execute("DELETE FROM StockType2JobGroupParent WHERE IdJob=?", job_id)
 
-        cur.execute("DELETE FROM StockType2JobGroup WHERE IdJob=?", id_job)
-        cur.execute("DELETE FROM StockType2JobGroupParent WHERE IdJob=?", id_job)
-
-        def _insert_hg(caption: str, sort: int) -> int:
+        def _insert_hg(job_id: int, caption: str, sort: int) -> int:
             cur.execute(
                 "INSERT INTO StockType2JobGroupParent "
                 "(IdJob, Caption, SortOrder, UseGroupPrice, Price, Discount, "
                 " CreationTime, UpdateTime, IdUserCreated, IdUserUpdated) "
+                "OUTPUT INSERTED.IdStockType2JobGroupParent "
                 "VALUES (?, ?, ?, 0, 0, 0, ?, ?, ?, ?)",
-                id_job, caption, sort, now, now, uid, uid,
-            )
-            cur.execute(
-                "SELECT IdStockType2JobGroupParent FROM StockType2JobGroupParent "
-                "WHERE IdJob=? AND SortOrder=?", id_job, sort,
+                job_id, caption, sort, now, now, uid, uid,
             )
             return int(cur.fetchone()[0])
 
-        def _insert_g(caption: str, sort: int, id_parent: int):
+        def _insert_g(job_id: int, caption: str, sort: int, id_parent: int):
             cur.execute(
                 "INSERT INTO StockType2JobGroup "
                 "(IdJob, Caption, SortOrder, IdStockType2JobGroupParent, "
-                " IdJobPartOutDefault, IdJobPartInDefault, "
                 " CreationTime, UpdateTime, IdUserCreated, IdUserUpdated) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                id_job, caption, sort, id_parent,
-                id_part_out, id_part_in, now, now, uid, uid,
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                job_id, caption, sort, id_parent,
+                now, now, uid, uid,
             )
 
-        if import_mode == "groups":
-            for sort_hg, grp in enumerate(groups, start=1):
-                hg_cap = f'[{grp["num"]}] {grp["name"]}' if grp.get("num") else grp["name"]
-                id_hg  = _insert_hg(hg_cap, sort_hg)
-                log.append({"ok": True, "text": f'Hauptgruppe "{hg_cap}"', "indent": False})
+        job_sort: dict[int, int] = {jid: 0 for jid in all_job_ids}
+        job_names = {1: job_caption}
+        for extra in ss.d83_local_jobs:
+            job_names[extra["lid"]] = extra["name"]
+
+        for grp in ss.d83_groups:
+            lid    = ss.d83_group_jobs.get(grp["name"], 1)
+            job_id = lid_map.get(lid, first_job_id)
+            j_name = job_names.get(lid, job_caption)
+            job_sort[job_id] += 1
+
+            hg_cap = f'[{grp["num"]}] {grp["name"]}' if grp.get("num") else grp["name"]
+            id_hg  = _insert_hg(job_id, hg_cap, job_sort[job_id])
+            log.append({"ok": True, "text": f'[{j_name}] {hg_cap}', "indent": False})
+
+            if import_mode == "groups":
                 subs = grp.get("sub", [])
                 for sort_g, sub in enumerate(subs, start=1):
                     g_cap = f'[{sub["num"]}] {sub["name"]}' if sub.get("num") else sub["name"]
-                    _insert_g(g_cap, sort_g, id_hg)
-                log.append({"ok": True, "text": f'{len(subs)} Gruppen angelegt', "indent": True})
-        else:
-            for sort_hg, grp in enumerate(groups, start=1):
-                hg_cap = f'[{grp["num"]}] {grp["name"]}' if grp.get("num") else grp["name"]
-                id_hg  = _insert_hg(hg_cap, sort_hg)
-                log.append({"ok": True, "text": f'Hauptgruppe "{hg_cap}"', "indent": False})
-
+                    _insert_g(job_id, g_cap, sort_g, id_hg)
+                log.append({"ok": True, "text": f'{len(subs)} Untergruppen', "indent": True})
+            else:
                 positions = list(grp.get("positions", []))
                 for sub in grp.get("sub", []):
                     positions += sub.get("positions", [])
                 for sort_g, pos in enumerate(positions, start=1):
                     g_cap = f'[{pos["oz"]}] {pos["desc"]}' if pos.get("oz") else pos["desc"]
-                    _insert_g(g_cap, sort_g, id_hg)
-                log.append({"ok": True, "text": f'{len(positions)} Gruppen angelegt', "indent": True})
+                    _insert_g(job_id, g_cap, sort_g, id_hg)
+                log.append({"ok": True, "text": f'{len(positions)} Positionen', "indent": True})
 
         cn.commit()
         cn.close()
+        log.append({"ok": True, "text": "Import abgeschlossen ✓", "indent": False})
     except Exception as e:
         traceback.print_exc()
-        log.append({"ok": False, "text": f"DB-Fehler: {e}", "indent": False})
+        log.append({"ok": False, "text": f"DB-Fehler (Gruppen): {e}", "indent": False})
 
     return templates.TemplateResponse(request, "partials/d83_result.html", {"log": log})
 

@@ -1,0 +1,32 @@
+<!-- Creation log -->
+<div class="result-log" style="margin-bottom:12px">
+  {% for line in log %}
+  <div class="log-line {% if line.indent %}indent{% endif %}">
+    <span class="{% if line.ok %}log-ok{% else %}log-err{% endif %}">{{ '✓' if line.ok else '✗' }}</span>
+    {{ line.text }}
+  </div>
+  {% endfor %}
+</div>
+
+<h3 style="margin:10px 0 3px;font-size:.88rem;color:#1a237e;border-bottom:2px solid #e8eaf6;padding-bottom:4px">Jobs zuweisen</h3>
+<p style="margin:4px 0 10px;font-size:.78rem;color:#666">
+  Alle Gruppen starten auf dem ersten Job.
+  Mit <b>＋ Job</b> kannst du einen neuen Job anlegen und die Gruppe dorthin verschieben.
+</p>
+
+<div id="job-assign-list">
+  {% for grp in groups %}
+  {% set i = loop.index0 %}
+  {% include "partials/d83_job_row.html" %}
+  {% endfor %}
+</div>
+
+<button class="btn btn-primary btn-full"
+        style="margin-top:12px"
+        hx-post="/api/d83/import"
+        hx-target="#d83-result"
+        hx-swap="innerHTML"
+        hx-disabled-elt="this"
+        onclick="this.textContent='⏳ Wird importiert …'">
+  📥 Gruppen in EJ importieren
+</button>

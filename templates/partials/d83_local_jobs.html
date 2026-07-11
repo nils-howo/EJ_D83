@@ -1,0 +1,70 @@
+{% if not groups %}
+<p style="color:#888;font-size:.85rem;margin:0">Bitte zuerst eine D83-Datei laden.</p>
+{% else %}
+{% for grp in groups %}
+{% set i = loop.index0 %}
+{% set cur_lid = group_jobs.get(grp.name, 1) %}
+<div class="ljr">
+
+  <div class="ljr-name">
+    {% if grp.num %}<span class="hg-oznum">{{ grp.num }}</span>{% endif %}
+    <span class="ljr-label">{{ grp.name }}</span>
+    <span class="ljr-count">{{ grp.count }} Pos.</span>
+  </div>
+
+  <div class="ljr-jobs">
+
+    <!-- Standard-Job (lid=1, immer vorhanden) -->
+    <form hx-post="/api/d83/local-assign"
+          hx-target="#d83-job-assign"
+          hx-swap="innerHTML"
+          style="display:inline">
+      <input type="hidden" name="grp_name" value="{{ grp.name }}">
+      <input type="hidden" name="lid" value="1">
+      <button type="submit"
+              class="job-btn {% if cur_lid == 1 %}job-btn-active{% endif %}">
+        Standard
+      </button>
+    </form>
+
+    <!-- Weitere definierte Jobs -->
+    {% for job in local_jobs %}
+    <form hx-post="/api/d83/local-assign"
+          hx-target="#d83-job-assign"
+          hx-swap="innerHTML"
+          style="display:inline">
+      <input type="hidden" name="grp_name" value="{{ grp.name }}">
+      <input type="hidden" name="lid" value="{{ job.lid }}">
+      <button type="submit"
+              class="job-btn {% if cur_lid == job.lid %}job-btn-active{% endif %}">
+        {{ job.name }}
+      </button>
+    </form>
+    {% endfor %}
+
+    <!-- + Job -->
+    <button type="button"
+            id="lja-btn-{{ i }}"
+            class="btn-add-job"
+            onclick="toggleLjForm({{ i }})">＋ Job</button>
+
+    <form id="ljf-{{ i }}"
+          hx-post="/api/d83/local-add-job"
+          hx-target="#d83-job-assign"
+          hx-swap="innerHTML"
+          style="display:none;align-items:center;gap:4px">
+      <input type="hidden" name="grp_name" value="{{ grp.name }}">
+      <input type="text" name="job_name"
+             class="new-job-input"
+             placeholder="z.B. Licht"
+             autocomplete="off">
+      <button type="submit" class="btn-confirm-job">Anlegen</button>
+      <button type="button" class="btn-cancel-job"
+              onclick="toggleLjForm({{ i }})">✕</button>
+    </form>
+
+  </div>
+
+</div>
+{% endfor %}
+{% endif %}
