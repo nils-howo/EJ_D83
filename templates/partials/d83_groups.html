@@ -69,9 +69,10 @@
 {% set hg_idx = loop.index0 %}
 {% set cur_lid = group_jobs.get(hg.name, 1) %}
 <div class="category-group" data-lid="{{ cur_lid }}">
-  <div class="category-header" onclick="toggleCat(this)">
+  <div class="category-header" onclick="toggleCat(this)" data-catkey="hg:{{ hg.num or hg.name }}">
     <span>▼</span>
     <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📁
+
       {% if hg.num %}<span style="font-family:monospace;font-weight:700">[{{ hg.num }}]</span>  {% endif %}
       {{ hg.name }}
     </span>

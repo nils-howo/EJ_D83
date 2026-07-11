@@ -604,6 +604,25 @@ function d83ApplyFilter() {
   });
 }
 
+// Merkt sich pro Gruppe (HG + Untergruppe), ob sie auf- oder zugeklappt ist.
+// Schlüssel = Text-Pfad der Header (stabil auch nach Löschen/Umsortieren).
+let _d83CatState = {};
+
+function _d83CatKey(header) {
+  // Pfad aus allen übergeordneten .category-group-Headern aufbauen
+  const parts = [];
+  let el = header.closest('.category-group');
+  while (el) {
+    const h = el.querySelector(':scope > .category-header');
+    if (h) {
+      const lbl = h.querySelector('span:nth-child(2)');
+      parts.unshift(lbl ? lbl.textContent.trim() : '');
+    }
+    el = el.parentElement ? el.parentElement.closest('.category-group') : null;
+  }
+  return parts.join(' > ');
+}
+
 function toggleCat(header) {
   const arrow = header.querySelector('span:first-child');
   const body  = header.nextElementSibling;
@@ -611,7 +630,24 @@ function toggleCat(header) {
   const open  = body.style.display !== 'none';
   body.style.display = open ? 'none' : '';
   arrow.textContent  = open ? '▶' : '▼';
+  // neuen Zustand merken
+  _d83CatState[_d83CatKey(header)] = !open;
 }
+
+// Gespeicherten Auf-/Zu-Zustand auf die aktuell gerenderten Gruppen anwenden
+function d83RestoreCatState() {
+  document.querySelectorAll('#d83-groups .category-header').forEach(function(header) {
+    const key = _d83CatKey(header);
+    if (!(key in _d83CatState)) return;
+    const arrow = header.querySelector('span:first-child');
+    const body  = header.nextElementSibling;
+    if (!body) return;
+    const shouldOpen = _d83CatState[key];
+    body.style.display = shouldOpen ? '' : 'none';
+    if (arrow) arrow.textContent = shouldOpen ? '▼' : '▶';
+  });
+}
+
 
 // Scroll-Position + Suffix + Filter über #d83-groups-Swaps hinweg erhalten
 let _d83ScrollY = 0;
@@ -630,10 +666,22 @@ document.addEventListener('htmx:beforeRequest', function(evt) {
     _d83LastPath = (evt.detail.requestConfig && evt.detail.requestConfig.path) || '';
   }
 });
+// Scroll SOFORT nach dem DOM-Swap wiederherstellen (noch vor dem ersten Repaint),
+// damit kein kurzes Springen (z.B. nach ganz unten) sichtbar wird.
+document.addEventListener('htmx:afterSwap', function(evt) {
+  if (evt.detail.target && evt.detail.target.id === 'd83-groups') {
+    // Auf-/Zu-Zustand VOR dem Repaint wiederherstellen (kein sichtbares Aufklappen)
+    d83RestoreCatState();
+    window.scrollTo({ top: _d83ScrollY, behavior: 'instant' });
+  }
+});
 document.addEventListener('htmx:afterSettle', function(evt) {
   if (evt.detail.target && evt.detail.target.id === 'd83-groups') {
+    // Erneut anwenden: nach dem Settle kann sich die Höhe leicht geändert haben
+    d83RestoreCatState();
     window.scrollTo({ top: _d83ScrollY, behavior: 'instant' });
     const marker = document.getElementById('d83-std-job-data');
+
     if (marker) _d83StdSuffix = marker.dataset.suffix || '';
     if (_d83LastPath === '/api/d83/rename-standard-job') {
       jobNameManual = false;
@@ -642,6 +690,7 @@ document.addEventListener('htmx:afterSettle', function(evt) {
     d83ApplyFilter();
   }
 });
+
 </script>
 
 </body>
