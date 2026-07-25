@@ -152,16 +152,10 @@
     .ac-item:hover { background:#e8eaf6; }
     .ac-selected { font-size:.75rem; color:#2e7d32; margin-top:2px; }
     .req { color:#c62828; }   /* Pflichtfeld-Stern */
-    /* Kontaktpersonen der gewählten Firma (eingerückt) */
-    .contact-box { margin:4px 0 0 14px; padding-left:10px; border-left:2px solid #e0e0e0; }
-    .contact-hint { font-size:.72rem; color:#888; margin:2px 0; }
-    .contact-item {
-      padding:3px 8px; cursor:pointer; font-size:.82rem; border-radius:4px;
-      display:flex; justify-content:space-between; gap:8px; align-items:baseline;
-    }
-    .contact-item:hover { background:#e8eaf6; }
-    .contact-item.contact-active { background:#c8e6c9; font-weight:600; }
-    .contact-phone { color:#999; font-size:.72rem; white-space:nowrap; }
+    /* Gruppierte Adress-Suche: Firma + eingerückte Kontaktpersonen */
+    .ac-company { font-weight:600; }
+    .ac-contact { padding-left:24px; font-size:.8rem; color:#455f6b; }
+    .ac-contact::before { content:"↳ "; color:#9e9e9e; }
 
     /* Modus-Umschalter */
     .mode-toggle {
@@ -426,15 +420,15 @@
           <label>Kunde <span class="req">*</span></label>
           <div class="ac-wrap">
             <input type="text" id="imp-cust-search" placeholder="Adresse suchen …"
-                   oninput="impSearchAddress(this, 'imp-cust-list', 'id_address', 'imp-cust-sel')"
+                   oninput="impSearchAddress(this, 'imp-cust-list', 'id_address', 'imp-cust-sel', true)"
                    autocomplete="off" required>
             <div id="imp-cust-list" class="ac-list"></div>
           </div>
           <input type="hidden" name="id_address" id="id_address" value="1">
           <input type="hidden" name="id_contact" id="id_contact" value="0">
           <div id="imp-cust-sel" class="ac-selected"></div>
-          <div id="imp-cust-contacts" class="contact-box" style="display:none"></div>
         </div>
+
 
         <!-- Lieferadresse -->
         <div class="form-row">
@@ -446,10 +440,9 @@
             <div id="imp-deliv-list" class="ac-list"></div>
           </div>
           <input type="hidden" name="id_delivery" id="id_delivery" value="0">
-          <input type="hidden" name="id_contact_delivery" id="id_contact_delivery" value="0">
           <div id="imp-deliv-sel" class="ac-selected"></div>
-          <div id="imp-deliv-contacts" class="contact-box" style="display:none"></div>
         </div>
+
 
         </div><!-- /imp-new-block -->
 
@@ -709,89 +702,67 @@ function impSyncJobName(val) {
   }
 }
 
-// ── Adress-Suche ─────────────────────────────────────────────────────────────
+// ── Adress-Suche (gruppiert: Firma + Kontaktpersonen) ────────────────────────
 let _impAcTimers = {};
-function impSearchAddress(inputEl, listId, hiddenId, selectedId) {
-  const q = inputEl.value.trim();
+// Firmen-Feld → zugehöriges verstecktes Kontakt-Feld
+// (nur der Kunde hat einen Ansprechpartner; die Lieferadresse ist firmenweit)
+function _impContactField(hiddenId) {
+  if (hiddenId === 'id_address') return 'id_contact';
+  return null;
+}
+function impSearchAddress(inputEl, listId, hiddenId, selectedId, withContacts) {
+  const q    = inputEl.value.trim();
+  const list = document.getElementById(listId);
   clearTimeout(_impAcTimers[listId]);
-  if (q.length < 2) {
-    document.getElementById(listId).classList.remove('open');
-    return;
-  }
+  if (q.length < 2) { list.classList.remove('open'); return; }
   _impAcTimers[listId] = setTimeout(function() {
-    fetch('/api/d83/address-search?q=' + encodeURIComponent(q))
+    fetch('/api/d83/address-search?q=' + encodeURIComponent(q) +
+          '&contacts=' + (withContacts ? 1 : 0))
       .then(r => r.json())
       .then(function(items) {
-        const list = document.getElementById(listId);
+        list.innerHTML = '';
         if (!items.length) {
           list.innerHTML = '<div class="ac-item" style="color:#aaa;pointer-events:none">Keine Ergebnisse</div>';
           list.classList.add('open');
           return;
         }
-        list.innerHTML = items.map(function(a) {
-          const safe = (a.name || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-          return '<div class="ac-item" onclick="impSelectAcItem(\'' + listId + '\',\'' +
-            hiddenId + '\',\'' + selectedId + '\',' + a.id + ',\'' + safe + '\')">' +
-            (a.name || '') + '</div>';
-        }).join('');
+        items.forEach(function(a) {
+          // Firmen-Zeile: Klick = nur Firma (Kontakt zurückgesetzt)
+          const comp = document.createElement('div');
+          comp.className = 'ac-item ac-company';
+          comp.textContent = a.name || '';
+          comp.addEventListener('click', function() {
+            impPickAddress(listId, hiddenId, selectedId, a.id, a.name || '', 0, '');
+          });
+          list.appendChild(comp);
+          // Kontakt-Zeilen (eingerückt): Klick = Firma + Kontakt
+          (a.contacts || []).forEach(function(c) {
+            const row = document.createElement('div');
+            row.className = 'ac-item ac-contact';
+            row.textContent = c.name || '';
+            row.addEventListener('click', function() {
+              impPickAddress(listId, hiddenId, selectedId, a.id, a.name || '', c.idc, c.name || '');
+            });
+            list.appendChild(row);
+          });
+        });
         list.classList.add('open');
-      }).catch(function() {
-        document.getElementById(listId).classList.remove('open');
-      });
+      })
+      .catch(function() { list.classList.remove('open'); });
   }, 280);
 }
-
-function impSelectAcItem(listId, hiddenId, selectedId, id, name) {
+// Firma (idc=0) oder Firma+Kontakt (idc>0) übernehmen
+function impPickAddress(listId, hiddenId, selectedId, id, compName, idc, contactName) {
   document.getElementById(hiddenId).value = id;
-  document.getElementById(selectedId).textContent = '✓ ' + name;
-  document.getElementById(listId).classList.remove('open');
+  const cf = _impContactField(hiddenId);
+  if (cf) document.getElementById(cf).value = idc || 0;
+  let label = compName;
+  if (contactName) label += ' — ' + contactName;
+  document.getElementById(selectedId).textContent = '✓ ' + label;
   const list = document.getElementById(listId);
+  list.classList.remove('open');
   const input = list.previousElementSibling;
-  if (input && input.tagName === 'INPUT') input.value = name;
-  impLoadContacts(hiddenId, id);
-}
-
-// ── Kontaktpersonen der gewählten Firma (Zwei-Schritt, wie in Easyjob) ────────
-// Zuordnung Firmen-Feld → Kontakt-Container + verstecktes Kontakt-Feld
-const _impContactMap = {
-  'id_address':  { box: 'imp-cust-contacts',  hidden: 'id_contact' },
-  'id_delivery': { box: 'imp-deliv-contacts', hidden: 'id_contact_delivery' },
-};
-function impLoadContacts(hiddenId, idAddress) {
-  const cfg = _impContactMap[hiddenId];
-  if (!cfg) return;                       // Feld ohne Kontaktbezug → nichts tun
-  const box    = document.getElementById(cfg.box);
-  const hidden = document.getElementById(cfg.hidden);
-  hidden.value = '0';                     // Kontakt bei neuer Firma zurücksetzen
-  box.innerHTML = '<div class="contact-hint">Kontakte werden geladen …</div>';
-  box.style.display = '';
-  fetch('/api/d83/contacts?id_address=' + encodeURIComponent(idAddress))
-    .then(r => r.json())
-    .then(function(cs) {
-      if (!cs.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
-      let html = '<div class="contact-hint">Kontakt (optional):</div>';
-      html += cs.map(function(c) {
-        const nm = (c.name || '');
-        const ph = c.phone ? '<span class="contact-phone">' + c.phone + '</span>' : '';
-        return '<div class="contact-item" data-idc="' + c.idc + '" ' +
-          'onclick="impSelectContact(\'' + cfg.hidden + '\',this,' + c.idc + ')">' +
-          '<span>' + nm + '</span>' + ph + '</div>';
-      }).join('');
-      box.innerHTML = html;
-    })
-    .catch(function() { box.style.display = 'none'; box.innerHTML = ''; });
-}
-function impSelectContact(hiddenId, el, idc) {
-  const hidden  = document.getElementById(hiddenId);
-  const already = String(hidden.value) === String(idc);
-  el.parentElement.querySelectorAll('.contact-item')
-    .forEach(function(x) { x.classList.remove('contact-active'); });
-  if (already) {                          // nochmal klicken = Kontakt abwählen
-    hidden.value = '0';
-  } else {
-    hidden.value = idc;
-    el.classList.add('contact-active');
-  }
+  if (input && input.tagName === 'INPUT') input.value = compName;
 }
 
 // ── Modus: neues Projekt vs. Jobs zu bestehendem Projekt ──────────────────────

@@ -201,90 +201,61 @@ class EjLiveClient:
             pass
         return ""
 
-    def addresses_search(self, q: str, limit: int = 12) -> list[dict]:
-        """Sucht Adressen über V2 Grid oder V1 list."""
-        # Versuch 1: V2 Grid — Boolean-Params als Integer (nicht Python True/False)
-        try:
-            data = self._client._get("/api.json/v2/masterdata/addresses/grid", {
-                "SearchText":    q,
-                "ShowAddresses": 1,
-                "ShowContacts":  0,
-                "ShowLeads":     0,
-                "ShowDeactivated": 0,
-            })
-            if isinstance(data, dict) and "Data" in data and "Columns" in data:
-                cols = [c["Name"] for c in data["Columns"]]
-                rows = [dict(zip(cols, row)) for row in data["Data"]]
-                out = []
-                for r in rows:
-                    name = r.get("comp") or r.get("name2") or ""
-                    if r.get("id") and name:
-                        out.append({"id": r["id"], "name": name})
-                        if len(out) >= limit:
-                            break
-                if out:
-                    return out
-        except Exception:
-            pass
+    def addresses_search(self, q: str, limit: int = 12,
+                         with_contacts: bool = True) -> list[dict]:
+        """Sucht Adressen über V1 `/addresses/list` und gruppiert nach Firma.
 
-        # Versuch 2: V1 list — Keys: Id, IdAddress, Company, FirstName, LastName
-        try:
-            data = self._client._get("/api.json/addresses/list", {"searchtext": q})
-            if isinstance(data, list):
-                out = []
-                for r in data:
-                    # IdAddress immer als Kunden-ID (auch für Kontakte)
-                    rid  = r.get("IdAddress") or r.get("Id") or r.get("ID") or r.get("id") or 0
-                    comp = r.get("Company") or ""
-                    person = " ".join(filter(None, [r.get("FirstName"), r.get("LastName")]))
-                    if comp and person:
-                        name = f"{comp} — {person}"
-                    elif comp:
-                        name = comp
-                    elif person:
-                        name = person
-                    else:
-                        name = ""
-                    if rid and name:
-                        out.append({"id": rid, "name": name})
-                        if len(out) >= limit:
-                            break
-                return out
-        except Exception:
-            pass
+        Die V1-Liste liefert je Treffer:
+          - IdT=1  → Firma (Hauptadresse),  IdT=12 → Kontaktperson
+          - IdAddress → ID der Firma (auch bei Kontakten)
+          - Id → bei Kontakten die IdContact
 
-        return []
+        Rückgabe (gruppiert nach Firma):
+            [{"id": <IdAddress>, "name": <Firma>,
+              "contacts": [{"idc": <IdContact>, "name": <Person>}, ...]}]
 
-    def address_contacts(self, id_address: int) -> list[dict]:
-        """Kontaktpersonen einer Firma (Address) — reiner API-Weg über das V2-Grid.
-
-        Gibt Liste von Dicts zurück: idc (IdContact), name (Vor-/Nachname),
-        phone (Telefon Firma). Kein DB-Zugriff nötig.
+        Bei ``with_contacts=False`` werden nur Firmen geliefert
+        (Parameter ``showcontacts=0`` an die API) und ``contacts`` bleibt leer.
         """
         try:
-            data = self._client._get(
-                "/api.json/v2/masterdata/contacts/grid", {"IdAddress": id_address}
-            )
-            if isinstance(data, dict) and "Data" in data and "Columns" in data:
-                cols = [c["Name"] for c in data["Columns"]]
-                out = []
-                for row in data["Data"]:
-                    r   = dict(zip(cols, row))
-                    idc = r.get("id") or 0
-                    if not idc:
-                        continue
-                    name = " ".join(filter(None, [r.get("fnam"), r.get("snam")])).strip()
-                    if not name:
-                        name = (r.get("sal") or "").strip() or "(ohne Namen)"
-                    out.append({
-                        "idc":   int(idc),
-                        "name":  name,
-                        "phone": (r.get("phon") or "").strip(),
-                    })
-                return out
+            params = {"searchtext": q}
+            if not with_contacts:
+                params["showcontacts"] = 0
+            data = self._client._get("/api.json/addresses/list", params)
+            if not isinstance(data, list):
+                return []
+
+            groups: dict[int, dict] = {}
+            order: list[int] = []
+            for r in data:
+                id_addr = r.get("IdAddress") or 0
+                if not id_addr:
+                    continue
+                comp   = (r.get("Company") or "").strip()
+                person = " ".join(filter(None, [r.get("FirstName"), r.get("LastName")])).strip()
+                is_contact = int(r.get("IdT") or 0) == 12
+                if is_contact and not with_contacts:
+                    continue   # Nur-Firmen-Suche (z.B. Lieferadresse): Kontakte überspringen
+
+                if id_addr not in groups:
+                    groups[id_addr] = {"id": id_addr, "name": "", "contacts": []}
+                    order.append(id_addr)
+                grp = groups[id_addr]
+                # Firmenname (IdT=1) gewinnt immer; ein Personenname ist nur Fallback,
+                # falls die Firmenzeile (noch) keinen Company-Wert hat.
+                if not is_contact and comp:
+                    grp["name"] = comp
+                elif person and not grp["name"]:
+                    grp["name"] = person
+
+                if is_contact and person:
+                    grp["contacts"].append({"idc": int(r.get("Id") or 0), "name": person})
+
+            out = [groups[i] for i in order]
+            return out[:limit]
         except Exception:
-            pass
-        return []
+            return []
+
 
     def get_address_payment_condition(self, id_address: int) -> int | None:
         """Gibt IdPaymentCondition der Adresse zurück, oder None wenn nicht ermittelbar."""

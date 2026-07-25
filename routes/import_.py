@@ -1000,7 +1000,6 @@ async def _do_create_bg(
     existing_project_id:  int = 0,
     only_groups:          bool = False,
     id_contact:           int = 0,
-    id_contact_delivery:  int = 0,
 ) -> None:
     """Läuft im Hintergrund; schreibt Ergebnis in ss.create_progress.log.
 
@@ -1031,10 +1030,13 @@ async def _do_create_bg(
                         "EndDate":            f"{end_date}T00:00:00",
                         "IdUser_Arranger":    ss.ej_user_id,
                         "IdAddress_Customer": id_address,
-                        "IdContact_Customer": id_contact,
+                        # projects/create ignoriert IdContact_Customer komplett (wird
+                        # nach der Anlage gezielt per DB gesetzt, siehe unten). Ein
+                        # IdContactDelivery != 0 löst in EJ sogar einen HTTP 500 aus —
+                        # daher beide Kontakt-Felder hier bewusst auf 0.
+                        "IdContact_Customer": 0,
                         "IdAddressDelivery":  id_delivery or id_address,
-                        # Ohne separate Lieferadresse gilt der Kunden-Kontakt auch dort.
-                        "IdContactDelivery":  (id_contact_delivery if id_delivery else id_contact),
+                        "IdContactDelivery":  0,
                         "IdProjectType":      id_project_type,
                         "IdPriority":         2,
                         "IdPaymentCondition": id_payment_condition,
@@ -1163,6 +1165,17 @@ async def _do_create_bg(
                 *params,
             )
             log.append({"ok": True, "text": f"Einsatztage: {einsatztage:g}", "indent": False})
+
+            # Kundenkontakt nachtragen: der projects/create-Endpoint setzt zwar
+            # IdAddress_Customer, ignoriert aber IdContact_Customer. Deshalb hier
+            # gezielt am Projekt setzen (gleiche DB-Verbindung, nur bei neuem
+            # Projekt + tatsächlich gewähltem Kontakt).
+            if id_contact and not is_existing:
+                cur.execute(
+                    "UPDATE Project SET IdContact_Customer = ? WHERE IdProject = ?",
+                    id_contact, id_project,
+                )
+                log.append({"ok": True, "text": f"Kundenkontakt gesetzt (ID: {id_contact})", "indent": False})
 
             for job_id in all_job_ids:
                 cur.execute("DELETE FROM StockType2JobGroup WHERE IdJob=?", job_id)
@@ -1508,7 +1521,6 @@ async def import_create_project(
     id_address:        int = Form(1),
     id_delivery:       int = Form(0),
     id_contact:          int = Form(0),
-    id_contact_delivery: int = Form(0),
     job_caption:       str = Form("Job 1"),
     id_project_type:   int = Form(9),
     id_event_calendar: int = Form(0),
@@ -1573,7 +1585,7 @@ async def import_create_project(
         id_payment_condition, ss.einsatztage,
         existing_project_id if is_existing else 0,
         only_groups_flag,
-        id_contact, id_contact_delivery,
+        id_contact,
     ))
 
     return HTMLResponse("""

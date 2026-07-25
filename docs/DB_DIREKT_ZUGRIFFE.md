@@ -48,6 +48,15 @@
 
 ---
 
+### 4b. Project.IdContact_Customer (Kundenkontakt) schreiben
+**Datei:** `routes/import_.py` · **Art:** WRITE (UPDATE)  
+**Tabelle:** `Project`  
+**SQL:** `UPDATE Project SET IdContact_Customer = ? WHERE IdProject = ?`  
+**Warum:** Der Endpunkt `projects/create` verarbeitet `IdAddress_Customer` (Kundenadresse), **ignoriert aber `IdContact_Customer`** (empirisch bestätigt: nach dem Create ist die Spalte `NULL`, obwohl im Body gesetzt — und obwohl die openapi.json das Feld als `required` führt). Zusätzlich löst ein `IdContactDelivery != 0` im Create-Body einen **HTTP 500** aus (ebenfalls empirisch bestätigt) — daher werden im Create beide Kontakt-Felder bewusst auf `0` gesetzt. Damit der beim Import gewählte Ansprechpartner tatsächlich am Projekt hängt, wird er direkt nachgetragen — im selben DB-Schritt wie Punkt 4 (gleiche Verbindung), nur bei neuem Projekt und tatsächlich gewähltem Kontakt. `Project` hat als einzige Kontaktspalte `IdContact_Customer` (keine separate Lieferkontakt-Spalte).  
+**API-ersetzbar:** Ja, bewusst nicht gemacht (Stand jetzt). Verifizierte Alternative: `POST /api.json/v2/rental/projects/propertyupdate` mit Body `{"IdProject": <pid>, "CustomerChanged": {"IdAddressCustomerChanged": <addr>, "IdContactCustomer": <contact>}}` — der EJ-native Weg (nutzt die Oberfläche ebenso). Wichtig: nur **eine** Property-Gruppe pro Request senden (mehrere → „Multiple Property Change request is not supported"), und die Adresse muss mitgegeben werden (nur `IdContactCustomer` allein verwirft EJ). Der direkte UPDATE bleibt bewusst als sichtbarer Marker, dass `projects/create` den Kontakt ignoriert.
+
+---
+
 ### 5. Gruppen anlegen (Haupt- und Untergruppen)
 **Datei:** `routes/import_.py` · **Art:** WRITE (DELETE + INSERT)  
 **Tabellen:** `StockType2JobGroupParent`, `StockType2JobGroup`  
@@ -146,4 +155,4 @@ Die menschenlesbare Projektnummer (`Project.Number`, z.B. „26-0994") wird **re
 
 ---
 
-*Letzte Aktualisierung: 2026-07-25*
+*Letzte Aktualisierung: 2026-07-26*

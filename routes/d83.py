@@ -2,9 +2,10 @@
 Die eigentliche D83-Seite wurde entfernt — /d83 leitet auf /import um.
 
 Kundensuche läuft rein über die EJ-API (kein direkter DB-Zugriff):
-  1. /api/d83/address-search  → Firmen (Address) suchen
-  2. /api/d83/contacts        → Kontaktpersonen der gewählten Firma laden
+  /api/d83/address-search  → Firmen inkl. Kontaktpersonen suchen (gruppiert).
+  Mit ?contacts=0 werden nur Firmen geliefert (z. B. für Lieferadresse).
 """
+
 import asyncio
 import logging
 
@@ -23,37 +24,30 @@ async def d83_page(request: Request):
 
 
 @router.get("/api/d83/address-search")
-async def d83_address_search(request: Request, q: str = "", limit: int = 12):
-    """Firmensuche (reiner API-Weg). Liefert [{id, name}]."""
+async def d83_address_search(request: Request, q: str = "", limit: int = 12,
+                             contacts: int = 1):
+    """Firmensuche (reiner API-Weg).
+
+    Liefert gruppiert nach Firma: [{id, name, contacts:[{idc, name}]}].
+    Mit ``contacts=0`` werden nur Firmen ohne Kontaktpersonen zurückgegeben
+    (z. B. für die Lieferadresse).
+    """
     ss = get_session(request.session)
     if len(q) < 2 or not ss.ej_client:
         return JSONResponse([])
     try:
         loop = asyncio.get_event_loop()
         results = await loop.run_in_executor(
-            None, lambda: ss.ej_client.addresses_search(q, limit)
+            None,
+            lambda: ss.ej_client.addresses_search(
+                q, limit, with_contacts=bool(contacts)
+            ),
         )
         return JSONResponse(results or [])
     except Exception as _e:
         logging.error("d83/address-search failed: %s", _e)
         return JSONResponse([])
 
-
-@router.get("/api/d83/contacts")
-async def d83_contacts(request: Request, id_address: int = 0):
-    """Kontaktpersonen einer Firma (reiner API-Weg). Liefert [{idc, name, phone}]."""
-    ss = get_session(request.session)
-    if not id_address or not ss.ej_client:
-        return JSONResponse([])
-    try:
-        loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(
-            None, lambda: ss.ej_client.address_contacts(id_address)
-        )
-        return JSONResponse(results or [])
-    except Exception as _e:
-        logging.error("d83/contacts failed: %s", _e)
-        return JSONResponse([])
 
 
 @router.get("/api/d83/event-search")
