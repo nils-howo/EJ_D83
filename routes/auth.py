@@ -5,7 +5,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from easyjob_api import EjLiveClient
-from state import get_session, _build_db_conn, templates
+from state import get_session, _build_db_conn, is_admin_login, templates
 
 router = APIRouter()
 
@@ -49,6 +49,8 @@ async def login_submit(
     if not user_id:
         return _fail("Benutzername oder Passwort falsch.")
 
+    is_admin = is_admin_login(ej_user)
+
     ss = get_session(request.session)
     ss.ej_url     = ej_url
     ss.ej_user    = ej_user
@@ -56,6 +58,7 @@ async def login_submit(
     ss.ej_db_conn = db_conn
     ss.ej_user_id = user_id
     ss.ej_client  = client
+    ss.is_admin   = is_admin
 
     request.session["authenticated"] = True
     request.session["ej_url"]        = ej_url
@@ -63,7 +66,8 @@ async def login_submit(
     request.session["ej_pass"]       = ej_pass
     request.session["db_conn"]       = db_conn
     request.session["ej_user_id"]    = user_id
-    return RedirectResponse("/", status_code=303)
+    request.session["is_admin"]      = is_admin
+    return RedirectResponse("/import", status_code=303)
 
 
 @router.get("/logout")

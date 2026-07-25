@@ -1,5 +1,5 @@
 <div class="dialog-header">
-  <h2>🔄 Artikel ersetzen</h2>
+  <h2>Artikel zuordnen</h2>
   <p style="margin:0;font-size:.82rem;color:#555">{{ item_desc[:120] }}</p>
 </div>
 
@@ -46,7 +46,7 @@
          id="ej-search-input"
          value=""
          placeholder="Suchbegriff eingeben …"
-         hx-get="/api/ej/search/{{ item_id }}"
+         hx-get="{{ search_url | default('/api/ej/search/' + item_id) }}"
          hx-trigger="keyup changed delay:350ms"
          hx-target="#ej-results-wrap"
          hx-swap="innerHTML"
@@ -62,8 +62,8 @@
 
 <div class="dialog-footer">
   <form id="ej-set-form"
-        hx-post="/api/position/{{ item_id }}/set-match"
-        hx-target="#main-area"
+        hx-post="{{ form_action | default('/api/position/' + item_id + '/set-match') }}"
+        hx-target="{{ form_target | default('#main-area') }}"
         hx-swap="innerHTML"
         style="display:flex;align-items:center;gap:10px;flex:1">
     <input type="hidden" name="ej_num"     value="">
@@ -72,8 +72,17 @@
     <input type="hidden" name="extra_qtys" id="replace-extra-qtys" value="">
     <label style="font-size:.82rem">Menge:</label>
     <input type="number" name="qty" value="{{ default_qty|int }}" min="0" step="1" style="width:80px">
-    <button type="submit" id="ej-set-btn" class="btn btn-green" disabled>✅ Als Match setzen</button>
+    <button type="submit" id="ej-set-btn" class="btn btn-green" disabled>
+      {% if add_action %}🔄 Ersetzen{% else %}✅ Als Match setzen{% endif %}
+    </button>
   </form>
+  {% if add_action %}
+  <button id="ej-add-btn" class="btn btn-blue" disabled
+          hx-post="{{ add_action }}"
+          hx-target="{{ form_target | default('#import-groups') }}"
+          hx-swap="innerHTML"
+          hx-include="#ej-set-form">➕ Hinzufügen</button>
+  {% endif %}
   <button class="btn btn-grey"
-          onclick="document.getElementById('ej-modal').close()">Schließen</button>
+          onclick="this.closest('dialog').close()">Schließen</button>
 </div>

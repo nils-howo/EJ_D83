@@ -20,6 +20,8 @@ from routes.auth import router as auth_router
 from routes.matching import router as matching_router
 from routes.d83 import router as d83_router
 from routes.admin import router as admin_router
+from routes.import_ import router as import_router
+from routes.projects import router as projects_router
 
 
 # ─── Startup / Shutdown ───────────────────────────────────────────────────────
@@ -103,6 +105,7 @@ async def _require_auth(request: Request, call_next):
         ss.ej_pass    = request.session.get("ej_pass", "")
         ss.ej_db_conn = request.session.get("db_conn", "")
         ss.ej_user_id = int(request.session.get("ej_user_id", 0))
+        ss.is_admin   = bool(request.session.get("is_admin", False))
         if ss.ej_url and ss.ej_user and ss.ej_pass:
             try:
                 loop = asyncio.get_event_loop()
@@ -125,11 +128,15 @@ app.add_middleware(
 
 # ─── Admin-Endpunkte ──────────────────────────────────────────────────────────
 
+from fastapi import Request
 from fastapi.responses import JSONResponse
 
 @app.post("/api/admin/resync")
-async def admin_resync(force: bool = False):
-    """Manueller Sync-Trigger via ODBC. force=true löscht Artikel/Personal vorher."""
+async def admin_resync(request: Request, force: bool = False):
+    """Manueller Sync-Trigger via ODBC. force=true löscht Artikel/Personal vorher.
+    Nur für Admins — der Endpoint ist destruktiv (force re-migriert die lokale DB)."""
+    if not get_session(request.session).is_admin:
+        return JSONResponse({"ok": False, "error": "Nur für Admins"}, status_code=403)
     import sync_odbc
     loop = asyncio.get_event_loop()
     if force:
@@ -152,6 +159,8 @@ app.include_router(auth_router)
 app.include_router(matching_router)
 app.include_router(d83_router)
 app.include_router(admin_router)
+app.include_router(import_router)
+app.include_router(projects_router)
 
 # ─── Direkt starten ───────────────────────────────────────────────────────────
 

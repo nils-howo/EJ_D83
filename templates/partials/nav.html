@@ -1,0 +1,14 @@
+{# Einheitliche Navigation. Erwartet im Kontext:
+   nav_active: "import" | "projects" | "admin"
+   is_admin:   bool (Admin-Link nur dann sichtbar)
+   nav_status: optionaler Statustext (rechts, optional) #}
+<header class="app-nav">
+  <h1>GAEB → Easyjob</h1>
+  <a href="/import"   class="{{ 'active' if nav_active == 'import'   else '' }}">Import</a>
+  <a href="/projects" class="{{ 'active' if nav_active == 'projects' else '' }}">Projekte</a>
+  {% if is_admin %}
+  <a href="/admin" class="{{ 'active' if nav_active == 'admin' else '' }}">Admin</a>
+  {% endif %}
+  {% if nav_status %}<span class="nav-status">{{ nav_status }}</span>{% endif %}
+  <a href="/logout" class="nav-logout">Abmelden</a>
+</header>

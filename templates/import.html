@@ -1,0 +1,1048 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Import — GAEB Match + EJ Projekt</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
+  <style>
+    body { margin:0; font-family:system-ui,sans-serif; background:#f4f4f6; }
+
+
+    /* Layout */
+    .imp-body {
+      display:grid; grid-template-columns:300px 1fr;
+      gap:14px; padding:14px; max-width:1600px; margin:0 auto;
+      align-items:start;
+    }
+    .imp-sidebar {
+      position:sticky; top:0; max-height:100vh; overflow-y:auto;
+    }
+
+    /* Panel */
+    .imp-panel {
+      background:#fff; border:1px solid #ddd; border-radius:8px; padding:10px 12px;
+      margin-bottom:9px;
+    }
+    .imp-panel:last-child { margin-bottom:0; }
+    .imp-panel h2 {
+      margin:0 0 7px; font-size:.92rem; color:#1a237e;
+      border-bottom:2px solid #e8eaf6; padding-bottom:4px;
+    }
+
+    /* Upload */
+    .upload-area {
+      border:2px dashed #90caf9; border-radius:6px;
+      padding:8px; text-align:center; color:#555;
+      cursor:pointer; transition:background .15s, border-color .15s;
+      display:flex; flex-direction:row; align-items:center; justify-content:center; gap:8px;
+    }
+    .upload-area:hover { background:#e8eaf6; border-color:#3f51b5; }
+    .upload-icon { font-size:1.2rem; }
+    .upload-loaded {
+      border:2px solid #a5d6a7; background:#f1f8f1; border-radius:6px;
+      padding:8px 12px; display:flex; align-items:center; gap:8px;
+      cursor:pointer;
+    }
+    .upload-loaded:hover { background:#e8f5e9; }
+    .upload-loaded-icon { font-size:1.1rem; color:#2e7d32; flex-shrink:0; }
+    .upload-loaded-name {
+      flex:1; min-width:0; font-size:.85rem; font-weight:600; color:#1b5e20;
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    }
+    .upload-loaded-change { font-size:.72rem; color:#888; flex-shrink:0; }
+
+    /* Gruppen-Baum (same as d83.html) */
+    .hg-block { margin-bottom:6px; }
+    .hg-row {
+      display:flex; align-items:center; gap:6px;
+      background:#e8eaf6; border-radius:5px; padding:5px 8px;
+      font-weight:600; font-size:.88rem;
+    }
+    .hg-toggle { cursor:pointer; flex:1; display:flex; align-items:center; gap:6px; }
+    .hg-arrow { font-size:.72rem; color:#666; transition:transform .15s; display:inline-block; }
+    .hg-block.open .hg-arrow { transform:rotate(90deg); }
+    .hg-name { flex:1; }
+    .hg-meta { font-size:.72rem; color:#666; font-weight:400; white-space:nowrap; }
+    .hg-children { padding-left:14px; display:none; margin-top:2px; }
+    .hg-block.open .hg-children { display:block; }
+
+    /* category-group (geerbt von d83.html) */
+    .category-group { margin-bottom:5px; }
+    .category-header {
+      display:flex; align-items:center; gap:6px;
+      background:#e8eaf6; border-radius:5px; padding:5px 8px;
+      font-weight:600; font-size:.88rem; cursor:pointer; user-select:none;
+    }
+    .category-header:hover { background:#d9ddf5; }
+    .category-body { padding-left:0; display:block; margin-top:2px; }
+
+    /* Hinweistexte (Infotexte aus der Ausschreibung) — nur Anzeige, nicht buchbar */
+    .info-remark {
+      margin:3px 4px 6px; border:1px solid #ffe0b2; background:#fff8e1;
+      border-radius:5px; padding:5px 9px;
+    }
+    .info-remark summary {
+      cursor:pointer; color:#e65100; font-weight:600; font-size:.78rem;
+      list-style:none; display:flex; align-items:center; gap:5px;
+    }
+    .info-remark summary::-webkit-details-marker { display:none; }
+    .info-remark[open] summary { margin-bottom:4px; }
+    .info-remark-body {
+      color:#5d4037; white-space:pre-wrap; line-height:1.35;
+      font-size:.77rem; font-weight:400;
+    }
+    /* Projektweite Vorbemerkungen (ganz oben) */
+    .prelim-block {
+      border:1px solid #c5cae9; background:#f5f6ff; border-radius:6px;
+      padding:8px 10px; margin-bottom:10px;
+    }
+    .prelim-head { font-size:.82rem; font-weight:700; color:#1a237e; margin-bottom:5px; }
+    .prelim-block .info-remark { margin:3px 0; }
+
+    /* Ausblenden fertig zugeordneter Positionen */
+    body.hide-matched .imp-pos-done { display:none !important; }
+
+    /* Spinner im Upload-Bereich */
+    @keyframes imp-spin { to { transform: rotate(360deg); } }
+    .imp-spinner {
+      display:block; width:16px; height:16px; flex-shrink:0;
+      border:2px solid #c5cae9; border-top-color:#3f51b5;
+      border-radius:50%; animation:imp-spin .7s linear infinite;
+    }
+
+    /* rm-btn (identisch zu d83.html) */
+    .rm-btn {
+      border:none; background:none; color:#ccc; cursor:pointer;
+      font-size:.8rem; padding:1px 3px; border-radius:3px; line-height:1;
+    }
+    .rm-btn:hover { background:#fde; color:#c00; }
+
+    /* Formular */
+    .form-grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    .form-row { margin-bottom:6px; }
+    .form-row label {
+      display:block; font-size:.72rem; font-weight:700;
+      color:#555; margin-bottom:2px; text-transform:uppercase; letter-spacing:.03em;
+    }
+    .form-row input[type=text],
+    .form-row input[type=date],
+    .form-row input[type=number],
+    .form-row select {
+      width:100%; box-sizing:border-box;
+      border:1px solid #ccc; border-radius:4px;
+      padding:4px 8px; font-size:.86rem;
+    }
+    .form-row input:focus, .form-row select:focus {
+      outline:2px solid #3f51b5; border-color:#3f51b5;
+    }
+    .form-row .help { font-size:.7rem; color:#888; margin-top:1px; line-height:1.25; }
+
+    /* Autocomplete */
+    .ac-wrap { position:relative; }
+    .ac-list {
+      position:absolute; top:100%; left:0; right:0; z-index:20;
+      background:#fff; border:1px solid #ccc; border-radius:4px;
+      box-shadow:0 2px 8px rgba(0,0,0,.12);
+      max-height:180px; overflow-y:auto; display:none;
+    }
+    .ac-list.open { display:block; }
+    .ac-item { padding:5px 9px; cursor:pointer; font-size:.85rem; }
+    .ac-item:hover { background:#e8eaf6; }
+    .ac-selected { font-size:.75rem; color:#2e7d32; margin-top:2px; }
+    .req { color:#c62828; }   /* Pflichtfeld-Stern */
+    /* Kontaktpersonen der gewählten Firma (eingerückt) */
+    .contact-box { margin:4px 0 0 14px; padding-left:10px; border-left:2px solid #e0e0e0; }
+    .contact-hint { font-size:.72rem; color:#888; margin:2px 0; }
+    .contact-item {
+      padding:3px 8px; cursor:pointer; font-size:.82rem; border-radius:4px;
+      display:flex; justify-content:space-between; gap:8px; align-items:baseline;
+    }
+    .contact-item:hover { background:#e8eaf6; }
+    .contact-item.contact-active { background:#c8e6c9; font-weight:600; }
+    .contact-phone { color:#999; font-size:.72rem; white-space:nowrap; }
+
+    /* Modus-Umschalter */
+    .mode-toggle {
+      display:flex; gap:0; margin-bottom:10px;
+      border:1px solid #c5cae9; border-radius:5px; overflow:hidden;
+    }
+    .mode-opt {
+      flex:1; display:flex; align-items:center; justify-content:center;
+      padding:4px 8px; font-size:.75rem; line-height:1.2; cursor:pointer; text-align:center;
+      background:#fff; color:#555; transition:background .12s, color .12s;
+    }
+    .mode-opt + .mode-opt { border-left:1px solid #c5cae9; }
+    .mode-opt input { display:none; }
+    .mode-opt-active { background:#1a237e; color:#fff; font-weight:600; }
+
+    /* Ergebnis-Log */
+    .result-log { max-height:400px; overflow-y:auto; margin-top:10px; }
+    .log-line {
+      display:flex; align-items:flex-start; gap:6px;
+      padding:3px 0; font-size:.82rem; border-bottom:1px solid #f5f5f5;
+    }
+    .log-line.indent { padding-left:20px; }
+    .log-ok  { color:#2e7d32; font-weight:700; flex-shrink:0; }
+    .log-err { color:#c62828; font-weight:700; flex-shrink:0; }
+
+    .htmx-indicator { display:none; }
+    .htmx-request .htmx-indicator { display:inline; }
+
+    /* Job-Chips */
+    .lj-header {
+      display:flex; align-items:center; flex-wrap:wrap; gap:4px;
+      padding:4px 2px;
+    }
+    .lj-lbl { font-size:.78rem; color:#888; font-weight:600; margin-right:2px; }
+    .lj-item { display:inline-flex; align-items:center; gap:2px; }
+    .lj-chip {
+      font-size:.78rem; padding:2px 8px; border-radius:10px;
+      background:#e8eaf6; color:#1a237e; font-weight:600;
+      cursor:pointer; user-select:none; transition:opacity .15s;
+    }
+    .lj-chip:hover { background:#c5cbe9; }
+    .lj-chip-inactive { opacity:.35; text-decoration:line-through; }
+    .rename-btn {
+      border:none; background:none; color:#ccc; cursor:pointer;
+      font-size:.8rem; padding:1px 3px; border-radius:3px; flex-shrink:0; line-height:1;
+    }
+    .rename-btn:hover { color:#3f51b5; background:#e8eaf6; }
+    .rename-input {
+      width:120px; border:1px solid #ccc; border-radius:4px;
+      padding:2px 6px; font-size:.82rem; font-weight:600;
+    }
+    .rename-input:focus { outline:2px solid #3f51b5; border-color:#3f51b5; }
+
+    /* Buttons in HG-Zeile */
+    .hg-job-wrap { display:flex; align-items:center; gap:3px; flex-shrink:0; }
+    .job-btn {
+      border:1px solid #c5c9e0; background:#fff; color:#555;
+      border-radius:4px; padding:2px 9px; font-size:.78rem;
+      cursor:pointer; white-space:nowrap; transition:background .1s;
+    }
+    .job-btn:hover { background:#e8eaf6; border-color:#3f51b5; color:#3f51b5; }
+    .job-btn-active {
+      background:#3f51b5; color:#fff; border-color:#3f51b5; font-weight:600;
+    }
+    .job-btn-active:hover { background:#303f9f; }
+
+    .btn-add-job {
+      border:1px solid #3f51b5; background:#fff; color:#3f51b5;
+      border-radius:4px; padding:2px 8px; font-size:.78rem;
+      cursor:pointer; white-space:nowrap;
+    }
+    .btn-add-job:hover { background:#e8eaf6; }
+    .new-job-input {
+      width:90px; border:1px solid #ccc; border-radius:0 4px 4px 0;
+      padding:3px 6px; font-size:.82rem;
+    }
+    .new-job-input:focus { outline:2px solid #3f51b5; border-color:#3f51b5; }
+    .btn-confirm-job {
+      background:#3f51b5; color:#fff; border:none;
+      border-radius:4px; padding:3px 9px; font-size:.78rem; cursor:pointer;
+    }
+    .btn-confirm-job:hover { background:#303f9f; }
+    .btn-cancel-job {
+      background:none; border:none; color:#aaa;
+      font-size:.85rem; cursor:pointer; padding:2px 5px;
+    }
+    .btn-cancel-job:hover { color:#c00; }
+
+    /* Btn Haupt */
+    .btn-primary {
+      background:#3f51b5; color:#fff; border:none; border-radius:5px;
+      padding:9px 16px; font-size:.9rem; cursor:pointer; font-weight:600;
+      width:100%; margin-top:4px;
+    }
+    .btn-primary:hover:not(:disabled) { background:#303f9f; }
+    .btn-primary:disabled { opacity:.45; cursor:not-allowed; }
+
+    .error-msg { color:#c62828; font-size:.85rem; padding:8px; }
+    .save-ok { color:#2e7d32; font-size:.82rem; }
+
+    /* stat-bar above groups */
+    .imp-stat-bar {
+      font-size:.78rem; color:#555; padding:3px 0 6px;
+      display:flex; gap:12px; flex-wrap:wrap;
+    }
+    .imp-stat-bar span { white-space:nowrap; }
+    .stat-ok  { color:#2e7d32; font-weight:600; }
+    .stat-mid { color:#b36b00; font-weight:600; }
+    .stat-low { color:#c62828; font-weight:600; }
+
+    @media(max-width:900px) {
+      .imp-body { grid-template-columns:1fr; }
+    }
+  </style>
+</head>
+<body>
+
+{% set nav_active = "import" %}
+{% set is_admin = S.is_admin %}
+{% set nav_status = (S.import_filename ~ " · " ~ (S.d83_project.items|length) ~ " Positionen") if (S.d83_project and S.import_filename) else "" %}
+{% include "partials/nav.html" %}
+
+<div class="imp-body">
+
+  <!-- Linke Spalte: Konfiguration + Projekt-Anlage (sticky) -->
+  <div class="imp-sidebar">
+
+    <!-- Upload -->
+    <div class="imp-panel">
+      <h2>1. X83 Datei laden</h2>
+      <div id="upload-label">
+        {% if S.import_filename %}
+        <label class="upload-loaded" for="imp-file-input">
+          <span class="upload-loaded-icon">✓</span>
+          <span class="upload-loaded-name">{{ S.import_filename }}</span>
+          <span class="upload-loaded-change">andere Datei</span>
+        </label>
+        {% else %}
+        <label class="upload-area" for="imp-file-input">
+          <div class="upload-icon">📁</div>
+          <div style="font-size:.82rem;line-height:1.2">Datei ablegen oder klicken
+            <span style="color:#999">· .d83 .x83 .xml</span></div>
+        </label>
+        {% endif %}
+      </div>
+      <input type="file" id="imp-file-input" name="file"
+             accept=".d83,.D83,.x83,.X83,.xml"
+             style="position:absolute;opacity:0;width:0;height:0;pointer-events:none"
+             onchange="uploadImport(this)">
+    </div>
+
+    {% if S.is_admin %}
+    <!-- Mapping-Quellen (nur Admin) -->
+    <div class="imp-panel">
+      <h2>Mapping-Quellen</h2>
+      <form hx-post="/api/settings/mappings"
+            hx-target="#mapping-save"
+            hx-swap="innerHTML"
+            hx-trigger="change">
+        <label class="toggle-label">
+          <input type="checkbox" name="use_train" value="1"
+                 {% if S.use_train_mappings %}checked{% endif %}>
+          Training-Mappings
+        </label>
+        <label class="toggle-label">
+          <input type="checkbox" name="use_gui" value="1"
+                 {% if S.use_gui_mappings %}checked{% endif %}>
+          GUI-Korrekturen
+        </label>
+        <span id="mapping-save" style="font-size:.75rem;display:block;margin-top:3px"></span>
+      </form>
+      <p style="font-size:.72rem;color:#888;margin-top:4px">Wirkt beim nächsten Datei-Upload</p>
+    </div>
+    {% endif %}
+
+    <!-- Projekt anlegen -->
+    <div class="imp-panel">
+      <h2>2. Easyjob-Projekt anlegen</h2>
+
+      <form hx-post="/api/import/create-project"
+            hx-target="#imp-result"
+            hx-swap="innerHTML"
+            hx-indicator="#imp-spin"
+            hx-disabled-elt="#imp-create-btn"
+            onsubmit="this.querySelector('#imp-create-btn').textContent='⏳ Wird erstellt …'">
+
+        <!-- Modus-Umschalter: neues Projekt vs. Jobs zu bestehendem Projekt -->
+        <div class="mode-toggle">
+          <label class="mode-opt mode-opt-active" id="imp-mode-new-lbl">
+            <input type="radio" name="target_mode" value="new" checked onchange="impSetMode('new')">
+            <span>Neues Projekt</span>
+          </label>
+          <label class="mode-opt" id="imp-mode-existing-lbl">
+            <input type="radio" name="target_mode" value="existing" onchange="impSetMode('existing')">
+            <span>Jobs zu bestehendem Projekt</span>
+          </label>
+        </div>
+
+        <input type="hidden" name="existing_project_id"   id="imp-existing-pid"   value="0">
+        <input type="hidden" name="existing_project_name" id="imp-existing-pname" value="">
+
+        <!-- Bestehendes Projekt (nur im Bestehend-Modus) -->
+        <div id="imp-existing-block" style="display:none">
+          <div class="form-row">
+            <label>Bestehendes Projekt <span class="req">*</span></label>
+            <div class="ac-wrap">
+              <input type="text" id="imp-proj-search" placeholder="Projekt suchen (Name oder Nummer) …"
+                     oninput="impSearchProject(this)" autocomplete="off">
+              <div id="imp-proj-list" class="ac-list"></div>
+            </div>
+            <div id="imp-proj-sel" class="ac-selected"></div>
+            <div class="help">Zeitraum unten wird bei Auswahl vom Projekt übernommen (anpassbar). Es werden nur neue Jobs hinzugefügt.</div>
+          </div>
+        </div>
+
+        <!-- Felder nur für neues Projekt -->
+        <div id="imp-new-block">
+
+        <!-- Projektname -->
+        <div class="form-row">
+          <label>Projektname <span class="req">*</span></label>
+          <input type="text" name="proj_name" id="imp-proj-name"
+                 value="{{ S.d83_project.name if S.d83_project else '' }}"
+                 placeholder="z.B. Messe Berlin 2026" required
+                 oninput="impSyncJobName(this.value)">
+        </div>
+
+        <!-- Referenznummer + Typ -->
+        <div class="form-grid-2">
+          <div class="form-row">
+            <label>Referenznummer</label>
+            <input type="text" name="ref_number" placeholder="z.B. ANG-2026-001">
+          </div>
+          <div class="form-row">
+            <label>Typ <span class="req">*</span></label>
+            <select name="id_project_type" required>
+              <option value="" disabled selected>— bitte wählen —</option>
+              {% for pt in proj_types %}
+              <option value="{{ pt.id }}">{{ pt.cap }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+
+        <!-- Veranstaltung -->
+        <div class="form-row">
+          <label>Veranstaltung</label>
+          <select name="id_event_calendar" id="imp-event-cal" onchange="impOnEventSelect(this)">
+            <option value="0">— keine —</option>
+            {% for ev in events %}
+            <option value="{{ ev.id }}"
+                    data-start="{{ ev.start }}"
+                    data-end="{{ ev.end }}">
+              {{ ev.start[:10] if ev.start else '' }} – {{ ev.end[:10] if ev.end else '' }} &middot; {{ ev.name }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <!-- Kunde -->
+        <div class="form-row">
+          <label>Kunde <span class="req">*</span></label>
+          <div class="ac-wrap">
+            <input type="text" id="imp-cust-search" placeholder="Adresse suchen …"
+                   oninput="impSearchAddress(this, 'imp-cust-list', 'id_address', 'imp-cust-sel')"
+                   autocomplete="off" required>
+            <div id="imp-cust-list" class="ac-list"></div>
+          </div>
+          <input type="hidden" name="id_address" id="id_address" value="1">
+          <input type="hidden" name="id_contact" id="id_contact" value="0">
+          <div id="imp-cust-sel" class="ac-selected"></div>
+          <div id="imp-cust-contacts" class="contact-box" style="display:none"></div>
+        </div>
+
+        <!-- Lieferadresse -->
+        <div class="form-row">
+          <label>Lieferadresse</label>
+          <div class="ac-wrap">
+            <input type="text" id="imp-deliv-search" placeholder="leer = Kunde"
+                   oninput="impSearchAddress(this, 'imp-deliv-list', 'id_delivery', 'imp-deliv-sel')"
+                   autocomplete="off">
+            <div id="imp-deliv-list" class="ac-list"></div>
+          </div>
+          <input type="hidden" name="id_delivery" id="id_delivery" value="0">
+          <input type="hidden" name="id_contact_delivery" id="id_contact_delivery" value="0">
+          <div id="imp-deliv-sel" class="ac-selected"></div>
+          <div id="imp-deliv-contacts" class="contact-box" style="display:none"></div>
+        </div>
+
+        </div><!-- /imp-new-block -->
+
+        <!-- Datum -->
+        <div class="form-grid-2">
+          <div class="form-row">
+            <label>Von <span class="req">*</span></label>
+            <input type="date" name="start_date" id="imp-start"
+                   value="{{ S.d83_project.date[:10] if S.d83_project and S.d83_project.date else '' }}"
+                   required>
+          </div>
+          <div class="form-row">
+            <label>Bis <span class="req">*</span></label>
+            <input type="date" name="end_date" id="imp-end" required>
+          </div>
+        </div>
+
+        <!-- Einsatztage (Berechnungsgrundlage / Preis-Progression) -->
+        <div class="form-row">
+          <label>Einsatztage</label>
+          <input type="number" name="einsatztage" id="imp-einsatztage"
+                 value="{{ '%g'|format(S.einsatztage) }}" min="0.1" step="0.1" lang="de"
+                 hx-post="/api/import/set-einsatztage"
+                 hx-target="#import-groups" hx-swap="innerHTML focus-scroll:false"
+                 hx-trigger="change" hx-params="einsatztage"
+                 style="max-width:120px">
+          <div class="help">Standard = Einsatztage · Dezimal möglich (z.B. 2,5)</div>
+        </div>
+
+        <!-- Jobname -->
+        <div class="form-row">
+          <label>Jobname</label>
+          <input type="text" name="job_caption" id="imp-job-caption"
+                 value="{{ S.d83_project.name if S.d83_project else 'Job 1' }}">
+          <div class="help">Füllt sich aus Projektname — frei bearbeitbar</div>
+        </div>
+
+        <!-- Import-Struktur -->
+        <div class="form-row">
+          <label>Gruppenstruktur</label>
+          <div style="display:flex;flex-direction:column;gap:3px;padding:2px 0">
+            <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer">
+              <input type="radio" name="import_mode" value="positions"
+                     {% if S.d83_import_mode == 'positions' or not S.d83_import_mode %}checked{% endif %}
+                     style="margin-top:3px"
+                     hx-get="/api/import/groups-display?mode=positions"
+                     hx-target="#import-groups"
+                     hx-trigger="change">
+              <span>
+                <b>HG = Gruppe</b>, Gruppe = Position
+                <span style="display:block;font-size:.78rem;color:#888">Jede Position → eigene EJ-Gruppe</span>
+              </span>
+            </label>
+            <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer">
+              <input type="radio" name="import_mode" value="groups"
+                     {% if S.d83_import_mode == 'groups' %}checked{% endif %}
+                     style="margin-top:3px"
+                     hx-get="/api/import/groups-display?mode=groups"
+                     hx-target="#import-groups"
+                     hx-trigger="change">
+              <span>
+                <b>HG = Hauptgruppe</b>, Gruppe = Gruppe
+                <span style="display:block;font-size:.78rem;color:#888">GAEB-Untergruppen als EJ-Gruppen</span>
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Nur Gruppen anlegen (kein Material/Personal) -->
+        <div class="form-row">
+          <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer">
+            <input type="checkbox" name="only_groups" value="1" style="margin-top:3px">
+            <span>
+              <b>Nur Gruppen anlegen</b>
+              <span style="display:block;font-size:.78rem;color:#888">Legt nur die Gruppenstruktur an — kein Material und kein Personal wird gebucht</span>
+            </span>
+          </label>
+        </div>
+
+
+        <button type="submit" id="imp-create-btn" class="btn-primary"
+                {% if not S.d83_project %}disabled{% endif %}>
+          Projekt anlegen
+        </button>
+        <span id="imp-spin" class="htmx-indicator" style="font-size:.8rem;color:#888">
+          ⏳ Wird erstellt …
+        </span>
+      </form>
+
+      <div id="imp-result" class="result-log"></div>
+    </div>
+
+  </div><!-- /linke Spalte -->
+
+  <!-- Rechte Spalte: Gruppen + Artikel-Matches -->
+  <div>
+
+    <div class="imp-panel">
+      <h2 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        Gruppen &amp; Artikel-Matches
+        <span style="margin-left:auto;display:flex;align-items:center;gap:10px">
+          <label style="font-size:.78rem;font-weight:400;cursor:pointer;display:flex;align-items:center;gap:5px;color:#555">
+            <input type="checkbox" id="hide-matched-toggle" onchange="toggleHideMatched(this)">
+            Zugeordnete ausblenden
+          </label>
+          <button id="lt-toggle-all-btn" type="button"
+                  onclick="toggleAllLangtexte()"
+                  class="btn btn-flat btn-sm" style="font-size:.72rem;padding:2px 8px;font-weight:400">
+            ▼ Langtexte ausklappen
+          </button>
+        </span>
+      </h2>
+      <div id="import-groups">
+        {% if groups %}
+          {% include "partials/import_groups.html" %}
+        {% else %}
+          <p style="color:#888;font-size:.85rem">Noch keine Datei geladen — bitte links hochladen.</p>
+        {% endif %}
+      </div>
+    </div>
+
+  </div><!-- /rechte Spalte -->
+
+</div><!-- /imp-body -->
+
+<!-- EJ Ersetzen-Modal -->
+<dialog id="imp-modal">
+  <div id="imp-modal-body" class="dialog-inner">
+    <!-- wird per HTMX befüllt -->
+  </div>
+</dialog>
+
+<script>
+// ── Modal ──────────────────────────────────────────────────────────────────────
+document.body.addEventListener('htmx:afterSettle', function(e) {
+  if (e.detail.target && e.detail.target.id === 'imp-modal-body') {
+    document.getElementById('imp-modal').showModal();
+  }
+});
+document.body.addEventListener('htmx:afterSwap', function(e) {
+  if (e.detail.target && e.detail.target.id === 'import-groups') {
+    var m = document.getElementById('imp-modal');
+    if (m && m.open) m.close();
+  }
+});
+
+// ejRowClick für Import-Dialog (identisch zur Hauptseite)
+function ejRowClick(tr, num, rawJson) {
+  document.querySelectorAll('#imp-modal-body tr.selected').forEach(function(r) {
+    r.classList.remove('selected');
+  });
+  tr.classList.add('selected');
+  var form = document.getElementById('ej-set-form');
+  if (!form) return;
+  form.querySelector('input[name=ej_num]').value   = num;
+  form.querySelector('input[name=raw_json]').value = rawJson;
+  var btn = document.getElementById('ej-set-btn');
+  if (btn) btn.disabled = false;
+  var addBtn = document.getElementById('ej-add-btn');
+  if (addBtn) addBtn.disabled = false;
+}
+
+// ── Ressource-Dialog ─────────────────────────────────────────────────────────
+function resSelect(id, name, art, tbodyId) {
+  var formId = document.getElementById('res-form-id');
+  if (formId) formId.value = id;
+  var formIdSet = document.getElementById('res-form-id-set');
+  if (formIdSet) formIdSet.value = id;
+  var nameEl = document.getElementById('res-sel-name');
+  if (nameEl) nameEl.textContent = name + ' [' + art + ']';
+  var sel = document.getElementById('res-selected');
+  if (sel) sel.style.display = 'block';
+  var btn = document.getElementById('res-add-btn');
+  if (btn) btn.disabled = false;
+  var setBtn = document.getElementById('res-set-btn');
+  if (setBtn) setBtn.disabled = false;
+  if (tbodyId) {
+    document.querySelectorAll('#' + tbodyId + ' tr').forEach(function(r) { r.classList.remove('selected'); });
+  }
+  event.currentTarget.classList.add('selected');
+}
+var _resT;
+function resSearchDebounce(q) {
+  clearTimeout(_resT);
+  var url = document.getElementById('res-search-url');
+  if (!url) return;
+  _resT = setTimeout(function() {
+    htmx.ajax('GET', url.value + '?q=' + encodeURIComponent(q), {target:'#res-results', swap:'innerHTML'});
+  }, 220);
+}
+
+// ── Upload ────────────────────────────────────────────────────────────────────
+function _setImpUploadLabel(name, state) {
+  const el = document.getElementById('upload-label');
+  if (!el) return;
+  if (state === 'loaded') {
+    el.innerHTML = '<label class="upload-loaded" for="imp-file-input">'
+      + '<span class="upload-loaded-icon">✓</span>'
+      + '<span class="upload-loaded-name">' + name + '</span>'
+      + '<span class="upload-loaded-change">andere Datei</span>'
+      + '</label>';
+  } else if (state === 'loading') {
+    el.innerHTML = '<div style="padding:8px 12px;display:flex;align-items:center;gap:8px;border:2px solid #c5cae9;border-radius:6px;background:#e8eaf6">'
+      + '<span class="imp-spinner"></span>'
+      + '<span style="font-size:.85rem;color:#3f51b5">' + name + ' wird eingelesen …</span>'
+      + '</div>';
+  } else {
+    el.innerHTML = '<label class="upload-area" for="imp-file-input">'
+      + '<div class="upload-icon">📁</div>'
+      + '<div style="font-size:.88rem">Datei hier ablegen oder klicken</div>'
+      + '<div style="font-size:.72rem;color:#999">.d83 · .x83 · .xml</div>'
+      + '</label>';
+  }
+}
+
+async function uploadImport(input) {
+  if (!input.files || !input.files[0]) return;
+  const file = input.files[0];
+  _setImpUploadLabel(file.name, 'loading');
+  document.getElementById('import-groups').innerHTML =
+    '<p style="color:#888;font-size:.85rem;padding:8px">⏳ Einlesen + Matching läuft …</p>';
+
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const resp = await fetch('/api/import/upload', {method: 'POST', body: fd});
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const html = await resp.text();
+    const el = document.getElementById('import-groups');
+    el.innerHTML = html;
+    if (typeof htmx !== 'undefined') htmx.process(el);
+    _setImpUploadLabel(file.name, 'loaded');
+    const btn = document.getElementById('imp-create-btn');
+    if (btn) btn.disabled = false;
+    const pnInput = document.getElementById('imp-proj-name');
+    if (pnInput && !pnInput.value) {
+      const stem = file.name.replace(/\.[^.]+$/, '');
+      pnInput.value = stem;
+      impSyncJobName(stem);
+    }
+  } catch(e) {
+    document.getElementById('import-groups').innerHTML =
+      '<p style="color:#c00;padding:8px">Fehler: ' + e.message + '</p>';
+    _setImpUploadLabel('', 'empty');
+  }
+}
+
+// ── Jobname sync ──────────────────────────────────────────────────────────────
+let _impJobManual = false;
+const _impJobCapInput = document.getElementById('imp-job-caption');
+if (_impJobCapInput) {
+  _impJobCapInput.addEventListener('input', function() { _impJobManual = true; });
+}
+function impSyncJobName(val) {
+  if (!_impJobManual && _impJobCapInput) {
+    _impJobCapInput.value = val;
+  }
+}
+
+// ── Adress-Suche ─────────────────────────────────────────────────────────────
+let _impAcTimers = {};
+function impSearchAddress(inputEl, listId, hiddenId, selectedId) {
+  const q = inputEl.value.trim();
+  clearTimeout(_impAcTimers[listId]);
+  if (q.length < 2) {
+    document.getElementById(listId).classList.remove('open');
+    return;
+  }
+  _impAcTimers[listId] = setTimeout(function() {
+    fetch('/api/d83/address-search?q=' + encodeURIComponent(q))
+      .then(r => r.json())
+      .then(function(items) {
+        const list = document.getElementById(listId);
+        if (!items.length) {
+          list.innerHTML = '<div class="ac-item" style="color:#aaa;pointer-events:none">Keine Ergebnisse</div>';
+          list.classList.add('open');
+          return;
+        }
+        list.innerHTML = items.map(function(a) {
+          const safe = (a.name || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+          return '<div class="ac-item" onclick="impSelectAcItem(\'' + listId + '\',\'' +
+            hiddenId + '\',\'' + selectedId + '\',' + a.id + ',\'' + safe + '\')">' +
+            (a.name || '') + '</div>';
+        }).join('');
+        list.classList.add('open');
+      }).catch(function() {
+        document.getElementById(listId).classList.remove('open');
+      });
+  }, 280);
+}
+
+function impSelectAcItem(listId, hiddenId, selectedId, id, name) {
+  document.getElementById(hiddenId).value = id;
+  document.getElementById(selectedId).textContent = '✓ ' + name;
+  document.getElementById(listId).classList.remove('open');
+  const list = document.getElementById(listId);
+  const input = list.previousElementSibling;
+  if (input && input.tagName === 'INPUT') input.value = name;
+  impLoadContacts(hiddenId, id);
+}
+
+// ── Kontaktpersonen der gewählten Firma (Zwei-Schritt, wie in Easyjob) ────────
+// Zuordnung Firmen-Feld → Kontakt-Container + verstecktes Kontakt-Feld
+const _impContactMap = {
+  'id_address':  { box: 'imp-cust-contacts',  hidden: 'id_contact' },
+  'id_delivery': { box: 'imp-deliv-contacts', hidden: 'id_contact_delivery' },
+};
+function impLoadContacts(hiddenId, idAddress) {
+  const cfg = _impContactMap[hiddenId];
+  if (!cfg) return;                       // Feld ohne Kontaktbezug → nichts tun
+  const box    = document.getElementById(cfg.box);
+  const hidden = document.getElementById(cfg.hidden);
+  hidden.value = '0';                     // Kontakt bei neuer Firma zurücksetzen
+  box.innerHTML = '<div class="contact-hint">Kontakte werden geladen …</div>';
+  box.style.display = '';
+  fetch('/api/d83/contacts?id_address=' + encodeURIComponent(idAddress))
+    .then(r => r.json())
+    .then(function(cs) {
+      if (!cs.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
+      let html = '<div class="contact-hint">Kontakt (optional):</div>';
+      html += cs.map(function(c) {
+        const nm = (c.name || '');
+        const ph = c.phone ? '<span class="contact-phone">' + c.phone + '</span>' : '';
+        return '<div class="contact-item" data-idc="' + c.idc + '" ' +
+          'onclick="impSelectContact(\'' + cfg.hidden + '\',this,' + c.idc + ')">' +
+          '<span>' + nm + '</span>' + ph + '</div>';
+      }).join('');
+      box.innerHTML = html;
+    })
+    .catch(function() { box.style.display = 'none'; box.innerHTML = ''; });
+}
+function impSelectContact(hiddenId, el, idc) {
+  const hidden  = document.getElementById(hiddenId);
+  const already = String(hidden.value) === String(idc);
+  el.parentElement.querySelectorAll('.contact-item')
+    .forEach(function(x) { x.classList.remove('contact-active'); });
+  if (already) {                          // nochmal klicken = Kontakt abwählen
+    hidden.value = '0';
+  } else {
+    hidden.value = idc;
+    el.classList.add('contact-active');
+  }
+}
+
+// ── Modus: neues Projekt vs. Jobs zu bestehendem Projekt ──────────────────────
+function impSetMode(mode) {
+  const isNew = (mode === 'new');
+  document.getElementById('imp-new-block').style.display      = isNew ? '' : 'none';
+  document.getElementById('imp-existing-block').style.display = isNew ? 'none' : '';
+  // required nur auf sichtbaren Feldern lassen — versteckte Pflichtfelder würden
+  // sonst das Absenden blockieren.
+  const projName   = document.getElementById('imp-proj-name');
+  const custSearch = document.getElementById('imp-cust-search');
+  const typeSel    = document.querySelector('select[name=id_project_type]');
+  [projName, custSearch, typeSel].forEach(function(el){ if (el) el.required = isNew; });
+  document.getElementById('imp-mode-new-lbl').classList.toggle('mode-opt-active', isNew);
+  document.getElementById('imp-mode-existing-lbl').classList.toggle('mode-opt-active', !isNew);
+  if (isNew) {
+    document.getElementById('imp-existing-pid').value = '0';
+    document.getElementById('imp-existing-pname').value = '';
+  }
+}
+
+// ── Projekt-Suche (Bestehend-Modus) ───────────────────────────────────────────
+function impSearchProject(inputEl) {
+  const q = inputEl.value.trim();
+  clearTimeout(_impAcTimers['imp-proj-list']);
+  const list = document.getElementById('imp-proj-list');
+  if (q.length < 2) { list.classList.remove('open'); return; }
+  _impAcTimers['imp-proj-list'] = setTimeout(function() {
+    fetch('/api/import/project-search?q=' + encodeURIComponent(q))
+      .then(r => r.json())
+      .then(function(items) {
+        if (!items.length) {
+          list.innerHTML = '<div class="ac-item" style="color:#aaa;pointer-events:none">Keine Ergebnisse</div>';
+          list.classList.add('open'); return;
+        }
+        list.innerHTML = items.map(function(p) {
+          const esc = function(s){ return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'"); };
+          return '<div class="ac-item" onclick="impSelectProject(' + p.id + ',\'' +
+            esc(p.num) + '\',\'' + esc(p.name) + '\',\'' + esc(p.start) + '\',\'' + esc(p.end) + '\')">' +
+            '[' + (p.num || '') + '] ' + (p.name || '') +
+            ' <span style="color:#999">· ' + (p.start || '') + '</span></div>';
+        }).join('');
+        list.classList.add('open');
+      }).catch(function(){ list.classList.remove('open'); });
+  }, 280);
+}
+
+function impSelectProject(id, num, name, start, end) {
+  const label = '[' + num + '] ' + name;
+  document.getElementById('imp-existing-pid').value   = id;
+  document.getElementById('imp-existing-pname').value = name;
+  document.getElementById('imp-proj-sel').textContent = '✓ ' + label;
+  document.getElementById('imp-proj-search').value    = label;
+  document.getElementById('imp-proj-list').classList.remove('open');
+  // Zeitraum vom Projekt übernehmen (bleibt anpassbar)
+  if (start) document.getElementById('imp-start').value = start;
+  if (end)   document.getElementById('imp-end').value   = end;
+}
+
+// ── Veranstaltungs-Dropdown ───────────────────────────────────────────────────
+function impOnEventSelect(sel) {
+  const opt = sel.options[sel.selectedIndex];
+  const start = opt.dataset.start, end = opt.dataset.end;
+  if (start) document.getElementById('imp-start').value = start;
+  if (end)   document.getElementById('imp-end').value = end;
+}
+
+// Klick außerhalb schließt Dropdowns
+document.addEventListener('click', function(e) {
+  document.querySelectorAll('.ac-list.open').forEach(function(list) {
+    if (!list.contains(e.target) && !list.previousElementSibling.contains(e.target)) {
+      list.classList.remove('open');
+    }
+  });
+});
+
+// Button-Text nach Erstellung zurücksetzen
+document.addEventListener('htmx:afterRequest', function(e) {
+  if (e.detail.pathInfo && e.detail.pathInfo.requestPath === '/api/import/create-project') {
+    const btn = document.getElementById('imp-create-btn');
+    if (btn) btn.textContent = 'Projekt anlegen';
+  }
+});
+
+
+// ── Job-Rename-Chip ───────────────────────────────────────────────────────────
+function importToggleJobRename(lid) {
+  const chipId = (lid === 0) ? 'iljchip-0' : 'iljchip-' + lid;
+  const formId = (lid === 0) ? 'iljrnf-0'  : 'iljrnf-' + lid;
+  const chip = document.getElementById(chipId);
+  const form = document.getElementById(formId);
+  if (!form) return;
+  const visible = form.style.display !== 'none';
+  form.style.display = visible ? 'none' : 'flex';
+  if (chip) chip.style.display = visible ? '' : 'none';
+  if (!visible) {
+    const inp = form.querySelector('input[name=new_name]');
+    if (inp) { inp.select(); inp.focus(); }
+  }
+}
+
+// ── + Job (Header) ────────────────────────────────────────────────────────────
+function importToggleAddJobForm() {
+  const form = document.getElementById('iljf-hdr');
+  const btn  = document.getElementById('ilja-btn-hdr');
+  if (!form) return;
+  const visible = form.style.display !== 'none';
+  form.style.display = visible ? 'none' : 'flex';
+  if (btn) btn.style.display = visible ? '' : 'none';
+  if (!visible) {
+    const inp = form.querySelector('input[name=job_name]');
+    if (inp) { inp.value = ''; inp.focus(); }
+  }
+}
+
+// ── + Job (pro HG) ────────────────────────────────────────────────────────────
+function importToggleLjForm(i) {
+  const form = document.getElementById('iljf-' + i);
+  const btn  = document.getElementById('ilja-btn-' + i);
+  if (!form) return;
+  const visible = form.style.display !== 'none';
+  form.style.display = visible ? 'none' : 'flex';
+  if (btn) btn.style.display = visible ? '' : 'none';
+  if (!visible) {
+    const inp = form.querySelector('input[name=job_name]');
+    if (inp) { inp.value = ''; inp.focus(); }
+  }
+}
+
+// ── Zugeordnete ausblenden ────────────────────────────────────────────────────
+function toggleHideMatched(cb) {
+  document.body.classList.toggle('hide-matched', cb.checked);
+}
+
+// ── Langtexte alle aus-/einklappen ───────────────────────────────────────────
+function toggleAllLangtexte() {
+  // Positions-Langtexte UND Info-/Vorbemerkungstexte gemeinsam auf-/einklappen
+  var details = document.querySelectorAll('.pos-lt-details, .info-remark');
+  var openCount = Array.from(details).filter(function(d){ return d.open; }).length;
+  var shouldOpen = openCount < details.length / 2;
+  details.forEach(function(d){ d.open = shouldOpen; });
+  var btn = document.getElementById('lt-toggle-all-btn');
+  if (btn) btn.textContent = shouldOpen ? '▲ Langtexte einklappen' : '▼ Langtexte ausklappen';
+}
+
+// ── Job-Filter ────────────────────────────────────────────────────────────────
+let _impHiddenLids = new Set();
+function importToggleLidFilter(lid) {
+  if (_impHiddenLids.has(lid)) {
+    _impHiddenLids.delete(lid);
+  } else {
+    _impHiddenLids.add(lid);
+  }
+  _impApplyFilter();
+}
+function _impApplyFilter() {
+  document.querySelectorAll('#import-groups .category-group[data-lid]').forEach(function(el) {
+    const lid = parseInt(el.dataset.lid);
+    el.style.display = _impHiddenLids.has(lid) ? 'none' : '';
+  });
+  document.querySelectorAll('#import-groups .lj-filter-chip').forEach(function(chip) {
+    const lid = parseInt(chip.dataset.lid);
+    chip.classList.toggle('lj-chip-inactive', _impHiddenLids.has(lid));
+  });
+}
+
+// ── Kategorie-Aufklapp-Logik ──────────────────────────────────────────────────
+let _impCatState = {};
+
+function _impCatKey(header) {
+  const parts = [];
+  let el = header.closest('.category-group');
+  while (el) {
+    const h = el.querySelector(':scope > .category-header');
+    if (h) {
+      const lbl = h.querySelector('span:nth-child(2)');
+      parts.unshift(lbl ? lbl.textContent.trim() : '');
+    }
+    el = el.parentElement ? el.parentElement.closest('.category-group') : null;
+  }
+  return parts.join(' > ');
+}
+
+function toggleCat(header) {
+  const arrow = header.querySelector('span:first-child');
+  const body  = header.nextElementSibling;
+  if (!body) return;
+  const open  = body.style.display !== 'none';
+  body.style.display = open ? 'none' : '';
+  if (arrow) arrow.textContent = open ? '▶' : '▼';
+  _impCatState[_impCatKey(header)] = !open;
+}
+
+function _impRestoreCatState() {
+  document.querySelectorAll('#import-groups .category-header').forEach(function(header) {
+    const key = _impCatKey(header);
+    if (!(key in _impCatState)) return;
+    const arrow = header.querySelector('span:first-child');
+    const body  = header.nextElementSibling;
+    if (!body) return;
+    const shouldOpen = _impCatState[key];
+    body.style.display = shouldOpen ? '' : 'none';
+    if (arrow) arrow.textContent = shouldOpen ? '▼' : '▶';
+  });
+}
+
+// ── HTMX-Swap-Hooks ───────────────────────────────────────────────────────────
+let _impScrollY = 0;
+
+document.addEventListener('mousedown', function(e) {
+  const grp = document.getElementById('import-groups');
+  if (grp && grp.contains(e.target)) {
+    _impScrollY = window.scrollY;
+  }
+}, true);
+
+// Einsatztage-Feld liegt links in der Sidebar (nicht in #import-groups), löst aber
+// einen Swap von #import-groups aus. Scroll-Position vor dem Request merken, damit
+// der afterSwap/afterSettle-Restore unten sie korrekt hält statt nach oben zu springen.
+document.addEventListener('htmx:beforeRequest', function(e) {
+  const elt = e.detail && e.detail.elt;
+  if (elt && elt.id === 'imp-einsatztage') {
+    _impScrollY = window.scrollY;
+  }
+});
+
+document.addEventListener('htmx:afterSwap', function(evt) {
+  if (evt.detail.target && evt.detail.target.id === 'import-groups') {
+    _impRestoreCatState();
+    window.scrollTo({top: _impScrollY, behavior: 'instant'});
+  }
+});
+
+document.addEventListener('htmx:afterSettle', function(evt) {
+  if (evt.detail.target && evt.detail.target.id === 'import-groups') {
+    _impRestoreCatState();
+    window.scrollTo({top: _impScrollY, behavior: 'instant'});
+    const marker = document.getElementById('import-std-job-data');
+    if (marker) {
+      const suffix = marker.dataset.suffix || '';
+      if (!_impJobManual && _impJobCapInput) {
+        const pn = document.getElementById('imp-proj-name');
+        if (pn && suffix && suffix !== 'Standard') {
+          _impJobCapInput.value = pn.value + ' ' + suffix;
+        }
+      }
+    }
+    _impApplyFilter();
+  }
+});
+</script>
+
+</body>
+</html>

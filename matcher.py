@@ -514,6 +514,8 @@ VERKABELUNG_BOOST = 38
 
 @dataclass
 class Article:
+    ej_id: int
+    id_time_factor: int   # EJ: StockType.IdTimeFactor — Berechnungsgrundlage/Preisprogression
     nummer: str
     bezeichnung: str
     warengruppe: str
@@ -562,6 +564,7 @@ class Resource:
     funktion: str
     ressourcenart: str   # 'Personal', 'Fahrzeug', 'Arbeitsmittel'
     tagessatz: float
+    eigenkosten: float
     satzname: str
     gaeb_synonyms: list[str]
 
@@ -632,8 +635,8 @@ def _parse_synonyms(kommentar: str) -> list[str]:
 
 
 def _is_excluded(it: dict) -> bool:
-    bezeichnung = it.get("Bezeichnung", "") or ""
-    warengruppe = it.get("Warengruppe", "") or ""
+    bezeichnung = it.get("Bezeichnung") or it.get("bezeichnung") or ""
+    warengruppe = it.get("Warengruppe") or it.get("warengruppe") or ""
     bez_upper = bezeichnung.upper()
     if any(bez_upper.startswith(p.upper()) for p in EXCLUDE_PREFIXES):
         return True
@@ -702,6 +705,8 @@ def load_articles_db() -> list[Article]:
             continue
         kommentar = it.get("kommentar") or ""
         articles.append(Article(
+            ej_id=int(it.get("ej_id") or 0),
+            id_time_factor=int(it.get("id_time_factor") or 0),
             nummer=it.get("nummer", ""),
             bezeichnung=it.get("bezeichnung", ""),
             warengruppe=it.get("warengruppe", ""),
@@ -728,11 +733,47 @@ def load_resources_db() -> list[Resource]:
             funktion=(r.get("funktion") or "").strip(),
             ressourcenart=r.get("ressourcenart", ""),
             tagessatz=float(r.get("tagessatz") or 0),
+            eigenkosten=float(r.get("eigenkosten") or 0),
             satzname=r.get("satzname") or "",
             gaeb_synonyms=[],
         )
         for r in rows if (r.get("funktion") or "").strip()
     ]
+
+
+def resolve_time_factor(curves: dict[int, list[dict]], id_time_factor: int,
+                        einsatztage: float) -> float:
+    """Löst die Berechnungsgrundlage (EJ: TimeFactor) zu ihrem Faktor auf.
+
+    `curves` kommt aus db.load_time_factor_curves_db(): {id_time_factor: [Stufen]},
+    jede Stufe {"commitment_days", "step_next_commitment_days", "factor"} aufsteigend
+    sortiert.
+
+    Formel (wie EJ intern): maßgeblich ist die höchste Stufe deren commitment_days
+    <= einsatztage. Innerhalb der Stufe wird linear mit step_next_commitment_days
+    (Faktor-Zuwachs pro Tag) hochgerechnet:
+
+        faktor = stufe.factor + (einsatztage - stufe.commitment_days) * stufe.step_next
+
+    Beispiele mit echten MLD-Kurven:
+      - „Standard" (1 Zeile: cd=0, factor=0, step=1.0) → faktor = einsatztage
+        (⇒ „Berechnungstage entsprechen den Einsatztagen")
+      - „nur Ein Tag" / „E3 Group" (alle step=0, factor=1) → faktor = 1.0 (keine Progression)
+      - „Video" (gestaffelt) → 2 Tage=1.6, 4 Tage=2.6, 10 Tage=5.0, …
+
+    Kurve unbekannt → 1.0 (kein Aufschlag, sicherer Fallback).
+    """
+    items = curves.get(int(id_time_factor or 0))
+    if not items:
+        return 1.0
+    stufe = items[0]
+    for it in items:
+        if einsatztage >= it["commitment_days"]:
+            stufe = it
+        else:
+            break
+    step = stufe.get("step_next_commitment_days") or 0.0
+    return stufe["factor"] + (einsatztage - stufe["commitment_days"]) * step
 
 
 def load_articles(json_path: str | Path) -> list[Article]:
@@ -748,6 +789,8 @@ def load_articles(json_path: str | Path) -> list[Article]:
             continue
         kommentar = it.get("Kommentar") or ""
         articles.append(Article(
+            ej_id=int(it.get("IdStockType") or 0),
+            id_time_factor=int(it.get("IdTimeFactor") or 0),
             nummer=it.get("Nummer", ""),
             bezeichnung=it.get("Bezeichnung", ""),
             warengruppe=it.get("Warengruppe", ""),
@@ -841,7 +884,15 @@ class UnifiedMatcher:
         self._section_map:    dict[str, list[str]] = {}
         self._bundle_extras:  dict[str, list[str]] = {}  # description → [extra_nums]
 
-        from db import load_train_mappings, load_gui_mappings
+        # Ressource-ID → Pool-Index (für GUI-Ressource-Mappings)
+        self._id_to_resource_idx: dict[int, int] = {
+            r.id: len(articles) + i for i, r in enumerate(resources)
+        }
+        # GUI-Ressource-Mappings: GAEB-Beschreibung → Ressource-ID
+        self._gui_resource_keys: list[str] = []
+        self._gui_resource_ids:  list[int] = []
+
+        from db import load_train_mappings, load_gui_mappings, load_gui_resource_mappings
 
         def _apply(primary: dict[str, str], extras: dict[str, list[str]],
                    source: str) -> None:
@@ -862,9 +913,32 @@ class UnifiedMatcher:
         gui_primary, gui_extras = load_gui_mappings()
         _apply(gui_primary, gui_extras, "gui")
 
+        for desc, rid in load_gui_resource_mappings().items():
+            if rid in self._id_to_resource_idx:
+                self._gui_resource_keys.append(desc)
+                self._gui_resource_ids.append(rid)
+
     @property
     def _article_indices(self) -> list[int]:
         return list(range(len(self.articles)))
+
+    def apply_mapping_filter(self, use_train: bool, use_gui: bool) -> None:
+        """Behält nur Mappings der aktiven Quellen. Deaktivierte Quellen (train/gui)
+        werden aus dem In-Memory-Index entfernt. Wirkt auf den nächsten Match-Lauf."""
+        if use_train and use_gui:
+            return
+        keep = [
+            (k, n, src)
+            for k, n, src in zip(self._res_keys, self._res_nums, self._res_sources)
+            if (src == "train" and use_train) or (src == "gui" and use_gui)
+        ]
+        if keep:
+            ks, ns, srcs = zip(*keep)
+            self._res_keys    = list(ks)
+            self._res_nums    = list(ns)
+            self._res_sources = list(srcs)
+        else:
+            self._res_keys = self._res_nums = self._res_sources = []
 
     def add_learned_bundle(self, gaeb_description: str, numbers: list[str]) -> None:
         """Aktualisiert In-Memory-Index für Primary + Extras. Leere Liste = vergessen."""
@@ -889,6 +963,25 @@ class UnifiedMatcher:
             self._bundle_extras[gaeb_description] = extras
         else:
             self._bundle_extras.pop(gaeb_description, None)
+
+    def add_learned_resource(self, gaeb_description: str, resource_id: int) -> None:
+        """Aktualisiert In-Memory-Index für GUI-Ressource-Mappings."""
+        if not gaeb_description.strip():
+            return
+        # Alten Eintrag für diese Beschreibung entfernen
+        pairs = [
+            (k, rid) for k, rid in zip(self._gui_resource_keys, self._gui_resource_ids)
+            if k != gaeb_description
+        ]
+        if resource_id and resource_id in self._id_to_resource_idx:
+            pairs.append((gaeb_description, resource_id))
+        if pairs:
+            ks, ids = zip(*pairs)
+            self._gui_resource_keys = list(ks)
+            self._gui_resource_ids  = list(ids)
+        else:
+            self._gui_resource_keys = []
+            self._gui_resource_ids  = []
 
     def get_bundle_extras(self, query: str) -> list[str]:
         """Gibt gelernte Zusatzartikel-Nummern für eine GAEB-Beschreibung zurück."""
@@ -1035,6 +1128,24 @@ class UnifiedMatcher:
                             if boost > mapping_boosts.get(pidx, 0):
                                 mapping_boosts[pidx] = boost
                                 mapping_sources[pidx] = self._res_sources[midx]
+
+        # 1a'. GUI-Ressource-Mappings: bekannte Ressourcen aus manueller Zuordnung
+        if self._gui_resource_keys:
+            for q_var in dict.fromkeys([query, query_de]):
+                res_hits = process.extract(
+                    q_var, self._gui_resource_keys,
+                    scorer=fuzz.token_sort_ratio,
+                    limit=3,
+                )
+                for _, map_score, midx in res_hits:
+                    if map_score >= 70:
+                        rid  = self._gui_resource_ids[midx]
+                        pidx = self._id_to_resource_idx.get(rid)
+                        if pidx is not None:
+                            boost = (map_score - 65) ** 2 / 15
+                            if boost > mapping_boosts.get(pidx, 0):
+                                mapping_boosts[pidx] = boost
+                                mapping_sources[pidx] = "gui-resource"
 
         # 1b. Section-Label Matching (besonders hilfreich für englische GAEB-Abschnitte)
         # Boost bewusst klein gehalten: Traverse-Typ-Scoring soll dominieren.
@@ -1215,6 +1326,8 @@ class UnifiedMatcher:
             if _mb:
                 if idx in _lt_boosts:
                     _mb_label = "Langtext-Hersteller-Treffer"
+                elif mapping_sources.get(idx) == "gui-resource":
+                    _mb_label = "Mapping-Boost (Ressource gelernt)"
                 elif mapping_sources.get(idx) == "gui":
                     _mb_label = "Mapping-Boost (GUI-Korrektur)"
                 else:
@@ -1648,6 +1761,8 @@ def make_article_from_ej(item: dict, details: dict | None = None,
     inv     = int(details.get("RentalInventory", 0)) if details else 0
     comment = (details.get("Comment", "") or "").strip() if details else ""
     return Article(
+        ej_id=int(item.get("ID") or item.get("IdStockType") or 0),
+        id_time_factor=int((details or {}).get("IdTimeFactor") or item.get("IdTimeFactor") or 0),
         nummer=nummer,
         bezeichnung=item.get("Caption", ""),
         warengruppe=item.get("Category", ""),

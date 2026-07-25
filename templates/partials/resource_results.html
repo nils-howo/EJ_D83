@@ -1,0 +1,16 @@
+{% if results %}
+<table class="ej-table">
+  <thead><tr><th>Art</th><th>Funktion</th><th>Tagessatz</th></tr></thead>
+  <tbody id="res-search-body">
+  {% for r in results %}
+  <tr onclick='resSelect({{ r.id }}, {{ r.funktion|tojson }}, {{ r.ressourcenart|tojson }}, "res-search-body")'>
+    <td><span class="res-art-badge">{{ r.ressourcenart }}</span></td>
+    <td>{{ r.funktion }}</td>
+    <td style="font-size:.78rem;color:#666">{{ '%.2f'|format(r.tagessatz) }} €</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p style="font-size:.78rem;color:#888;padding:8px">Keine Treffer.</p>
+{% endif %}

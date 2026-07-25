@@ -4,8 +4,8 @@ Aufruf: python test_jobs_create.py [IdProject]
 """
 import json, os, sys
 from dotenv import load_dotenv
-load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
-sys.path.insert(0, os.path.dirname(__file__))
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from easyjob_api import EjLiveClient
 
 EJ_URL  = os.environ["EJ_BASE_URL"]

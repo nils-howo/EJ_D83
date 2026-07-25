@@ -11,7 +11,7 @@ from fastapi.templating import Jinja2Templates
 load_dotenv()
 
 from gaeb_parser import GaebProject
-from matcher import MatchResult, UnifiedMatcher
+from matcher import MatchResult, UnifiedMatcher, resolve_time_factor
 from easyjob_api import EjLiveClient
 
 # ─── Pfade ────────────────────────────────────────────────────────────────────
@@ -23,12 +23,40 @@ TRAIN_MAPPINGS_PATH = BASE_DIR / "mappings.json"
 
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
+import re as _re
+from markupsafe import Markup as _Markup, escape as _escape
+
+_URL_RE = _re.compile(r'(https?://[^\s<>"]+[^\s<>.,;:!?"\')\]}])')
+
+def _autolink(text: str) -> _Markup:
+    """HTML-escaped Text mit klickbaren URLs."""
+    escaped = str(_escape(text))
+    linked  = _URL_RE.sub(
+        lambda m: f'<a href="{m.group(1)}" target="_blank" rel="noopener noreferrer">{m.group(1)}</a>',
+        escaped,
+    )
+    return _Markup(linked)
+
+templates.env.filters["autolink"] = _autolink
+templates.env.globals["resolve_time_factor"] = resolve_time_factor
+
 
 # ─── Hilfsfunktion DB-Verbindungsstring ──────────────────────────────────────
 
 def _build_db_conn(server: str, db: str, uid: str, pwd: str) -> str:
     driver = os.environ.get("EJ_DB_DRIVER", "ODBC Driver 18 for SQL Server")
     return f"DRIVER={{{driver}}};SERVER={server};DATABASE={db};UID={uid};PWD={pwd};TrustServerCertificate=yes"
+
+
+def is_admin_login(ej_user: str) -> bool:
+    """Prüft, ob der Login-Name in der Admin-Liste (Env ADMIN_LOGINS) steht.
+    Kommasepariert, Groß-/Kleinschreibung egal. Leere Liste = niemand ist Admin."""
+    admins = {
+        name.strip().lower()
+        for name in os.environ.get("ADMIN_LOGINS", "").split(",")
+        if name.strip()
+    }
+    return bool(ej_user) and ej_user.strip().lower() in admins
 
 
 # ─── Per-Session State ────────────────────────────────────────────────────────
@@ -41,6 +69,16 @@ class MatchProgress:
         self.error:   str  = ""
 
 
+class CreateProgress:
+    def __init__(self):
+        self.running:    bool        = False
+        self.step:       str         = ""
+        self.done:       int         = 0
+        self.total:      int         = 0
+        self.started_at: float       = 0.0
+        self.log:        list | None = None   # None = läuft noch; list = fertig
+
+
 class UserSession:
     """Vollständiger State pro Browser-Session — kein globales Singleton."""
     def __init__(self):
@@ -51,9 +89,7 @@ class UserSession:
         self.bundles:    dict[str, list]         = {}
         self.alt_active: dict                    = {}
         self.x83_bytes:  Optional[bytes]         = None
-        self.x84_bytes:  Optional[bytes]         = None
         self.x83_name:   str                     = ""
-        self.x84_name:   str                     = ""
         self.progress:   MatchProgress           = MatchProgress()
         # Einstellungen
         self.ej_url:             str  = os.environ.get("EJ_BASE_URL", "http://EASYJOB-TEST:8008")
@@ -66,6 +102,7 @@ class UserSession:
         self.ej_cache:   dict[str, list]        = {}
         self.ej_db_conn: str                    = ""
         self.ej_user_id: int                    = 0
+        self.is_admin:   bool                   = False
         # D83 Import
         self.d83_project:    Optional[GaebProject] = None
         self.d83_name:       str                   = ""
@@ -79,6 +116,11 @@ class UserSession:
         self.d83_next_lid:         int  = 2
         self.d83_group_jobs:       dict = {}   # group_name → lid (fehlend/1 = Standard-Job)
         self.d83_standard_job_name: str = ""   # leer = "Standard"; nach Umbenennung z.B. "Technik"
+        self.d83_alt_active:       dict = {}   # alt_key → "primary"|"alt"|"both"
+        self.d83_booking_qtys:     dict = {}   # item_id → {"qty": float, "lfm_converted": bool}
+        self.einsatztage:          float = 2.0  # Berechnungstage für Preis-Progression (Job.CommitmentDays), Dezimal erlaubt
+        self.import_filename: str = ""  # zuletzt hochgeladene Datei auf /import
+        self.create_progress: CreateProgress = CreateProgress()
 
 
 # ─── Session-Registry ─────────────────────────────────────────────────────────

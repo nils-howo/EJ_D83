@@ -1,0 +1,451 @@
+{# Marker: JS liest data-suffix für syncJobName #}
+<span id="import-std-job-data" data-suffix="{{ standard_job_name }}" style="display:none"></span>
+
+{% if imp_metrics and imp_metrics.total %}
+<div class="metrics-row" style="margin-bottom:8px">
+  <div class="metric-card"><div class="metric-val">{{ imp_metrics.total }}</div><div class="metric-lbl">Positionen</div></div>
+  <div class="metric-card"><div class="metric-val">{{ imp_metrics.matched }}/{{ imp_metrics.total }}</div><div class="metric-lbl">Zugeordnet</div></div>
+  <div class="metric-card"><div class="metric-val">{{ imp_metrics.confident }}</div><div class="metric-lbl">Sicher (≥85%)</div></div>
+  <div class="metric-card"><div class="metric-val" style="color:#1a237e">{{ imp_metrics.art_count }}</div><div class="metric-lbl">Artikel</div></div>
+  <div class="metric-card"><div class="metric-val" style="color:#5c35b0">{{ imp_metrics.res_count }}</div><div class="metric-lbl">Personal</div></div>
+  <div class="metric-card"><div class="metric-val" style="color:#5c35b0">{{ ('%g'|format(einsatztage))|replace('.', ',') }}</div><div class="metric-lbl">Einsatztage</div></div>
+  {% if imp_metrics.cost_mat %}<div class="metric-card" title="Näherung ohne Set-Zubehör (Stücklisten-Komponenten, die EJ beim Buchen automatisch mit eigenem Preis ergänzt). Die exakte Summe steht nach dem Import in EJ."><div class="metric-val" style="font-size:1rem">ca. {{ "%.0f €"|format(imp_metrics.cost_mat) }}</div><div class="metric-lbl">Mat.-Kosten</div></div>{% endif %}
+  {% if imp_metrics.cost_pers %}<div class="metric-card"><div class="metric-val" style="font-size:1rem">{{ "%.0f €"|format(imp_metrics.cost_pers) }}</div><div class="metric-lbl">Pers.-Kosten</div></div>{% endif %}
+</div>
+{% endif %}
+
+<div class="lj-header">
+  <span class="lj-lbl">Jobs:</span>
+
+  {# Standard-Job #}
+  <span class="lj-item">
+    <span class="lj-chip lj-filter-chip" data-lid="1" id="iljchip-0"
+          onclick="importToggleLidFilter(1)" title="Klicken zum Ein-/Ausblenden">
+      {{ standard_job_name or "Standard" }}
+    </span>
+    <button type="button" class="rename-btn" onclick="importToggleJobRename(0)" title="Umbenennen">✏</button>
+    <form id="iljrnf-0"
+          hx-post="/api/import/rename-standard-job"
+          hx-target="#import-groups"
+          hx-swap="innerHTML focus-scroll:false"
+          style="display:none;align-items:center;gap:3px">
+      <input type="text" name="new_name" class="rename-input"
+             value="{{ standard_job_name }}" placeholder="Standard" autocomplete="off">
+      <button type="submit" class="btn-confirm-job">✓</button>
+      <button type="button" class="btn-cancel-job" onclick="importToggleJobRename(0)">✕</button>
+    </form>
+  </span>
+
+  {# Extra Jobs #}
+  {% for job in local_jobs %}
+  <span class="lj-item">
+    <span class="lj-chip lj-filter-chip" data-lid="{{ job.lid }}" id="iljchip-{{ job.lid }}"
+          onclick="importToggleLidFilter({{ job.lid }})" title="Klicken zum Ein-/Ausblenden">
+      {{ job.name }}
+    </span>
+    <button type="button" class="rename-btn" onclick="importToggleJobRename({{ job.lid }})" title="Umbenennen">✏</button>
+    <form id="iljrnf-{{ job.lid }}"
+          hx-post="/api/import/rename-local-job"
+          hx-target="#import-groups"
+          hx-swap="innerHTML focus-scroll:false"
+          style="display:none;align-items:center;gap:3px">
+      <input type="hidden" name="lid" value="{{ job.lid }}">
+      <input type="text" name="new_name" class="rename-input"
+             value="{{ job.name }}" autocomplete="off">
+      <button type="submit" class="btn-confirm-job">✓</button>
+      <button type="button" class="btn-cancel-job" onclick="importToggleJobRename({{ job.lid }})">✕</button>
+    </form>
+  </span>
+  {% endfor %}
+
+  <button type="button" id="ilja-btn-hdr" class="btn-add-job"
+          onclick="importToggleAddJobForm()">＋ Job</button>
+  <form id="iljf-hdr"
+        hx-post="/api/import/local-add-job"
+        hx-target="#import-groups"
+        hx-swap="innerHTML focus-scroll:false"
+        style="display:none;align-items:center;gap:3px">
+    <input type="text" name="job_name" class="new-job-input"
+           placeholder="z.B. Licht" autocomplete="off">
+    <button type="submit" class="btn-confirm-job">Anlegen</button>
+    <button type="button" class="btn-cancel-job" onclick="importToggleAddJobForm()">✕</button>
+  </form>
+</div>
+<hr style="border:none;border-top:1px solid #e8eaf6;margin:4px 0 8px">
+
+{% if import_filename %}
+<div style="font-size:.78rem;color:#5c6bc0;margin-bottom:6px;padding:0 2px">
+  {{ import_filename }} &middot; {{ groups|length }} Gruppen
+  &middot; <span style="color:#2e7d32;font-weight:600">{{ matches|length }} Matches</span>
+</div>
+{% endif %}
+
+{% if not groups %}
+  <p style="color:#888;font-size:.85rem">Keine Gruppen gefunden.</p>
+{% else %}
+
+{# ── Makro: eine einzelne Positions-Zeile (pos-row Stil wie Hauptseite) ────── #}
+{% macro pos_row(pos, is_alt_style) %}
+{% set m   = matches.get(pos.item_id) %}
+{% set pct = [[m.score|int, 100]|min, 0]|max if m else 0 %}
+{% set bq  = booking_qtys.get(pos.item_id) %}
+{% set bqty = bq.qty if bq else pos.qty %}
+{% set lfm  = bq.lfm_converted if bq else false %}
+{% set plen = bq.piece_len if bq else none %}
+{% if is_alt_style %}
+  {% set border_clr = '#e65100' %}
+{% elif pct >= 85 %}
+  {% set border_clr = '#2e7d32' %}
+{% elif pct >= 55 %}
+  {% set border_clr = '#f57c00' %}
+{% elif m %}
+  {% set border_clr = '#ef9a9a' %}
+{% else %}
+  {% set border_clr = '#ccc' %}
+{% endif %}
+{% if pos.remarks %}{{ render_remarks(pos.remarks) }}{% endif %}
+<div class="pos-row{% if is_alt_style %} pos-row-alt{% endif %}{% if pct >= 99 and m and m.article %} imp-pos-done{% endif %}">
+
+  {# Links: GAEB-Info #}
+  <div class="pos-left" style="border-left-color:{{ border_clr }}">
+    {% if is_alt_style %}<span class="alt-badge">⇄ Alternativ</span>{% endif %}
+    {% if pos.oz %}<span class="oz-badge">{{ pos.oz }}</span>{% endif %}
+    <div class="pos-desc">{{ pos.desc }}</div>
+    <div class="pos-meta">Gefordert: <b>{{ pos.qty }} {{ pos.unit }}</b></div>
+    {% set has_imgs = pos.long_text_images and pos.long_text_images|length > 0 %}
+    {% if pos.long_text or has_imgs %}
+      {% if pos.long_text|length > 160 or has_imgs %}
+      <details class="pos-lt-details">
+        <summary class="pos-lt-summary">
+          <span class="pos-lt pos-lt-preview">{{ pos.long_text[:160] }}{% if pos.long_text|length > 160 %}&hellip;{% endif %} <span class="lt-hint">▼ {% if has_imgs %}Text + Bilder{% else %}mehr{% endif %} anzeigen</span></span>
+          <span class="lt-close">▲ einklappen</span>
+        </summary>
+        <div class="pos-lt pos-lt-full">{{ pos.long_text | autolink }}</div>
+        {% if has_imgs %}
+        <div class="pos-lt-imgs">
+          {% for src in pos.long_text_images %}
+          <img src="{{ src }}">
+          {% endfor %}
+        </div>
+        {% endif %}
+      </details>
+      {% else %}
+      <div class="pos-lt">{{ pos.long_text | autolink }}</div>
+      {% endif %}
+    {% endif %}
+    {% if m and m.article %}
+      <span class="score-badge {% if pct >= 85 %}score-high{% elif pct >= 55 %}score-mid{% else %}score-low{% endif %}">{{ pct }}% · {{ m.method }}</span>
+    {% elif not m %}
+      <span class="score-badge score-low">⚠ Nicht zugeordnet</span>
+    {% endif %}
+  </div>
+
+  {# Rechts: Artikel-Zuordnung #}
+  <div class="pos-right" style="position:relative">
+    <form hx-post="/api/import/position/remove"
+          hx-target="#import-groups" hx-swap="innerHTML focus-scroll:false"
+          style="position:absolute;top:4px;right:4px;margin:0">
+      <input type="hidden" name="item_id" value="{{ pos.item_id }}">
+      <button type="submit" class="rm-btn" title="Position entfernen">✕</button>
+    </form>
+    <div style="margin-bottom:6px;display:flex;gap:5px;flex-wrap:wrap">
+      <button class="btn btn-flat btn-sm"
+              hx-get="/api/import/ej/dialog/{{ pos.item_id }}"
+              hx-target="#imp-modal-body"
+              hx-swap="innerHTML">
+        {% if m and m.article %}🔄 Artikel bearbeiten{% else %}🔍 Artikel zuordnen{% endif %}
+      </button>
+      <button class="btn btn-flat btn-sm" style="color:#5c35b0"
+              hx-get="/api/import/resource/dialog/{{ pos.item_id }}"
+              hx-target="#imp-modal-body"
+              hx-swap="innerHTML">
+        {% if m and m.matched and not m.article and m.score > 0 %}🔄 Ressource bearbeiten{% else %}👤 Ressource{% endif %}
+      </button>
+    </div>
+
+    {# Haupt-Match als Bundle-Karte #}
+    {% if m and m.article %}
+    <div class="bundle-card{% if m.article.mietinventar == 0 %} fremd{% endif %}">
+      <div class="bundle-info">
+        <span class="bundle-id">[{{ m.article.nummer }}]</span> {{ m.article.bezeichnung }}
+        <br><span style="font-size:.75rem;color:#555;display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+          Buchung:
+          <form hx-post="/api/import/set-qty/{{ pos.item_id }}"
+                hx-target="#import-groups" hx-swap="innerHTML focus-scroll:false"
+                hx-trigger="change" style="display:contents">
+            <input type="number" name="qty" value="{{ bqty|int }}" min="1" step="1"
+                   style="width:54px;padding:1px 4px;border:1px solid #bbb;border-radius:3px;font-size:.82rem;font-weight:700">
+          </form>
+          {{ m.article.einheit }}
+          {% if lfm %}<i style="color:#1565c0">({{ pos.qty }} {{ pos.unit }} ÷ {{ plen|int }} m)</i>{% endif %}
+        </span>
+        {% if m.article.mietpreis %}
+        {% set tf = resolve_time_factor(time_factor_curves, m.article.id_time_factor, einsatztage) %}
+        <br><span style="font-size:.72rem;color:#888">{{ bqty }} × {{ "%.2f"|format(m.article.mietpreis * tf) }} €/{{ m.article.einheit }} = <b style="color:#555">{{ "%.2f"|format(bqty * m.article.mietpreis * tf) }} €</b> · Artikel{% if tf != 1.0 %} <i style="color:#1565c0">(Progression ×{{ "%.2f"|format(tf) }} bei {{ einsatztage }} Einsatztagen)</i>{% endif %}</span>
+        {% endif %}
+        {% if m.article.mietinventar == 0 %}
+          <br><span style="color:#e65100;font-size:.75rem">🔶 Fremdgerät</span>
+        {% elif bqty > m.article.mietinventar %}
+          <br><span style="color:#c00;font-size:.75rem">⚠ Bestand: {{ m.article.mietinventar }} &middot; fehlen: {{ (bqty - m.article.mietinventar)|int }}</span>
+        {% endif %}
+      </div>
+      <a style="text-decoration:none;cursor:pointer"
+         hx-get="/api/import/clear-match/{{ pos.item_id }}"
+         hx-target="#import-groups" hx-swap="innerHTML">
+        <button type="button" class="btn btn-red">✕</button>
+      </a>
+    </div>
+    {% elif m and m.matched and m.score > 0 %}
+    <div class="bundle-card" style="border-left-color:#7c4dff;background:#f3e5f5">
+      <div class="bundle-info">
+        <span class="bundle-id" style="color:#5c35b0">{{ m.matched.ressourcenart }}</span> {{ m.matched.funktion }}
+        <br><span style="font-size:.75rem;color:#555;display:flex;align-items:center;gap:4px">
+          Buchung:
+          <form hx-post="/api/import/set-qty/{{ pos.item_id }}"
+                hx-target="#import-groups" hx-swap="innerHTML focus-scroll:false"
+                hx-trigger="change" style="display:contents">
+            <input type="number" name="qty" value="{{ bqty|int }}" min="1" step="1"
+                   style="width:54px;padding:1px 4px;border:1px solid #bbb;border-radius:3px;font-size:.82rem;font-weight:700">
+          </form>
+          {{ m.matched.satzname or 'Tage' }}
+        </span>
+        {% set custom_dp = bq.get('day_pay') if bq else none %}
+        {% set eff_dp = custom_dp if custom_dp is not none else (m.matched.tagessatz or 0) %}
+        <br><span style="font-size:.72rem;color:#888;display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+          {{ bqty }} ×
+          <form hx-post="/api/import/set-res-price/{{ pos.item_id }}"
+                hx-target="#import-groups" hx-swap="innerHTML focus-scroll:false"
+                hx-trigger="change" style="display:contents">
+            <input type="number" name="price" value="{{ '%.2f'|format(eff_dp) }}" min="0" step="0.01"
+                   style="width:72px;padding:1px 4px;border:1px solid #9c7adf;border-radius:3px;font-size:.82rem;font-weight:700;color:#5c35b0"
+                   title="Tagessatz anpassen">
+          </form>
+          €/{{ m.matched.satzname or 'Tag' }} = <b style="color:#5c35b0">{{ "%.2f"|format(bqty * eff_dp) }} €</b> · {{ m.matched.ressourcenart }}
+          {% if custom_dp is not none and custom_dp != m.matched.tagessatz %}<i style="color:#e65100;font-size:.7rem">(angepasst)</i>{% endif %}
+        </span>
+      </div>
+      <a style="text-decoration:none;cursor:pointer"
+         hx-get="/api/import/clear-match/{{ pos.item_id }}"
+         hx-target="#import-groups" hx-swap="innerHTML">
+        <button type="button" class="btn btn-red">✕</button>
+      </a>
+    </div>
+    {% elif not m %}
+    <span style="font-size:.78rem;color:#c00">⚠ Kein Artikel zugeordnet</span>
+    {% endif %}
+
+    {# Zusatz-Artikel und Ressourcen (Bundles) #}
+    {% for b in bundles.get(pos.item_id, []) %}{% set bi = loop.index0 %}
+    {% if b.resource %}
+    <div class="bundle-card" style="border-left-color:#7c4dff;background:#f3e5f5">
+      <div class="bundle-info">
+        <span class="bundle-id" style="color:#5c35b0">{{ b.resource.ressourcenart }}</span> {{ b.resource.funktion }}
+        <br><span style="font-size:.75rem;color:#555;display:flex;align-items:center;gap:4px">
+          Buchung:
+          <form hx-post="/api/import/set-bundle-qty/{{ pos.item_id }}/{{ bi }}"
+                hx-target="#import-groups" hx-swap="innerHTML focus-scroll:false"
+                hx-trigger="change" style="display:contents">
+            <input type="number" name="qty" value="{{ b.qty|int }}" min="1" step="1"
+                   style="width:54px;padding:1px 4px;border:1px solid #bbb;border-radius:3px;font-size:.82rem;font-weight:700">
+          </form>
+          {{ b.resource.satzname or 'Tage' }}
+        </span>
+        {% if b.resource.tagessatz %}
+        <br><span style="font-size:.72rem;color:#888">{{ b.qty }} × {{ "%.2f"|format(b.resource.tagessatz) }} €/{{ b.resource.satzname or 'Tag' }} = <b style="color:#5c35b0">{{ "%.2f"|format(b.qty * b.resource.tagessatz) }} €</b> · {{ b.resource.ressourcenart }}</span>
+        {% endif %}
+      </div>
+      <form hx-post="/api/import/remove-bundle/{{ pos.item_id }}/{{ bi }}"
+            hx-target="#import-groups" hx-swap="innerHTML">
+        <button type="submit" class="btn btn-red">✕</button>
+      </form>
+    </div>
+    {% else %}
+    <div class="bundle-card{% if b.article.mietinventar == 0 %} fremd{% endif %}">
+      <div class="bundle-info">
+        <span class="bundle-id">[{{ b.article.nummer }}]</span> {{ b.article.bezeichnung }}
+        <br><span style="font-size:.75rem;color:#555;display:flex;align-items:center;gap:4px">
+          Buchung:
+          <form hx-post="/api/import/set-bundle-qty/{{ pos.item_id }}/{{ bi }}"
+                hx-target="#import-groups" hx-swap="innerHTML focus-scroll:false"
+                hx-trigger="change" style="display:contents">
+            <input type="number" name="qty" value="{{ b.qty|int }}" min="1" step="1"
+                   style="width:54px;padding:1px 4px;border:1px solid #bbb;border-radius:3px;font-size:.82rem;font-weight:700">
+          </form>
+          {{ b.article.einheit }}
+        </span>
+        {% if b.article.mietpreis %}
+        {% set tf = resolve_time_factor(time_factor_curves, b.article.id_time_factor, einsatztage) %}
+        <br><span style="font-size:.72rem;color:#888">{{ b.qty }} × {{ "%.2f"|format(b.article.mietpreis * tf) }} €/{{ b.article.einheit }} = <b style="color:#555">{{ "%.2f"|format(b.qty * b.article.mietpreis * tf) }} €</b> · Artikel{% if tf != 1.0 %} <i style="color:#1565c0">(×{{ "%.2f"|format(tf) }})</i>{% endif %}</span>
+        {% endif %}
+        {% if b.article.mietinventar == 0 %}
+          <br><span style="color:#e65100;font-size:.75rem">🔶 Fremdgerät</span>
+        {% elif b.qty > b.article.mietinventar %}
+          <br><span style="color:#c00;font-size:.75rem">⚠ Bestand: {{ b.article.mietinventar }} &middot; fehlen: {{ (b.qty - b.article.mietinventar)|int }}</span>
+        {% endif %}
+      </div>
+      <form hx-post="/api/import/remove-bundle/{{ pos.item_id }}/{{ bi }}"
+            hx-target="#import-groups" hx-swap="innerHTML">
+        <button type="submit" class="btn btn-red">✕</button>
+      </form>
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
+
+</div>
+{% endmacro %}
+
+
+{# ── Makro: Block (einfach oder Alt-Paar) ────────────────────────────────── #}
+{% macro render_block(block) %}
+{% if block.has_alt %}
+<div class="alt-block{% if (matches.get(block.primary.item_id) and matches.get(block.primary.item_id).score >= 99) and (matches.get(block.alt.item_id) and matches.get(block.alt.item_id).score >= 99) %} imp-pos-done{% endif %}" style="margin:4px 0 2px">
+  <div class="alt-label">🔀 Alternativpositionen</div>
+  <div class="alt-btns">
+    {% for val, lbl in [('primary','Nur Hauptpos.'),('alt','Nur Alternative'),('both','Beide')] %}
+    <form hx-post="/api/import/alt/{{ block.alt_key }}"
+          hx-target="#import-groups" hx-swap="innerHTML focus-scroll:false" style="display:inline">
+      <input type="hidden" name="choice" value="{{ val }}">
+      <button type="submit" class="btn btn-sm alt-choice-btn {% if block.alt_choice == val %}alt-choice-active{% endif %}">{{ lbl }}</button>
+    </form>
+    {% endfor %}
+  </div>
+</div>
+{% if block.render_primary %}
+  {{ pos_row(block.primary, false) }}
+{% else %}
+  <div class="pos-row-inactive">{{ pos_row(block.primary, false) }}</div>
+{% endif %}
+{% if block.alt %}
+  {% if block.render_alt %}
+    {{ pos_row(block.alt, true) }}
+  {% else %}
+    <div class="pos-row-inactive">{{ pos_row(block.alt, true) }}</div>
+  {% endif %}
+{% endif %}
+{% else %}
+{{ pos_row(block.primary, false) }}
+{% endif %}
+{% endmacro %}
+
+
+{# ── Makro: Hinweistexte (Infotexte aus der Ausschreibung) einer Gruppe ────── #}
+{% macro render_remarks(remarks) %}
+{% for rm in remarks %}
+<details class="info-remark">
+  <summary>ℹ️ {{ rm.title or 'Hinweis aus Ausschreibung' }}</summary>
+  <div class="info-remark-body">{{ rm.long_text | autolink }}</div>
+  {% if rm.images %}
+  <div class="pos-lt-imgs">{% for src in rm.images %}<img src="{{ src }}">{% endfor %}</div>
+  {% endif %}
+</details>
+{% endfor %}
+{% endmacro %}
+
+
+{% if preliminaries %}
+<div class="prelim-block">
+  <div class="prelim-head">📋 Allgemeine Vorbemerkungen zur Ausschreibung</div>
+  {{ render_remarks(preliminaries) }}
+</div>
+{% endif %}
+
+{% for hg in groups %}
+{% set hg_idx = loop.index0 %}
+{% set cur_lid = group_jobs.get(hg.name, 1) %}
+<div class="category-group" data-lid="{{ cur_lid }}">
+  <div class="category-header" onclick="toggleCat(this)" data-catkey="hg:{{ hg.num or hg.name }}">
+    <span>▼</span>
+    <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+      {% if hg.num %}<span style="font-family:monospace;font-weight:700">[{{ hg.num }}]</span>  {% endif %}
+      {{ hg.name }}
+    </span>
+
+    <div class="hg-job-wrap" onclick="event.stopPropagation()">
+      <form hx-post="/api/import/local-assign"
+            hx-target="#import-groups"
+            hx-swap="innerHTML focus-scroll:false"
+            style="display:inline">
+        <input type="hidden" name="grp_name" value="{{ hg.name }}">
+        <input type="hidden" name="lid" value="1">
+        <button type="submit" class="job-btn {% if cur_lid == 1 %}job-btn-active{% endif %}">
+          {{ standard_job_name or "Standard" }}
+        </button>
+      </form>
+      {% for job in local_jobs %}
+      <form hx-post="/api/import/local-assign"
+            hx-target="#import-groups"
+            hx-swap="innerHTML focus-scroll:false"
+            style="display:inline">
+        <input type="hidden" name="grp_name" value="{{ hg.name }}">
+        <input type="hidden" name="lid" value="{{ job.lid }}">
+        <button type="submit" class="job-btn {% if cur_lid == job.lid %}job-btn-active{% endif %}">
+          {{ job.name }}
+        </button>
+      </form>
+      {% endfor %}
+      <button type="button" id="ilja-btn-{{ hg_idx }}" class="btn-add-job"
+              onclick="importToggleLjForm({{ hg_idx }})">＋ Job</button>
+      <form id="iljf-{{ hg_idx }}"
+            hx-post="/api/import/local-add-job"
+            hx-target="#import-groups"
+            hx-swap="innerHTML focus-scroll:false"
+            style="display:none;align-items:center;gap:3px">
+        <input type="hidden" name="grp_name" value="{{ hg.name }}">
+        <input type="text" name="job_name" class="new-job-input"
+               placeholder="z.B. Licht" autocomplete="off">
+        <button type="submit" class="btn-confirm-job">Anlegen</button>
+        <button type="button" class="btn-cancel-job"
+                onclick="importToggleLjForm({{ hg_idx }})">✕</button>
+      </form>
+    </div>
+
+    <span style="font-size:.72rem;font-weight:400;color:#5c6bc0;flex-shrink:0">{{ hg.count }} Pos.</span>
+
+    <form hx-post="/api/import/group/remove"
+          hx-target="#import-groups"
+          hx-swap="innerHTML focus-scroll:false"
+          style="display:inline;margin-left:4px"
+          onclick="event.stopPropagation()">
+      <input type="hidden" name="hg_idx" value="{{ hg_idx }}">
+      <input type="hidden" name="g_idx"  value="-1">
+      <button type="submit" class="rm-btn" title="Gruppe entfernen">✕</button>
+    </form>
+  </div>
+
+  <div class="category-body">
+    {% if hg.remarks %}{{ render_remarks(hg.remarks) }}{% endif %}
+    {% if hg.sub %}
+      {% for sub in hg.sub %}{% set g_idx = loop.index0 %}
+      <div class="category-group" style="margin:4px 6px;border-radius:5px">
+        <div class="category-header" onclick="toggleCat(this)" style="padding:4px 8px;font-size:.85rem">
+          <span>▶</span>
+          <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+            {% if sub.num %}<span style="font-family:monospace;font-weight:600">[{{ sub.num }}]</span>  {% endif %}
+            {{ sub.name }}
+          </span>
+          <span style="font-size:.72rem;color:#5c6bc0;flex-shrink:0">{{ sub.count }} Pos.</span>
+          <form hx-post="/api/import/group/remove"
+                hx-target="#import-groups"
+                hx-swap="innerHTML focus-scroll:false"
+                style="display:inline;margin-left:4px"
+                onclick="event.stopPropagation()">
+            <input type="hidden" name="hg_idx" value="{{ hg_idx }}">
+            <input type="hidden" name="g_idx"  value="{{ g_idx }}">
+            <button type="submit" class="rm-btn" title="Gruppe entfernen">✕</button>
+          </form>
+        </div>
+        <div class="category-body" style="display:none">
+          {% if sub.remarks %}{{ render_remarks(sub.remarks) }}{% endif %}
+          {% for block in sub.blocks %}{{ render_block(block) }}{% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      {% for block in hg.blocks %}{{ render_block(block) }}{% endfor %}
+    {% endif %}
+  </div>
+
+</div>
+{% endfor %}
+{% endif %}

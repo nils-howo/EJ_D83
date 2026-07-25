@@ -141,6 +141,66 @@ class EjLiveClient:
         except Exception:
             return []
 
+    def projects_search(self, q: str = "", limit: int = 15) -> list[dict]:
+        """Sucht bestehende Projekte. Grid-Cols: id, num, cap, start, end.
+
+        Gibt Liste von Dicts zurück: id, num (Projektnummer), name (Caption),
+        start, end (jeweils YYYY-MM-DD).
+        """
+        try:
+            data = self._client._get("/api.json/v2/rental/projects/grid", {
+                "SearchText":    q,
+                "ShowOffer":     1,
+                "ShowConfirmed": 1,
+                "ShowRental":    1,
+                "ShowSales":     1,
+            })
+            if isinstance(data, dict) and "Data" in data and "Columns" in data:
+                cols = [c["Name"] for c in data["Columns"]]
+                rows = [dict(zip(cols, row)) for row in data["Data"]]
+                out = []
+                for r in rows:
+                    if not r.get("id"):
+                        continue
+                    out.append({
+                        "id":    int(r["id"]),
+                        "num":   str(r.get("num") or ""),
+                        "name":  r.get("cap") or "",
+                        "start": (r.get("start") or "")[:10],
+                        "end":   (r.get("end") or "")[:10],
+                    })
+                    if len(out) >= limit:
+                        break
+                return out
+            return []
+        except Exception:
+            return []
+
+    def get_project_number(self, id_project: int) -> str:
+        """EJ-Projektnummer (Project.Number, z.B. „26-0994") zu einer IdProject.
+
+        Reiner API-Weg: die Projekt-Grid-Suche matcht auch auf die interne
+        IdProject; wir filtern das Ergebnis auf die exakte ID. Gibt "" zurück,
+        wenn nicht auffindbar.
+        """
+        try:
+            data = self._client._get("/api.json/v2/rental/projects/grid", {
+                "SearchText":    str(id_project),
+                "ShowOffer":     1,
+                "ShowConfirmed": 1,
+                "ShowRental":    1,
+                "ShowSales":     1,
+            })
+            if isinstance(data, dict) and "Data" in data and "Columns" in data:
+                cols = [c["Name"] for c in data["Columns"]]
+                for row in data["Data"]:
+                    r = dict(zip(cols, row))
+                    if int(r.get("id") or 0) == int(id_project):
+                        return str(r.get("num") or "").strip()
+        except Exception:
+            pass
+        return ""
+
     def addresses_search(self, q: str, limit: int = 12) -> list[dict]:
         """Sucht Adressen über V2 Grid oder V1 list."""
         # Versuch 1: V2 Grid — Boolean-Params als Integer (nicht Python True/False)
@@ -195,6 +255,37 @@ class EjLiveClient:
 
         return []
 
+    def address_contacts(self, id_address: int) -> list[dict]:
+        """Kontaktpersonen einer Firma (Address) — reiner API-Weg über das V2-Grid.
+
+        Gibt Liste von Dicts zurück: idc (IdContact), name (Vor-/Nachname),
+        phone (Telefon Firma). Kein DB-Zugriff nötig.
+        """
+        try:
+            data = self._client._get(
+                "/api.json/v2/masterdata/contacts/grid", {"IdAddress": id_address}
+            )
+            if isinstance(data, dict) and "Data" in data and "Columns" in data:
+                cols = [c["Name"] for c in data["Columns"]]
+                out = []
+                for row in data["Data"]:
+                    r   = dict(zip(cols, row))
+                    idc = r.get("id") or 0
+                    if not idc:
+                        continue
+                    name = " ".join(filter(None, [r.get("fnam"), r.get("snam")])).strip()
+                    if not name:
+                        name = (r.get("sal") or "").strip() or "(ohne Namen)"
+                    out.append({
+                        "idc":   int(idc),
+                        "name":  name,
+                        "phone": (r.get("phon") or "").strip(),
+                    })
+                return out
+        except Exception:
+            pass
+        return []
+
     def get_address_payment_condition(self, id_address: int) -> int | None:
         """Gibt IdPaymentCondition der Adresse zurück, oder None wenn nicht ermittelbar."""
         try:
@@ -233,6 +324,21 @@ class EjLiveClient:
             body["ModelContext"] = ctx
             resp = self._client._post("/api.json/v2/rental/jobs/create", body=body)
         return resp
+
+    def items_book(
+        self,
+        id_stock_type: int,
+        id_job: int,
+        qty: float,
+        id_group: int = 0,
+    ) -> dict:
+        """Bucht einen Artikel in einen Job ein (StockType2Job)."""
+        return self._client.items_book(
+            id_stock_type=id_stock_type,
+            id_job=id_job,
+            quantity=max(1, round(qty)),
+            id_stock_type2job_group=id_group,
+        )
 
     def get_current_user_id(self) -> int | None:
         """Gibt die IdUser des eingeloggten Benutzers zurück (via GetWebSettings).

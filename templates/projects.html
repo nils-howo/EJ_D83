@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Projekte — D84 Export</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
+  <style>
+    body { margin:0; font-family:system-ui,sans-serif; background:#f4f4f6; }
+
+    .page-body { max-width:1100px; margin:0 auto; padding:20px; }
+
+    .proj-table { width:100%; border-collapse:collapse; background:#fff;
+                  border-radius:8px; overflow:hidden; box-shadow:0 1px 4px rgba(0,0,0,.08); }
+    .proj-table th {
+      background:#e8eaf6; color:#1a237e; font-size:.78rem; font-weight:700;
+      text-transform:uppercase; letter-spacing:.04em;
+      padding:8px 12px; text-align:left;
+    }
+    .proj-table td { padding:9px 12px; border-top:1px solid #eee; vertical-align:middle; font-size:.88rem; }
+    .proj-table tr:hover td { background:#f5f5ff; }
+
+    .btn-export {
+      display:inline-block; padding:4px 12px; border-radius:4px;
+      background:#2e7d32; color:#fff; font-size:.8rem; font-weight:600;
+      text-decoration:none; border:none; cursor:pointer;
+    }
+    .btn-export:hover { background:#1b5e20; }
+    .btn-export.disabled {
+      background:#bbb; cursor:not-allowed; pointer-events:none;
+    }
+    .btn-del {
+      padding:3px 8px; border-radius:4px; background:#fff;
+      border:1px solid #e53935; color:#e53935; font-size:.78rem;
+      cursor:pointer;
+    }
+    .btn-del:hover { background:#ffebee; }
+    .no-gaeb { font-size:.75rem; color:#aaa; font-style:italic; }
+
+    /* Export-Dialog — zentriert */
+    #export-modal {
+      border:none; border-radius:8px; padding:0; width:92%; max-width:600px;
+      max-height:85vh; margin:auto; box-shadow:0 8px 32px rgba(0,0,0,.3);
+    }
+    #export-modal::backdrop { background:rgba(0,0,0,.4); }
+    .export-dialog-inner { padding:16px 18px; max-height:85vh; overflow-y:auto; }
+    .export-section-title { font-size:.8rem; font-weight:700; color:#1a237e; margin:12px 0 6px; }
+    .export-single {
+      border:1px solid #e0e0e0; border-radius:6px; padding:7px 10px; margin-bottom:6px;
+    }
+    .export-single-ctx { font-size:.78rem; color:#555; margin-bottom:4px; }
+    .export-single-ctx .oz { font-family:monospace; font-weight:700; color:#1a237e; }
+    .export-single-ctx .grp { color:#5c6bc0; }
+    .export-group-hdr {
+      font-size:.78rem; font-weight:600; color:#5c6bc0; margin:8px 0 4px;
+      padding-bottom:2px; border-bottom:1px solid #e8eaf6;
+    }
+    .export-field {
+      border:1px solid #e0e0e0; border-radius:6px; padding:8px 10px; margin-bottom:8px;
+    }
+    .export-field-lbl { font-size:.83rem; font-weight:600; color:#333; margin-bottom:5px; }
+    .export-mode, .export-text {
+      width:100%; box-sizing:border-box; border:1px solid #ccc; border-radius:4px;
+      padding:4px 7px; font-size:.83rem;
+    }
+    .export-text { margin-top:5px; }
+    .ej-link { color:#1565c0; text-decoration:none; font-size:.8rem; }
+    .ej-link:hover { text-decoration:underline; }
+  </style>
+</head>
+<body>
+
+{% set nav_active = "projects" %}
+{% include "partials/nav.html" %}
+
+<div class="page-body" id="proj-list">
+  <h2 style="margin-top:0;color:#1a237e;font-size:1rem">Gespeicherte Projekte</h2>
+
+  {% if not projects %}
+  <p style="color:#888">Noch keine Projekte angelegt.</p>
+  {% else %}
+  <input type="text" id="proj-search" placeholder="Suche nach Projektnummer oder Name …"
+         oninput="projFilter(this.value)" autocomplete="off"
+         style="width:100%;box-sizing:border-box;margin:0 0 12px;padding:8px 11px;
+                border:1px solid #ccc;border-radius:6px;font-size:.9rem">
+  <table class="proj-table">
+    <thead>
+      <tr>
+        <th>Projektnr.</th>
+        <th>Projektname</th>
+        <th>GAEB-Datei</th>
+        <th style="text-align:right">Pos.</th>
+        <th style="text-align:right">Gebucht</th>
+        <th>Angelegt</th>
+        <th>D84 Export</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for p in projects %}
+    <tr data-search="{{ ((p.ej_project_number or '') ~ ' ' ~ p.name ~ ' ' ~ (p.gaeb_name or ''))|lower|e }}">
+      <td style="font-family:monospace;font-weight:700;color:#1a237e">{{ p.ej_project_number or '—' }}</td>
+      <td><b>{{ p.name }}</b></td>
+      <td style="font-size:.8rem;color:#555">{{ p.gaeb_name or '—' }}</td>
+      <td style="text-align:right">{{ p.item_count }}</td>
+      <td style="text-align:right">{{ p.booking_count }}</td>
+      <td style="font-size:.78rem;color:#888">{{ p.created_at[:16] if p.created_at else '—' }}</td>
+      <td>
+        {% if p.has_gaeb %}
+        <button class="btn-export"
+                hx-get="/api/projects/{{ p.id }}/export-dialog"
+                hx-target="#export-modal-body" hx-swap="innerHTML">
+          ⬇ D84 Export
+        </button>
+        {% else %}
+        <span class="no-gaeb">kein GAEB</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if is_admin %}
+        <form hx-post="/api/projects/{{ p.id }}/delete"
+              hx-target="#proj-list" hx-swap="outerHTML"
+              onsubmit="return confirm('Projekt {{ p.name|e }} wirklich löschen?')">
+          <button type="submit" class="btn-del">✕</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<dialog id="export-modal">
+  <div id="export-modal-body"></div>
+</dialog>
+
+<script>
+document.body.addEventListener('htmx:afterSettle', function(e) {
+  if (e.detail.target && e.detail.target.id === 'export-modal-body') {
+    document.getElementById('export-modal').showModal();
+  }
+});
+function expToggleText(sel) {
+  var inp = sel.parentElement.querySelector('.export-text');
+  if (inp) inp.style.display = (sel.value === 'text') ? '' : 'none';
+}
+// Projektliste nach Projektnummer / Name filtern (clientseitig, sofort)
+function projFilter(q) {
+  q = (q || '').trim().toLowerCase();
+  document.querySelectorAll('.proj-table tbody tr').forEach(function(tr) {
+    var hay = tr.getAttribute('data-search') || '';
+    tr.style.display = (!q || hay.indexOf(q) !== -1) ? '' : 'none';
+  });
+}
+</script>
+
+</body>
+</html>

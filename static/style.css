@@ -13,6 +13,25 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
 .app-header h1 { font-size: 1.1rem; font-weight: 600; flex: 1; }
 .header-status  { font-size: 0.78rem; opacity: .8; }
 
+/* ── Einheitliche Navigation (Import / Projekte / Admin) ─────────────────── */
+.app-nav {
+  position: sticky; top: 0; z-index: 200;
+  background: #1a237e; color: #fff; padding: 10px 20px;
+  display: flex; align-items: center; gap: 10px;
+}
+.app-nav h1 { font-size: 1.05rem; font-weight: 600; margin-right: 6px; }
+.app-nav a {
+  color: #90caf9; font-size: .82rem; text-decoration: none;
+  border: 1px solid #90caf9; border-radius: 4px; padding: 3px 11px;
+}
+.app-nav a:hover { background: rgba(255,255,255,.1); }
+.app-nav a.active { background: rgba(255,255,255,.15); border-color: #fff; color: #fff; font-weight: 600; }
+.app-nav .nav-status { font-size: .8rem; opacity: .75; }
+.app-nav .nav-logout {
+  margin-left: auto; color: #ffcdd2; border-color: #ef9a9a; font-size: .8rem;
+}
+.app-nav .nav-logout:hover { background: rgba(255,255,255,.1); }
+
 .app-body { display: flex; height: 100vh; padding-top: 48px; }
 
 /* Sidebar */
@@ -48,6 +67,10 @@ input[type=number] { width: auto; }
 .btn-green     { background: #2e7d32; color: #fff; }
 .btn-red       { background: #c62828; color: #fff; padding: 2px 7px; font-size: 0.78rem; }
 .btn-grey      { background: #757575; color: #fff; }
+.btn-blue      { background: #1565c0; color: #fff; }
+.inv-badge     { display:inline-block; font-size:.68rem; font-weight:700; padding:1px 4px; border-radius:3px; margin-left:4px; vertical-align:middle; flex-shrink:0; }
+.inv-fremd     { background:#fff3e0; color:#e65100; border:1px solid #ffcc80; }
+.inv-warn      { background:#ffebee; color:#b71c1c; border:1px solid #ef9a9a; }
 .btn-flat      { background: transparent; color: #1565c0; padding: 4px 8px; }
 .btn-sm        { padding: 3px 8px; font-size: 0.78rem; }
 .btn-full      { width: 100%; justify-content: center; }
@@ -79,7 +102,7 @@ input[type=number] { width: auto; }
 }
 .pos-row:last-child { border-bottom: none; }
 .pos-row-alt { background: #fff8f0; }
-.pos-row-inactive { opacity: 0.42; pointer-events: none; }
+.pos-row-inactive { opacity: 0.38; pointer-events: none; filter: grayscale(30%); }
 
 .pos-left  { background: #f9f9f9; border-radius: 4px; padding: 8px; border-left: 4px solid #ccc; }
 .pos-row-alt .pos-left  { background: #fff3e0; }
@@ -90,7 +113,19 @@ input[type=number] { width: auto; }
 .alt-badge { display: inline-block; font-size: 0.7rem; font-weight: 700; background: #e65100; color: #fff; padding: 1px 6px; border-radius: 3px; margin-right: 5px; vertical-align: middle; }
 .pos-desc { font-size: 0.92rem; margin: 3px 0; }
 .pos-meta { font-size: 0.75rem; color: #666; }
-.pos-lt   { font-size: 0.75rem; color: #888; font-style: italic; margin-top: 2px; }
+.pos-lt   { font-size: 0.75rem; color: #888; font-style: italic; margin-top: 2px; white-space: pre-wrap; overflow-wrap: break-word; word-break: break-word; max-width: 100%; }
+.pos-lt a { color: #1565c0; font-style: normal; text-decoration: underline; }
+.pos-lt-details { margin-top: 3px; }
+.pos-lt-details > summary { list-style: none; cursor: pointer; }
+.pos-lt-details > summary::-webkit-details-marker { display: none; }
+.pos-lt-details[open] .pos-lt-preview { display: none; }
+.lt-hint  { font-size: .68rem; color: #1565c0; font-style: normal; }
+.lt-close { display: none; font-size: .68rem; color: #1565c0; cursor: pointer; }
+.pos-lt-details[open] .lt-close { display: inline; }
+.pos-lt-preview { white-space: normal; }
+.pos-lt-full { margin-top: 2px; }
+.pos-lt-imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.pos-lt-imgs img { max-width: 220px; max-height: 140px; width: auto; height: auto; border-radius: 3px; border: 1px solid #ddd; object-fit: contain; }
 
 /* Score-Badge */
 .score-badge { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 0.72rem; font-weight: 600; margin-top: 4px; }
@@ -125,6 +160,9 @@ details.add-art summary { font-size: 0.78rem; color: #1565c0; cursor: pointer; }
 .alt-block { background: #fff8e1; border: 1px solid #f9a825; border-radius: 6px; padding: 6px 10px; margin-bottom: 6px; }
 .alt-label { font-size: 0.72rem; color: #e65100; font-weight: 600; margin-bottom: 4px; }
 .alt-btns  { display: flex; gap: 6px; flex-wrap: wrap; }
+.alt-choice-btn        { background: #e0e0e0; color: #555; min-width: 90px; justify-content: center; }
+.alt-choice-btn:hover  { background: #bdbdbd; }
+.alt-choice-active     { background: #1565c0 !important; color: #fff !important; }
 
 /* ── EJ Dialog ───────────────────────────────────────────────────────────── */
 dialog {

@@ -1,0 +1,63 @@
+<div class="export-dialog-inner">
+  <h3 style="margin:0 0 4px;color:#1a237e;font-size:1rem">D84-Export — Bieter-Angaben</h3>
+
+  {% if not ht_labels and not single_fields %}
+    <p style="font-size:.85rem;color:#555;margin:8px 0">
+      Diese Ausschreibung hat keine Bieter-Antwortfelder. Der Export enthält nur die Preise.
+    </p>
+    <form method="post" action="/api/projects/{{ project_id }}/export-d84">
+      <input type="hidden" name="field_count" value="0">
+      <input type="hidden" name="single_count" value="0">
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button type="submit" class="btn-export">⬇ Exportieren</button>
+        <button type="button" class="btn-del" onclick="document.getElementById('export-modal').close()">Abbrechen</button>
+      </div>
+    </form>
+  {% else %}
+    <form method="post" action="/api/projects/{{ project_id }}/export-d84">
+      <input type="hidden" name="field_count"  value="{{ ht_labels|length }}">
+      <input type="hidden" name="single_count" value="{{ single_fields|length }}">
+
+      {% if ht_labels %}
+      <div class="export-section-title">Hersteller / Typ — automatisch aus Artikel</div>
+      {% for f in ht_labels %}
+      <div class="export-field">
+        <div class="export-field-lbl">{{ f.label or '(ohne Bezeichnung)' }}
+          <span style="color:#888;font-weight:400">· {{ f.count }}× im LV</span></div>
+        <input type="hidden" name="label_{{ loop.index0 }}" value="{{ f.label }}">
+        <select name="mode_{{ loop.index0 }}" class="export-mode" onchange="expToggleText(this)">
+          <option value="auto" selected>Automatisch: Hersteller · Detail (aus Artikel)</option>
+          <option value="text">Fester Text …</option>
+          <option value="leer">Leer lassen</option>
+        </select>
+        <input type="text" name="text_{{ loop.index0 }}" class="export-text"
+               placeholder="Text für alle Positionen dieses Typs" style="display:none">
+      </div>
+      {% endfor %}
+      {% endif %}
+
+      {% if single_fields %}
+      <div class="export-section-title">Sonstige Angaben — einzeln je Position</div>
+      {% for grp, items in single_fields|groupby('breadcrumb') %}
+      <div class="export-group-hdr">{{ grp or '(ohne Gruppe)' }}</div>
+      {% for s in items %}
+      <div class="export-single">
+        <div class="export-single-ctx">
+          {% if s.oz %}<span class="oz">{{ s.oz }}</span> {% endif %}
+          {{ s.label }}{% if s.kurztext %} — {{ s.kurztext }}{% endif %}
+        </div>
+        <input type="hidden" name="single_item_{{ s.idx }}" value="{{ s.item_id }}">
+        <input type="text" name="single_text_{{ s.idx }}" class="export-text"
+               placeholder="Eintrag für diese Position">
+      </div>
+      {% endfor %}
+      {% endfor %}
+      {% endif %}
+
+      <div style="display:flex;gap:8px;margin-top:14px">
+        <button type="submit" class="btn-export">⬇ Exportieren</button>
+        <button type="button" class="btn-del" onclick="document.getElementById('export-modal').close()">Abbrechen</button>
+      </div>
+    </form>
+  {% endif %}
+</div>

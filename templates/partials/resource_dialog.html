@@ -1,0 +1,81 @@
+<div class="dialog-inner">
+  <div class="dialog-header">
+    <h2>Ressource zuordnen</h2>
+    <p style="margin:0;font-size:.82rem;color:#cce">{{ item_desc[:120] }}</p>
+  </div>
+  <div class="dialog-body">
+    <input type="hidden" id="res-search-url" value="{{ search_url }}">
+
+    {% if suggestions %}
+    <div style="margin-bottom:12px">
+      <div style="font-size:.74rem;font-weight:700;color:#1a237e;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">
+        Top-Empfehlungen
+      </div>
+      <div class="ej-table-wrap">
+        <table class="ej-table">
+          <thead><tr><th>Score</th><th>Art</th><th>Funktion</th><th>Tagessatz</th></tr></thead>
+          <tbody id="res-sugg-body">
+          {% for s in suggestions %}
+          <tr onclick='resSelect({{ s.id }}, {{ s.funktion|tojson }}, {{ s.ressourcenart|tojson }}, "res-sugg-body")'>
+            <td style="text-align:right;color:#1a7a1a;font-variant-numeric:tabular-nums">{{ s.score }}%</td>
+            <td><span class="res-art-badge">{{ s.ressourcenart }}</span></td>
+            <td>{{ s.funktion }}</td>
+            <td style="font-size:.78rem;color:#666">{{ '%.2f'|format(s.tagessatz) }} €</td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    <div style="font-size:.74rem;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Suche</div>
+    <input type="text" id="res-q" placeholder="Ressource suchen…" autocomplete="off"
+           oninput="resSearchDebounce(this.value)" style="margin-bottom:6px">
+    <div class="ej-table-wrap" id="res-results"
+         hx-get="{{ search_url }}?q="
+         hx-trigger="load"
+         hx-swap="innerHTML"></div>
+
+    <div id="res-selected" style="display:none;margin-top:10px;padding:7px 10px;background:#ede7f6;border-radius:4px;font-size:.85rem;border-left:3px solid #7c4dff">
+      Ausgewählt: <b id="res-sel-name"></b>
+    </div>
+  </div>
+
+  <div class="dialog-footer">
+    {# Hauptform: trägt resource_id + qty für beide Aktionen #}
+    <form id="res-set-form"
+          hx-post="{{ replace_action if replace_action else add_action }}"
+          hx-target="#import-groups"
+          hx-swap="innerHTML focus-scroll:false"
+          hx-on::after-request="this.closest('dialog').close()"
+          style="display:flex;align-items:center;gap:10px;flex:1">
+      <input type="hidden" name="resource_id" id="res-form-id" value="">
+      <label style="font-size:.82rem">Menge:</label>
+      <input type="number" name="qty" id="res-qty-inp" value="{{ default_qty }}" min="0.5" step="0.5"
+             style="width:70px;padding:4px 6px">
+      {% if replace_action %}
+      <button type="submit" id="res-set-btn" class="btn btn-green" disabled>🔄 Ersetzen</button>
+      {% else %}
+      <button type="submit" id="res-add-btn" class="btn btn-green" disabled>➕ Hinzufügen</button>
+      {% endif %}
+    </form>
+    {% if replace_action %}
+    <button id="res-add-btn" class="btn btn-blue" disabled
+            hx-post="{{ add_action }}"
+            hx-target="#import-groups"
+            hx-swap="innerHTML focus-scroll:false"
+            hx-include="#res-set-form"
+            hx-on::after-request="this.closest('dialog').close()">➕ Hinzufügen</button>
+    {% endif %}
+    <button type="button" class="btn btn-grey" onclick="this.closest('dialog').close()">Schließen</button>
+  </div>
+</div>
+
+<style>
+.res-art-badge {
+  display:inline-block; font-size:.68rem; font-weight:700;
+  background:#ede7f6; color:#5c35b0; border:1px solid #ce93d8;
+  padding:1px 5px; border-radius:3px; white-space:nowrap;
+}
+</style>

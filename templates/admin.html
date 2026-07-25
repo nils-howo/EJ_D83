@@ -85,15 +85,10 @@
 </head>
 <body>
 
-<header class="app-header">
-  <h1>GAEB → Easyjob</h1>
-  <a href="/" style="font-size:.82rem;color:#90caf9;text-decoration:none;border:1px solid #90caf9;border-radius:4px;padding:2px 9px">← Matching</a>
-  <a href="/d83" style="font-size:.82rem;color:#90caf9;text-decoration:none;border:1px solid #90caf9;border-radius:4px;padding:2px 9px">📂 D83 Import</a>
-  <a href="/admin" style="font-size:.82rem;color:#a5d6a7;text-decoration:none;border:1px solid #a5d6a7;border-radius:4px;padding:2px 9px">⚙ Admin</a>
-  <a href="/logout" style="font-size:.78rem;color:#ffcdd2;text-decoration:none;border:1px solid #ef9a9a;border-radius:4px;padding:2px 9px;margin-left:auto">Abmelden</a>
-</header>
+{% set nav_active = "admin" %}
+{% include "partials/nav.html" %}
 
-<div style="padding-top: 48px;">
+<div>
 <div class="admin-wrap">
 
   <div class="admin-header">
