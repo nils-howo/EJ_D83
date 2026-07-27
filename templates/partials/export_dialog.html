@@ -5,7 +5,8 @@
     <p style="font-size:.85rem;color:#555;margin:8px 0">
       Diese Ausschreibung hat keine Bieter-Antwortfelder. Der Export enthält nur die Preise.
     </p>
-    <form method="post" action="/api/projects/{{ project_id }}/export-d84">
+    <form hx-post="/api/projects/{{ project_id }}/export-d84"
+          hx-target="#export-modal-body" hx-swap="innerHTML">
       <input type="hidden" name="field_count" value="0">
       <input type="hidden" name="single_count" value="0">
       <div style="display:flex;gap:8px;margin-top:8px">
@@ -14,7 +15,8 @@
       </div>
     </form>
   {% else %}
-    <form method="post" action="/api/projects/{{ project_id }}/export-d84">
+    <form hx-post="/api/projects/{{ project_id }}/export-d84"
+          hx-target="#export-modal-body" hx-swap="innerHTML">
       <input type="hidden" name="field_count"  value="{{ ht_labels|length }}">
       <input type="hidden" name="single_count" value="{{ single_fields|length }}">
 

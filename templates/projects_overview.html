@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Projektübersicht — {{ project.name }}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
+  <style>
+    body { margin:0; font-family:system-ui,sans-serif; background:#f4f4f6; }
+    .ov-body { max-width:1400px; margin:0 auto; padding:14px; }
+    .ov-loading {
+      padding:40px 0; text-align:center; color:#5c6bc0; font-size:.9rem;
+    }
+    .ov-progress {
+      margin:14px auto 0; width:260px; height:6px; border-radius:3px;
+      background:#e0e0e0; overflow:hidden;
+    }
+    .ov-progress-bar {
+      width:40%; height:100%; border-radius:3px; background:#3f51b5;
+      animation:ov-indeterminate 1.1s ease-in-out infinite;
+    }
+    @keyframes ov-indeterminate {
+      0%   { margin-left:-40%; }
+      100% { margin-left:100%; }
+    }
+
+    /* Breadcrumb / Titel */
+    .ov-title {
+      display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+      margin-bottom:12px;
+    }
+    .ov-title h2 { margin:0; font-size:1.05rem; color:#1a237e; }
+    .ov-title .ov-num {
+      font-family:monospace; font-weight:700; color:#1a237e;
+      background:#e8eaf6; border-radius:4px; padding:2px 8px; font-size:.9rem;
+    }
+    .ov-back {
+      display:inline-flex; align-items:center; gap:5px;
+      color:#555; font-size:.82rem; text-decoration:none;
+      border:1px solid #ddd; border-radius:4px; padding:3px 9px;
+      background:#fff;
+    }
+    .ov-back:hover { background:#e8eaf6; color:#1a237e; }
+
+    /* Kennzahlen-Leiste */
+    .metrics-row {
+      display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px;
+    }
+    .metric-card {
+      background:#fff; border:1px solid #e0e0e0; border-radius:7px;
+      padding:7px 14px; text-align:center; min-width:80px;
+    }
+    .metric-val { font-size:1.15rem; font-weight:700; color:#1a237e; }
+    .metric-lbl { font-size:.68rem; color:#888; text-transform:uppercase; letter-spacing:.04em; }
+
+    /* Gruppen-Baum */
+    .category-group { margin-bottom:5px; }
+    .category-header {
+      display:flex; align-items:center; gap:6px;
+      background:#e8eaf6; border-radius:5px; padding:6px 10px;
+      font-weight:600; font-size:.88rem; cursor:pointer; user-select:none;
+    }
+    .category-header:hover { background:#d9ddf5; }
+    .category-body { padding-left:0; display:block; margin-top:2px; }
+
+    /* Positions-Zeile */
+    .pos-row {
+      display:grid; grid-template-columns:1fr 1fr;
+      gap:8px; margin:4px 0;
+      border:1px solid #e0e0e0; border-radius:6px;
+      background:#fff; padding:8px 10px;
+      border-left:4px solid #ccc;
+    }
+    .pos-row.booked-ok   { border-left-color:#2e7d32; }
+    .pos-row.booked-part { border-left-color:#f57c00; }
+    .pos-row.not-booked  { border-left-color:#ef9a9a; }
+
+    .pos-left {}
+    .pos-right { border-left:1px solid #f0f0f0; padding-left:10px; }
+
+    .oz-badge {
+      display:inline-block; font-family:monospace; font-size:.75rem;
+      background:#e8eaf6; color:#1a237e; border-radius:3px;
+      padding:1px 5px; margin-right:4px; font-weight:700;
+    }
+    .pos-desc { font-weight:600; font-size:.88rem; color:#222; margin:2px 0; }
+    .pos-meta { font-size:.75rem; color:#888; }
+    .pos-lt {
+      font-size:.77rem; color:#555; white-space:pre-wrap; line-height:1.35;
+      margin-top:3px;
+    }
+    .pos-lt-details { margin-top:3px; }
+    .pos-lt-summary { cursor:pointer; font-size:.77rem; color:#5c6bc0; }
+    .pos-lt-preview { color:#888; }
+    .lt-hint { font-size:.7rem; color:#aaa; }
+
+    /* Buchungs-Karten */
+    .booking-card {
+      border:1px solid #e0e0e0; border-radius:5px;
+      padding:6px 9px; margin-bottom:5px;
+      border-left:3px solid #1a237e; background:#f8f9ff;
+      font-size:.82rem;
+    }
+    .booking-card.res-card {
+      border-left-color:#7c4dff; background:#f3e5f5;
+    }
+    .booking-card.fremd-card {
+      border-left-color:#e65100; background:#fff8f5;
+    }
+    .booking-id {
+      font-family:monospace; font-weight:700; color:#1a237e;
+      font-size:.78rem; margin-right:4px;
+    }
+    .booking-id.res { color:#5c35b0; }
+    .booking-name { font-weight:600; color:#222; }
+    .booking-meta { font-size:.72rem; color:#888; margin-top:2px; }
+    .booking-cost { font-weight:700; color:#333; }
+    .booking-warn { color:#c00; font-size:.72rem; }
+    .booking-fremd { color:#e65100; font-size:.72rem; }
+
+    .not-booked-hint {
+      font-size:.78rem; color:#c62828; padding:4px 0;
+    }
+
+    /* Gruppen-Summe */
+    .grp-sum {
+      font-size:.78rem; color:#555; padding:3px 6px;
+      background:#f5f5f5; border-radius:4px; margin-top:4px;
+      display:flex; gap:12px; flex-wrap:wrap;
+    }
+    .grp-sum b { color:#1a237e; }
+
+    /* Gesamt-Summe */
+    .total-bar {
+      background:#1a237e; color:#fff; border-radius:7px;
+      padding:10px 16px; margin-bottom:14px;
+      display:flex; gap:20px; flex-wrap:wrap; align-items:center;
+    }
+    .total-bar .t-lbl { font-size:.75rem; opacity:.75; }
+    .total-bar .t-val { font-size:1.1rem; font-weight:700; }
+
+    /* Fallback-Hinweis */
+    .fallback-hint {
+      background:#fff8e1; border:1px solid #ffe0b2; border-radius:6px;
+      padding:8px 12px; font-size:.82rem; color:#e65100; margin-bottom:10px;
+    }
+
+    /* Info-Remark */
+    .info-remark {
+      margin:3px 4px 6px; border:1px solid #ffe0b2; background:#fff8e1;
+      border-radius:5px; padding:5px 9px;
+    }
+    .info-remark summary {
+      cursor:pointer; color:#e65100; font-weight:600; font-size:.78rem;
+      list-style:none; display:flex; align-items:center; gap:5px;
+    }
+    .info-remark summary::-webkit-details-marker { display:none; }
+    .info-remark-body {
+      color:#5d4037; white-space:pre-wrap; line-height:1.35;
+      font-size:.77rem; font-weight:400;
+    }
+
+    /* Projektbeschreibung / Vorbemerkungen */
+    .prelim-block {
+      border:1px solid #c5cae9; background:#f5f6ff; border-radius:6px;
+      padding:8px 10px; margin-bottom:12px;
+    }
+    .prelim-head { font-size:.82rem; font-weight:700; color:#1a237e; margin-bottom:5px; }
+    .prelim-block .info-remark { margin:3px 0; }
+    /* Globaler Langtext-Toggle */
+    .lt-toggle-all {
+      font-size:.75rem; color:#1565c0; background:#fff; border:1px solid #90caf9;
+      border-radius:4px; padding:3px 10px; cursor:pointer;
+    }
+    .lt-toggle-all:hover { background:#e3f2fd; }
+    /* „einklappen"-Hinweis sichtbar machen, wenn ein Langtext offen ist */
+    .pos-lt-details[open] .pos-lt-preview { display:none; }
+    .lt-close { display:none; font-size:.7rem; color:#1565c0; cursor:pointer; }
+    .pos-lt-details[open] .lt-close { display:inline; }
+
+    @media(max-width:800px) {
+      .pos-row { grid-template-columns:1fr; }
+      .pos-right { border-left:none; padding-left:0; border-top:1px solid #f0f0f0; padding-top:6px; }
+    }
+  </style>
+</head>
+<body>
+
+{% set nav_active = "projects" %}
+{% set is_admin = is_admin %}
+{% include "partials/nav.html" %}
+
+<div class="ov-body">
+
+  <!-- Titel + Zurück -->
+  <div class="ov-title">
+    <a href="/projects" class="ov-back">← Projekte</a>
+    {% if project.ej_project_number %}
+    <span class="ov-num">{{ project.ej_project_number }}</span>
+    {% endif %}
+    <h2>{{ project.name }}</h2>
+    {% if project.gaeb_name %}
+    <span style="font-size:.78rem;color:#888">{{ project.gaeb_name }}</span>
+    {% endif %}
+    <span style="font-size:.75rem;color:#aaa;margin-left:auto">
+      Angelegt: {{ project.created_at[:16] if project.created_at else '—' }}
+    </span>
+  </div>
+
+  <!-- Buchungsdaten werden per HTMX nachgeladen (Seite erscheint sofort) -->
+  <div id="ov-content"
+       hx-get="/projects/{{ project.id }}/overview/content"
+       hx-trigger="load" hx-swap="innerHTML">
+    <div class="ov-loading">
+      <div>⏳ Projektdaten werden aus EasyJob geladen …</div>
+      <div class="ov-progress"><div class="ov-progress-bar"></div></div>
+    </div>
+  </div>
+
+</div><!-- /ov-body -->
+
+<script>
+function toggleCat(header) {
+  const arrow = header.querySelector('span:first-child');
+  const body  = header.nextElementSibling;
+  if (!body) return;
+  const open = body.style.display !== 'none';
+  body.style.display = open ? 'none' : '';
+  if (arrow) arrow.textContent = open ? '▶' : '▼';
+}
+// Alle Langtexte + Vorbemerkungen gemeinsam auf-/einklappen
+function toggleAllLangtexte() {
+  var details = document.querySelectorAll('.pos-lt-details, .info-remark');
+  if (!details.length) return;
+  var openCount = Array.prototype.filter.call(details, function(d){ return d.open; }).length;
+  var shouldOpen = openCount < details.length / 2;
+  Array.prototype.forEach.call(details, function(d){ d.open = shouldOpen; });
+  var btn = document.getElementById('lt-toggle-all-btn');
+  if (btn) btn.textContent = shouldOpen ? '▲ Alle Langtexte einklappen' : '▼ Alle Langtexte ausklappen';
+}
+</script>
+</body>
+</html>

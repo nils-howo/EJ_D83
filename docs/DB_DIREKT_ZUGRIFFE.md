@@ -110,12 +110,39 @@
 
 ---
 
+### 12b. Projektübersicht: gebuchte Artikel lesen (StockType2Job)
+**Datei:** `routes/projects.py` · **Art:** READ  
+**Tabellen:** `StockType2Job`, `StockType2JobGroup`  
+**SQL:** `SELECT s2j.IdStockType, s2j.Quantity, s2j.IdStockType2JobGroup, COALESCE(RentalPrice, BasePrice, 0), Factor, TimeFactor, g.Caption FROM StockType2Job s2j LEFT JOIN StockType2JobGroup g … WHERE s2j.IdJob IN (…)`  
+**Warum:** Die Projektübersicht (`/projects/{id}/overview`) zeigt live aus EJ, welche Artikel je Position gebucht sind — mit aktueller Menge, Preis und Bestandswarnung. Kein API-Endpunkt liefert gebuchte Artikel je Job mit Gruppenkontext.  
+**API-ersetzbar:** Nein
+
+---
+
+### 12c. Projektübersicht: gebuchte Ressourcen lesen (ResourceFunctionAllocation)
+**Datei:** `routes/projects.py` · **Art:** READ  
+**Tabellen:** `ResourceFunctionAllocation`  
+**SQL:** `SELECT IdResourceFunction, DaysInAction, TotalPrice, IdStockType2JobGroup FROM ResourceFunctionAllocation WHERE IdJob IN (…)`  
+**Warum:** Ressourcen/Personal-Buchungen werden in der Übersicht je Position angezeigt (Tage, Kosten). Kein API-Endpunkt vorhanden.  
+**API-ersetzbar:** Nein
+
+---
+
 ### 12. D84-Export: Gruppen-Captions (OZ-Fallback für Ressourcen-Positionen)
 **Datei:** `routes/projects.py` · **Art:** READ  
 **Tabellen:** `StockType2JobGroup`, `Job`  
 **SQL:** `SELECT Caption, IdStockType2JobGroup FROM StockType2JobGroup WHERE IdProject = ?`  
 **Warum:** Ressourcen-Positionen werden als `ResourceFunctionAllocation` gebucht (nicht als `StockType2Job`), daher gibt es für sie keinen Eintrag in der lokalen `project_bookings`-Tabelle. Im D84-Export fehlt damit die Gruppen-ID für deren Kostenberechnung. Fallback: Caption `[OZ] Beschreibung` aus EJ wird rückwärts geparst — OZ → `IdStockType2JobGroup`.  
 **API-ersetzbar:** Nein
+
+---
+
+### 12d. D84-Export-Learning: aktuelle Buchung + Stückliste lesen
+**Datei:** `routes/projects.py` (`_learn_from_ej`) · **Art:** READ  
+**Tabellen:** `StockType2Job`, `ResourceFunctionAllocation`, `StockTypeReference`  
+**SQL:** je Gruppe die Top-Level-Artikel (`IdStockType2Job_Parent IS NULL`) und Ressourcen, sowie `SELECT IdStockType_Parent, IdStockType FROM StockTypeReference WHERE IdStockType_Parent IN (…)`  
+**Warum:** Beim D84-Export wird die aktuelle EJ-Buchung je Position mit dem Import-Snapshot verglichen, um in EJ getauschte/ergänzte Artikel/Ressourcen als GUI-Mapping zu lernen. Der Stücklisten-Read (`StockTypeReference`) filtert gebundene Referenzartikel (z.B. Bolzen/Federstecker einer Traverse) heraus, damit nur **eigenständige** Artikel gelernt werden. Kein API-Endpunkt liefert Buchung-je-Gruppe + Stückliste kompakt.  
+**API-ersetzbar:** Nein (Aggregat/Join über mehrere Tabellen)
 
 ---
 
@@ -155,4 +182,4 @@ Die menschenlesbare Projektnummer (`Project.Number`, z.B. „26-0994") wird **re
 
 ---
 
-*Letzte Aktualisierung: 2026-07-26*
+*Letzte Aktualisierung: 2026-07-27*

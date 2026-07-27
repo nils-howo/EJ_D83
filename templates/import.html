@@ -17,7 +17,8 @@
       align-items:start;
     }
     .imp-sidebar {
-      position:sticky; top:0; max-height:100vh; overflow-y:auto;
+      position:sticky; top:calc(var(--nav-h, 56px) + 8px);
+      max-height:calc(100vh - var(--nav-h, 56px) - 22px); overflow-y:auto;
     }
 
     /* Panel */
@@ -277,6 +278,19 @@
 {% set is_admin = S.is_admin %}
 {% set nav_status = (S.import_filename ~ " · " ~ (S.d83_project.items|length) ~ " Positionen") if (S.d83_project and S.import_filename) else "" %}
 {% include "partials/nav.html" %}
+<script>
+  // Tatsächliche Höhe der Nav messen → --nav-h; die Sidebar rechnet damit ihre
+  // max-height/top aus, damit sie nicht unter die Nav bzw. aus dem Viewport ragt.
+  (function () {
+    function setNavH() {
+      var n = document.querySelector('.app-nav');
+      if (n) document.documentElement.style.setProperty('--nav-h', n.offsetHeight + 'px');
+    }
+    setNavH();
+    window.addEventListener('resize', setNavH);
+    window.addEventListener('load', setNavH);
+  })();
+</script>
 
 <div class="imp-body">
 

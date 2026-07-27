@@ -1245,6 +1245,7 @@ async def _do_create_bg(
 
         # ── 4. Artikel einbuchen (parallel) ─────────────────────────────────
         bookings: list[dict] = []
+        res_bookings: list[dict] = []   # Ressourcen für den lokalen Snapshot
 
         try:
             # oz → hg_name für Job-Zuweisung
@@ -1416,6 +1417,12 @@ async def _do_create_bg(
                     _insert_rfa(res.id, job_id_r, days, grp_id_r,
                                 res.tagessatz, res.eigenkosten, custom_dp)
                     res_count += 1
+                    res_bookings.append({
+                        "item_id": item_id, "oz": item_obj.oz or "",
+                        "description": res.funktion, "ej_group_id": grp_id_r,
+                        "resource_id": res.id, "days": days,
+                        "day_pay": custom_dp if custom_dp is not None else res.tagessatz,
+                    })
                     log.append({"ok": True, "text": f'[{item_obj.oz}] Ressource: {res.funktion} × {days:.1f}d', "indent": True})
                 except Exception as _re:
                     log.append({"ok": False, "text": f'[{item_obj.oz}] Ressource {res.funktion} fehlgeschlagen: {_re}', "indent": True})
@@ -1436,6 +1443,12 @@ async def _do_create_bg(
                         _insert_rfa(res.id, job_id_r, days, grp_id_r,
                                     res.tagessatz, res.eigenkosten)
                         res_count += 1
+                        res_bookings.append({
+                            "item_id": item_id, "oz": item_obj.oz or "",
+                            "description": res.funktion, "ej_group_id": grp_id_r,
+                            "resource_id": res.id, "days": days,
+                            "day_pay": res.tagessatz,
+                        })
                         log.append({"ok": True, "text": f'[{item_obj.oz}] Bundle-Ressource: {res.funktion} × {days:.1f}d', "indent": True})
                     except Exception as _re:
                         log.append({"ok": False, "text": f'[{item_obj.oz}] Bundle-Ressource {res.funktion} fehlgeschlagen: {_re}', "indent": True})
@@ -1493,6 +1506,22 @@ async def _do_create_bg(
                     ej_group_id=bk["ej_group_id"],
                     qty=bk["qty"],
                     unit_price=ep_bk,
+                )
+            # Ressourcen ebenfalls in den Snapshot (vollständiges Abbild): so sind
+            # reine Ressourcen-Positionen auch im Fallback-Modus sichtbar.
+            for rb in res_bookings:
+                _db.add_project_booking(
+                    project_id=project_db_id,
+                    item_id=rb["item_id"],
+                    oz=rb["oz"],
+                    description=rb["description"],
+                    art_num="",
+                    ej_stock_type_id=rb["resource_id"],
+                    ej_s2j_id=0,
+                    ej_group_id=rb["ej_group_id"],
+                    qty=rb["days"],
+                    unit_price=rb["day_pay"],
+                    kind="resource",
                 )
             log.append({"ok": True, "text": f'Lokal gespeichert (DB-ID: {project_db_id}) ✓', "indent": False})
         except Exception as e:

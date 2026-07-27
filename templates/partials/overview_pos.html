@@ -1,0 +1,98 @@
+{# Partial: eine einzelne Positions-Zeile in der Projektübersicht (read-only).
+   Erwartet im Kontext:
+     pos              – dict mit oz, desc, qty, unit, item_id, long_text, remarks
+     bookings_by_item – dict item_id → list[dict] (aus EJ-DB oder lokalem Snapshot)
+     articles_by_ej_id – dict ej_id → article-dict (aus lokaler SQLite)
+     personal_by_id   – dict id → personal-dict (aus lokaler SQLite)
+#}
+{% set item_bookings = bookings_by_item.get(pos.item_id, []) %}
+{% set has_bookings = item_bookings|length > 0 %}
+{% if has_bookings %}
+  {% set row_cls = "pos-row booked-ok" %}
+{% else %}
+  {% set row_cls = "pos-row not-booked" %}
+{% endif %}
+
+<div class="{{ row_cls }}">
+
+  {# Links: GAEB-Kontext #}
+  <div class="pos-left">
+    {% if pos.remarks %}
+    {% for rm in pos.remarks %}
+    <details class="info-remark" style="margin:0 0 4px">
+      <summary>ℹ️ {{ rm.title or 'Hinweis' }}</summary>
+      <div class="info-remark-body">{{ rm.long_text }}</div>
+      {% if rm.images %}<div class="pos-lt-imgs">{% for src in rm.images %}<img src="{{ src }}" loading="lazy">{% endfor %}</div>{% endif %}
+    </details>
+    {% endfor %}
+    {% endif %}
+
+    {% if pos.oz %}<span class="oz-badge">{{ pos.oz }}</span>{% endif %}
+    <div class="pos-desc">{{ pos.desc }}</div>
+    <div class="pos-meta">Gefordert: <b>{{ pos.qty }} {{ pos.unit }}</b></div>
+
+    {% set has_imgs = pos.long_text_images and pos.long_text_images|length > 0 %}
+    {% if pos.long_text or has_imgs %}
+      {% if pos.long_text|length > 160 or has_imgs %}
+      <details class="pos-lt-details">
+        <summary class="pos-lt-summary">
+          <span class="pos-lt-preview">{{ pos.long_text[:160] }}{% if pos.long_text|length > 160 %}&hellip;{% endif %} <span class="lt-hint">▼ {% if has_imgs %}Text + Bilder{% else %}mehr{% endif %} anzeigen</span></span>
+          <span class="lt-close">▲ einklappen</span>
+        </summary>
+        {% if pos.long_text %}<div class="pos-lt">{{ pos.long_text }}</div>{% endif %}
+        {% if has_imgs %}
+        <div class="pos-lt-imgs">{% for src in pos.long_text_images %}<img src="{{ src }}" loading="lazy">{% endfor %}</div>
+        {% endif %}
+      </details>
+      {% else %}
+      <div class="pos-lt">{{ pos.long_text }}</div>
+      {% endif %}
+    {% endif %}
+  </div>
+
+  {# Rechts: EJ-Buchungen #}
+  <div class="pos-right">
+    {% if not has_bookings %}
+    <div class="not-booked-hint">⚠ Keine Buchung in EasyJob</div>
+    {% else %}
+    {% for bk in item_bookings %}
+      {% if bk.type == 'article' %}
+        {% set art = articles_by_ej_id.get(bk.ej_stock_type_id) %}
+        {% set is_fremd = art and art.mietinventar == 0 %}
+        <div class="booking-card{% if is_fremd %} fremd-card{% endif %}">
+          <span class="booking-id">[{{ art.nummer if art else bk.ej_stock_type_id }}]</span>
+          <span class="booking-name">{{ art.bezeichnung if art else bk.caption }}</span>
+          {% if art and art.warengruppe %}
+          <span style="font-size:.72rem;color:#888"> · {{ art.warengruppe }}</span>
+          {% endif %}
+          <div class="booking-meta">
+            Menge: <b>{{ bk.qty|int }} {{ art.einheit if art else '' }}</b>
+            {% if bk.unit_price %}
+             · EP: <span class="booking-cost">{{ "%.2f €"|format(bk.unit_price) }}</span>
+             · GP: <span class="booking-cost">{{ "%.2f €"|format(bk.qty * bk.unit_price) }}</span>
+            {% endif %}
+            {% if is_fremd %}
+            <span class="booking-fremd"> · 🔶 Fremdgerät</span>
+            {% elif art and bk.qty > art.mietinventar %}
+            <span class="booking-warn"> · ⚠ Bestand: {{ art.mietinventar }}</span>
+            {% endif %}
+          </div>
+        </div>
+      {% elif bk.type == 'resource' %}
+        {% set res = personal_by_id.get(bk.resource_id) %}
+        <div class="booking-card res-card">
+          <span class="booking-id res">{{ res.ressourcenart if res else 'Personal' }}</span>
+          <span class="booking-name">{{ res.funktion if res else bk.caption }}</span>
+          <div class="booking-meta">
+            Tage: <b>{{ bk.qty }}</b>
+            {% if bk.total_price %}
+             · <span class="booking-cost" style="color:#5c35b0">{{ "%.2f €"|format(bk.total_price) }}</span>
+            {% endif %}
+          </div>
+        </div>
+      {% endif %}
+    {% endfor %}
+    {% endif %}
+  </div>
+
+</div>

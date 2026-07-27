@@ -1,0 +1,141 @@
+  {% if fallback_mode %}
+  <div class="fallback-hint">
+    ⚠ Keine EasyJob-DB-Verbindung — Anzeige basiert auf dem lokalen Snapshot vom Import.
+    Nachträgliche Änderungen in EasyJob sind nicht sichtbar.
+  </div>
+  {% endif %}
+
+  {% if preliminaries %}
+  <div class="prelim-block">
+    <div class="prelim-head">📋 Projektbeschreibung / Allgemeine Vorbemerkungen</div>
+    {% for rm in preliminaries %}
+    <details class="info-remark">
+      <summary>ℹ️ {{ rm.title or 'Vorbemerkung' }}</summary>
+      <div class="info-remark-body">{{ rm.long_text }}</div>
+      {% if rm.images %}<div class="pos-lt-imgs">{% for src in rm.images %}<img src="{{ src }}" loading="lazy">{% endfor %}</div>{% endif %}
+    </details>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <!-- Kennzahlen -->
+  <div class="metrics-row">
+    <div class="metric-card">
+      <div class="metric-val">{{ metrics.total_pos }}</div>
+      <div class="metric-lbl">Positionen</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-val" style="color:#2e7d32">{{ metrics.booked_pos }}</div>
+      <div class="metric-lbl">Gebucht</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-val" style="color:#c62828">{{ metrics.unbooked_pos }}</div>
+      <div class="metric-lbl">Nicht gebucht</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-val" style="color:#1a237e">{{ metrics.art_count }}</div>
+      <div class="metric-lbl">Artikel</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-val" style="color:#5c35b0">{{ metrics.res_count }}</div>
+      <div class="metric-lbl">Personal</div>
+    </div>
+    {% if metrics.cost_mat %}
+    <div class="metric-card">
+      <div class="metric-val" style="font-size:.95rem">{{ "%.0f €"|format(metrics.cost_mat) }}</div>
+      <div class="metric-lbl">Material</div>
+    </div>
+    {% endif %}
+    {% if metrics.cost_pers %}
+    <div class="metric-card">
+      <div class="metric-val" style="font-size:.95rem;color:#5c35b0">{{ "%.0f €"|format(metrics.cost_pers) }}</div>
+      <div class="metric-lbl">Personal</div>
+    </div>
+    {% endif %}
+    {% if metrics.cost_total %}
+    <div class="metric-card" style="background:#e8eaf6">
+      <div class="metric-val" style="font-size:.95rem;color:#1a237e">{{ "%.0f €"|format(metrics.cost_total) }}</div>
+      <div class="metric-lbl">Gesamt</div>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Langtexte / Vorbemerkungen global auf-/einklappen -->
+  <div style="margin:2px 0 10px">
+    <button type="button" id="lt-toggle-all-btn" class="lt-toggle-all"
+            onclick="toggleAllLangtexte()">▼ Alle Langtexte ausklappen</button>
+  </div>
+
+  <!-- Gruppen-Baum -->
+  {% if not groups %}
+  <p style="color:#888;font-size:.85rem">Keine GAEB-Daten verfügbar.</p>
+  {% else %}
+
+  {% for hg in groups %}
+  {% set hg_idx = loop.index0 %}
+  <div class="category-group">
+    <div class="category-header" onclick="toggleCat(this)">
+      <span>▼</span>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        {% if hg.num %}<span style="font-family:monospace;font-weight:700">[{{ hg.num }}]</span>  {% endif %}
+        {{ hg.name }}
+      </span>
+      <span style="font-size:.72rem;font-weight:400;color:#5c6bc0;flex-shrink:0">{{ hg.count }} Pos.</span>
+      {% set hg_costs = grp_costs.get(hg.name, {}) %}
+      {% if hg_costs.total %}
+      <span style="font-size:.72rem;font-weight:600;color:#1a237e;flex-shrink:0;margin-left:8px">
+        {{ "%.0f €"|format(hg_costs.total) }}
+      </span>
+      {% endif %}
+    </div>
+
+    <div class="category-body">
+      {% if hg.remarks %}
+      {% for rm in hg.remarks %}
+      <details class="info-remark">
+        <summary>ℹ️ {{ rm.title or 'Hinweis aus Ausschreibung' }}</summary>
+        <div class="info-remark-body">{{ rm.long_text }}</div>
+        {% if rm.images %}<div class="pos-lt-imgs">{% for src in rm.images %}<img src="{{ src }}" loading="lazy">{% endfor %}</div>{% endif %}
+      </details>
+      {% endfor %}
+      {% endif %}
+
+      {% if hg.sub %}
+        {% for sub in hg.sub %}
+        <div class="category-group" style="margin:4px 6px;border-radius:5px">
+          <div class="category-header" onclick="toggleCat(this)" style="padding:4px 8px;font-size:.85rem">
+            <span>▶</span>
+            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+              {% if sub.num %}<span style="font-family:monospace;font-weight:600">[{{ sub.num }}]</span>  {% endif %}
+              {{ sub.name }}
+            </span>
+            <span style="font-size:.72rem;color:#5c6bc0;flex-shrink:0">{{ sub.count }} Pos.</span>
+          </div>
+          <div class="category-body" style="display:none">
+            {% if sub.remarks %}
+            {% for rm in sub.remarks %}
+            <details class="info-remark">
+              <summary>ℹ️ {{ rm.title or 'Hinweis' }}</summary>
+              <div class="info-remark-body">{{ rm.long_text }}</div>
+              {% if rm.images %}<div class="pos-lt-imgs">{% for src in rm.images %}<img src="{{ src }}" loading="lazy">{% endfor %}</div>{% endif %}
+            </details>
+            {% endfor %}
+            {% endif %}
+            {% for block in sub.blocks %}
+              {% set pos = block.primary %}
+              {% include "partials/overview_pos.html" %}
+            {% endfor %}
+          </div>
+        </div>
+        {% endfor %}
+      {% else %}
+        {% for block in hg.blocks %}
+          {% set pos = block.primary %}
+          {% include "partials/overview_pos.html" %}
+        {% endfor %}
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+
+  {% endif %}

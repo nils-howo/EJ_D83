@@ -147,14 +147,15 @@ CREATE TABLE IF NOT EXISTS project_bookings (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id       INTEGER NOT NULL REFERENCES projects(id),
     item_id          TEXT    NOT NULL,
+    kind             TEXT    DEFAULT 'article',   -- 'article' | 'resource'
     oz               TEXT,
     description      TEXT,
     art_num          TEXT,
-    ej_stock_type_id INTEGER,
+    ej_stock_type_id INTEGER,   -- Artikel: IdStockType · Ressource: IdResourceFunction
     ej_s2j_id        INTEGER,
     ej_group_id      INTEGER,
-    qty              REAL    DEFAULT 1,
-    unit_price       REAL    DEFAULT 0
+    qty              REAL    DEFAULT 1,           -- Artikel: Stückzahl · Ressource: Tage
+    unit_price       REAL    DEFAULT 0            -- Artikel: EP · Ressource: Tagessatz
 );
 """
 
@@ -172,6 +173,7 @@ def init_db() -> None:
             "ALTER TABLE articles ADD COLUMN id_time_factor INTEGER DEFAULT 0",
             "ALTER TABLE projects ADD COLUMN ej_job_ids TEXT",
             "ALTER TABLE projects ADD COLUMN ej_project_number TEXT",
+            "ALTER TABLE project_bookings ADD COLUMN kind TEXT DEFAULT 'article'",
         ]:
             try:
                 conn.execute(sql)
@@ -228,6 +230,18 @@ def load_articles_db() -> list[dict]:
     """Gibt alle Artikel als Liste von Dicts zurück."""
     with get_conn() as conn:
         return [dict(r) for r in conn.execute("SELECT * FROM articles").fetchall()]
+
+
+def load_articles_by_ej_ids(ej_ids) -> list[dict]:
+    """Lädt nur die Artikel mit den angegebenen EJ-IdStockType (ej_id) — deutlich
+    schneller als alle Artikel zu laden, wenn nur ein paar gebraucht werden."""
+    ids = sorted({int(i) for i in ej_ids if i})
+    if not ids:
+        return []
+    ph = ",".join("?" for _ in ids)
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(
+            f"SELECT * FROM articles WHERE ej_id IN ({ph})", ids).fetchall()]
 
 
 # ── Berechnungsgrundlagen (TimeFactor / TimeFactorItem) ───────────────────────
@@ -634,17 +648,22 @@ def add_project_booking(
     ej_group_id: int,
     qty: float,
     unit_price: float = 0.0,
+    kind: str = "article",
 ) -> None:
-    """Fügt eine Buchungszeile für ein Projekt hinzu."""
+    """Fügt eine Buchungszeile für ein Projekt hinzu.
+
+    kind='article' (Standard) oder 'resource'. Bei Ressourcen ist
+    ej_stock_type_id die IdResourceFunction, qty = Tage, unit_price = Tagessatz.
+    """
     with get_conn() as conn:
         conn.execute(
             """
             INSERT INTO project_bookings
-                (project_id, item_id, oz, description, art_num,
+                (project_id, item_id, kind, oz, description, art_num,
                  ej_stock_type_id, ej_s2j_id, ej_group_id, qty, unit_price)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (project_id, item_id, oz, description, art_num,
+            (project_id, item_id, kind, oz, description, art_num,
              ej_stock_type_id, ej_s2j_id, ej_group_id, qty, unit_price),
         )
 
@@ -680,7 +699,8 @@ def get_project(project_id: int) -> dict | None:
     """Gibt alle Metadaten eines Projekts zurück (ohne gaeb_bytes)."""
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, name, ej_project_id, ej_job_ids, gaeb_name, item_count, booking_count, created_at "
+            "SELECT id, name, ej_project_id, ej_project_number, ej_job_ids, gaeb_name, "
+            "item_count, booking_count, created_at "
             "FROM projects WHERE id = ?",
             (project_id,),
         ).fetchone()
@@ -692,7 +712,7 @@ def get_project_bookings(project_id: int) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT id, project_id, item_id, oz, description, art_num,
+            SELECT id, project_id, item_id, kind, oz, description, art_num,
                    ej_stock_type_id, ej_s2j_id, ej_group_id, qty, unit_price
             FROM project_bookings WHERE project_id = ? ORDER BY id
             """,

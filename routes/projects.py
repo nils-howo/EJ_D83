@@ -1,4 +1,4 @@
-"""Projektliste + D84-Export aus gespeicherten Projekten."""
+"""Projektliste + D84-Export + Projektübersicht aus gespeicherten Projekten."""
 import asyncio
 import logging
 import os
@@ -12,9 +12,50 @@ from fastapi.responses import HTMLResponse, Response
 
 import db as _db
 from state import get_session, templates
-from routes.import_ import _clean_gaeb_for_export
+from routes.import_ import _clean_gaeb_for_export, _import_gaeb_groups
 
 router = APIRouter()
+
+# Geparste GAEB-Gruppenstruktur je Projekt cachen — sie ist unveränderlich, das
+# erneute Parsen kostet sonst je Übersichtsaufruf ~130 ms. Die Struktur enthält
+# eingebettete base64-Bilder, daher die Anzahl begrenzen (FIFO), sonst wächst der
+# Speicher unbegrenzt.
+_OVERVIEW_GROUPS_CACHE: "dict[int, dict]" = {}
+_OVERVIEW_CACHE_MAX = 12
+
+
+def _overview_data(project_id: int) -> dict:
+    """Geparste GAEB-Daten eines Projekts (gecacht, größenbegrenzt):
+    {"groups": [...], "preliminaries": [...]} — Vorbemerkungen = projektweite
+    Beschreibung, Gruppen = Positionsstruktur."""
+    cached = _OVERVIEW_GROUPS_CACHE.get(project_id)
+    if cached is not None:
+        return cached
+    gaeb_bytes, _ = _db.get_project_gaeb(project_id)
+    groups: list[dict] = []
+    preliminaries: list[dict] = []
+    if gaeb_bytes:
+        try:
+            import tempfile
+            from gaeb_parser import parse_gaeb
+            with tempfile.NamedTemporaryFile(suffix=".x83", delete=False) as tf:
+                tf.write(gaeb_bytes)
+                tmp = tf.name
+            gaeb_proj = parse_gaeb(tmp)
+            pathlib.Path(tmp).unlink(missing_ok=True)
+            groups = _import_gaeb_groups(gaeb_proj, level=0, alt_active={})
+            preliminaries = [
+                {"title": r.title, "long_text": r.long_text, "images": r.images}
+                for r in (gaeb_proj.preliminaries or [])
+            ]
+        except Exception as _e:
+            logging.error("project_overview: GAEB-Parse fehlgeschlagen: %s", _e)
+    data = {"groups": groups, "preliminaries": preliminaries}
+    # FIFO-Begrenzung: ältesten Eintrag verwerfen, wenn voll
+    if len(_OVERVIEW_GROUPS_CACHE) >= _OVERVIEW_CACHE_MAX:
+        _OVERVIEW_GROUPS_CACHE.pop(next(iter(_OVERVIEW_GROUPS_CACHE)), None)
+    _OVERVIEW_GROUPS_CACHE[project_id] = data
+    return data
 
 
 def _is_herstellertyp(label: str) -> bool:
@@ -136,6 +177,7 @@ async def project_delete(project_id: int, request: Request):
     if not ss.is_admin:
         return HTMLResponse('<span class="error-msg">Nur für Admins</span>', status_code=403)
     _db.delete_project(project_id)
+    _OVERVIEW_GROUPS_CACHE.pop(project_id, None)
     projects = _db.list_projects()
     await _attach_project_numbers(ss, projects)
     return templates.TemplateResponse(request, "projects.html", {
@@ -157,6 +199,118 @@ async def export_dialog(project_id: int, request: Request):
         "ht_labels":     ht_labels,
         "single_fields": single_fields,
     })
+
+
+def _learn_from_ej(cur, bookings: list[dict],
+                   num_by_ej_id: dict[int, str],
+                   res_name_by_id: dict[int, str],
+                   name_by_num: dict[str, str]) -> list[dict]:
+    """Vergleicht die aktuelle EJ-Buchung je Position mit dem Import-Snapshot und
+    lernt in EJ getauschte Artikel/Ressourcen als GUI-Mapping (Kurztext → Artikel
+    bzw. Ressource).
+
+    - Nur Positionen, die eindeutig EINER EJ-Gruppe entsprechen (Positions-Modus);
+      teilen sich mehrere Positionen eine Gruppe (Gruppen-Modus), wird übersprungen.
+    - Bei Artikeln zählen nur EIGENSTÄNDIGE Artikel: Top-Level-Zeilen der Gruppe
+      minus alles, was laut Stückliste (StockTypeReference) Referenz eines anderen
+      Artikels derselben Gruppe ist (Bolzen/Federstecker etc. fallen raus).
+
+    Gibt die gelernten Änderungen für die Anzeige zurück.
+    """
+    from collections import Counter
+
+    snap_art: dict[str, set] = {}   # item_id → {Artikelnummer}
+    snap_res: dict[str, set] = {}   # item_id → {resource_id}
+    kurz:  dict[str, str] = {}
+    oz_of: dict[str, str] = {}
+    grp_of: dict[str, int] = {}
+    for b in bookings:
+        iid = b["item_id"]
+        kurz.setdefault(iid, (b.get("description") or "").strip())
+        oz_of.setdefault(iid, b.get("oz") or "")
+        if b.get("ej_group_id"):
+            grp_of[iid] = int(b["ej_group_id"])
+        if (b.get("kind") or "article") == "resource":
+            rid = int(b.get("ej_stock_type_id") or 0)
+            if rid:
+                snap_res.setdefault(iid, set()).add(rid)
+        elif b.get("art_num"):
+            snap_art.setdefault(iid, set()).add(str(b["art_num"]))
+
+    grp_count = Counter(grp_of.values())
+    positions = [(iid, g) for iid, g in grp_of.items()
+                 if grp_count[g] == 1 and kurz.get(iid)]   # nur eindeutige Gruppen
+    if not positions:
+        return []
+    groups = list({g for _, g in positions})
+    gph = ",".join("?" for _ in groups)
+
+    # aktuelle Top-Level-Artikel je Gruppe (gebundene Kind-Zeilen ausgeschlossen)
+    grp_arts: dict[int, list] = {}
+    cur.execute(
+        f"""SELECT IdStockType2JobGroup, IdStockType FROM StockType2Job
+            WHERE IdStockType2JobGroup IN ({gph})
+              AND (IdStockType2Job_Parent IS NULL OR IdStockType2Job_Parent = 0)""",
+        *groups,
+    )
+    for r in cur.fetchall():
+        grp_arts.setdefault(int(r[0]), []).append(int(r[1] or 0))
+
+    # Stückliste: Kind-Artikel je Elternartikel (für den Referenz-Filter)
+    all_arts = {a for arts in grp_arts.values() for a in arts if a}
+    parent_children: dict[int, set] = {}
+    if all_arts:
+        aph = ",".join("?" for _ in all_arts)
+        cur.execute(
+            f"""SELECT IdStockType_Parent, IdStockType FROM StockTypeReference
+                WHERE IdStockType_Parent IN ({aph})""",
+            *all_arts,
+        )
+        for r in cur.fetchall():
+            parent_children.setdefault(int(r[0]), set()).add(int(r[1]))
+
+    # aktuelle Ressourcen je Gruppe
+    grp_res: dict[int, set] = {}
+    cur.execute(
+        f"""SELECT IdStockType2JobGroup, IdResourceFunction FROM ResourceFunctionAllocation
+            WHERE IdStockType2JobGroup IN ({gph})""",
+        *groups,
+    )
+    for r in cur.fetchall():
+        grp_res.setdefault(int(r[0]), set()).add(int(r[1] or 0))
+
+    def _art_names(nums):
+        return [name_by_num.get(n, n) for n in sorted(nums)]
+
+    def _res_names(ids):
+        return [res_name_by_id.get(r, str(r)) for r in sorted(ids)]
+
+    learned: list[dict] = []
+    for iid, g in positions:
+        kt   = kurz[iid]
+        arts = grp_arts.get(g, [])
+        in_grp = set(arts)
+        # Referenz = Kind eines anderen Artikels DERSELBEN Gruppe
+        referenced = {c for p in in_grp for c in parent_children.get(p, set()) if c in in_grp}
+        standalone = [a for a in arts if a and a not in referenced]
+        cur_nums  = {num_by_ej_id[a] for a in standalone if a in num_by_ej_id}
+        orig_nums = snap_art.get(iid, set())
+        # Artikel geändert / ergänzt / komplett entfernt → lernen + anzeigen.
+        # Leere Liste an save_gui_bundle löscht das Mapping (z.B. Material raus,
+        # dafür Personal rein) — sonst würde beim nächsten Import wieder das alte
+        # Material gebucht.
+        if cur_nums != orig_nums and (cur_nums or orig_nums):
+            _db.save_gui_bundle(kt, sorted(cur_nums))
+            learned.append({"oz": oz_of.get(iid, ""), "kurztext": kt, "kind": "Artikel",
+                            "old": _art_names(orig_nums), "new": _art_names(cur_nums)})
+
+        cur_res  = grp_res.get(g, set())
+        orig_res = snap_res.get(iid, set())
+        if cur_res != orig_res and (cur_res or orig_res):
+            _db.save_gui_resource_mapping(kt, sorted(cur_res)[0] if cur_res else 0)
+            learned.append({"oz": oz_of.get(iid, ""), "kurztext": kt, "kind": "Ressource",
+                            "old": _res_names(orig_res), "new": _res_names(cur_res)})
+    return learned
 
 
 @router.post("/api/projects/{project_id}/export-d84")
@@ -218,58 +372,74 @@ async def project_export_d84(project_id: int, request: Request):
     group_art_cost:  dict[int, float] = {}
     group_pers_cost: dict[int, float] = {}
 
-    cn  = pyodbc.connect(ss.ej_db_conn)
-    cur = cn.cursor()
+    cn = pyodbc.connect(ss.ej_db_conn)
+    try:
+        cur = cn.cursor()
 
-    cur.execute(
-        f"""
-        SELECT s2j.IdStockType2JobGroup,
-               SUM(s2j.Factor * s2j.TimeFactor * COALESCE(s2j.RentalPrice, s2j.BasePrice, 0)) AS GruppenKosten
-        FROM StockType2Job s2j
-        WHERE s2j.IdJob IN ({job_ph})
-          AND s2j.IdStockType2JobGroup IS NOT NULL
-          AND s2j.IdStockType2JobGroup > 0
-        GROUP BY s2j.IdStockType2JobGroup
-        """,
-        *job_ids,
-    )
-    for r in cur.fetchall():
-        group_art_cost[int(r[0])] = float(r[1] or 0)
+        cur.execute(
+            f"""
+            SELECT s2j.IdStockType2JobGroup,
+                   SUM(s2j.Factor * s2j.TimeFactor * COALESCE(s2j.RentalPrice, s2j.BasePrice, 0)) AS GruppenKosten
+            FROM StockType2Job s2j
+            WHERE s2j.IdJob IN ({job_ph})
+              AND s2j.IdStockType2JobGroup IS NOT NULL
+              AND s2j.IdStockType2JobGroup > 0
+            GROUP BY s2j.IdStockType2JobGroup
+            """,
+            *job_ids,
+        )
+        for r in cur.fetchall():
+            group_art_cost[int(r[0])] = float(r[1] or 0)
 
-    cur.execute(
-        f"""
-        SELECT rfa.IdStockType2JobGroup,
-               SUM(rfa.TotalPrice) AS PersKosten
-        FROM ResourceFunctionAllocation rfa
-        WHERE rfa.IdJob IN ({job_ph})
-          AND rfa.IdStockType2JobGroup IS NOT NULL
-          AND rfa.IdStockType2JobGroup > 0
-        GROUP BY rfa.IdStockType2JobGroup
-        """,
-        *job_ids,
-    )
-    for r in cur.fetchall():
-        group_pers_cost[int(r[0])] = float(r[1] or 0)
+        cur.execute(
+            f"""
+            SELECT rfa.IdStockType2JobGroup,
+                   SUM(rfa.TotalPrice) AS PersKosten
+            FROM ResourceFunctionAllocation rfa
+            WHERE rfa.IdJob IN ({job_ph})
+              AND rfa.IdStockType2JobGroup IS NOT NULL
+              AND rfa.IdStockType2JobGroup > 0
+            GROUP BY rfa.IdStockType2JobGroup
+            """,
+            *job_ids,
+        )
+        for r in cur.fetchall():
+            group_pers_cost[int(r[0])] = float(r[1] or 0)
 
-    # Gruppenbezeichnungen: "[01.01.01] Beschreibung" → OZ → IdStockType2JobGroup
-    # Fallback für Ressourcen-Positionen, die nicht in project_bookings stehen
-    cur.execute(
-        f"""
-        SELECT g.Caption, g.IdStockType2JobGroup
-        FROM StockType2JobGroup g
-        WHERE g.IdJob IN ({job_ph})
-        """,
-        *job_ids,
-    )
-    oz_to_group: dict[str, int] = {}
-    for r in cur.fetchall():
-        cap = r[0] or ""
-        if cap.startswith('[') and ']' in cap:
-            oz = cap[1:cap.index(']')].strip()
-            if oz:
-                oz_to_group[oz] = int(r[1])
+        # Gruppenbezeichnungen: "[01.01.01] Beschreibung" → OZ → IdStockType2JobGroup
+        # Fallback für Ressourcen-Positionen, die nicht in project_bookings stehen
+        cur.execute(
+            f"""
+            SELECT g.Caption, g.IdStockType2JobGroup
+            FROM StockType2JobGroup g
+            WHERE g.IdJob IN ({job_ph})
+            """,
+            *job_ids,
+        )
+        oz_to_group: dict[str, int] = {}
+        for r in cur.fetchall():
+            cap = r[0] or ""
+            if cap.startswith('[') and ']' in cap:
+                oz = cap[1:cap.index(']')].strip()
+                if oz:
+                    oz_to_group[oz] = int(r[1])
 
-    cn.close()
+        # ── Learning: in EJ getauschte Artikel/Ressourcen als Mapping übernehmen ──
+        _articles = _db.load_articles_db()
+        num_by_ej_id = {int(a["ej_id"]): a["nummer"] for a in _articles if a.get("ej_id")}
+        name_by_num  = {a["nummer"]: (a.get("bezeichnung") or a["nummer"])
+                        for a in _articles if a.get("nummer")}
+        res_name_by_id = {
+            int(p["id"]): (p.get("funktion") or p.get("satzname") or str(p["id"]))
+            for p in _db.load_personal_db() if p.get("id")
+        }
+        try:
+            learned = _learn_from_ej(cur, bookings, num_by_ej_id, res_name_by_id, name_by_num)
+        except Exception as _le:
+            logging.error("Export-Learning fehlgeschlagen: %s", _le)
+            learned = []
+    finally:
+        cn.close()
 
     # GAEB-XML laden, DA83 → DA84
     xml_text = gaeb_bytes.decode("utf-8", errors="replace")
@@ -483,8 +653,340 @@ async def project_export_d84(project_id: int, request: Request):
 
     stem     = pathlib.Path(gaeb_name or "export").stem
     filename = f"{stem}.x84"
+    # Datei für den Download zwischenspeichern; zuerst den Learning-Bericht zeigen.
+    ss.pending_export = {"project_id": project_id, "name": filename, "bytes": out_bytes}
+    return templates.TemplateResponse(request, "partials/export_result.html", {
+        "project_id": project_id,
+        "filename":   filename,
+        "learned":    learned,
+    })
+
+
+@router.get("/api/projects/{project_id}/export-d84/download")
+async def project_export_d84_download(project_id: int, request: Request):
+    """Liefert die zuvor (beim Export) erzeugte D84-Datei aus dem Session-Puffer."""
+    ss = get_session(request.session)
+    pe = getattr(ss, "pending_export", None)
+    if not pe or pe.get("project_id") != project_id:
+        raise HTTPException(404, "Kein vorbereiteter Export — bitte erneut exportieren.")
     return Response(
-        content=out_bytes,
+        content=pe["bytes"],
         media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f'attachment; filename="{pe["name"]}"'},
     )
+
+
+# ─── Projektübersicht ─────────────────────────────────────────────────────────
+
+@router.get("/projects/{project_id}/overview", response_class=HTMLResponse)
+async def project_overview(project_id: int, request: Request):
+    """Zeigt eine read-only Übersicht eines gespeicherten Projekts:
+    D83-Gruppenstruktur + gebuchte Artikel/Ressourcen aus EJ (live via DB)
+    oder lokalem Snapshot als Fallback.
+    """
+    ss = get_session(request.session)
+
+    # ── Projekt-Metadaten ────────────────────────────────────────────────────
+    proj = _db.get_project(project_id)
+    if not proj:
+        raise HTTPException(404, "Projekt nicht gefunden")
+
+    # Nummer kommt aus der lokalen DB (get_project) — KEIN API-Call hier, damit
+    # die Shell sofort erscheint. Fehlt sie, füllt sie der Content-Endpoint nach.
+    proj.setdefault("ej_project_number", "")
+
+    # Die Seite erscheint sofort mit dem Kopf; die (langsamen) Buchungsdaten
+    # werden per HTMX über /overview/content nachgeladen.
+    return templates.TemplateResponse(request, "projects_overview.html", {
+        "project":  proj,
+        "is_admin": ss.is_admin,
+    })
+
+
+@router.get("/projects/{project_id}/overview/content", response_class=HTMLResponse)
+async def project_overview_content(project_id: int, request: Request):
+    """Schwerer Teil der Projektübersicht (GAEB-Parse + Live-Buchungen aus EJ),
+    per HTMX nachgeladen — so ist die Seite selbst sofort da."""
+    ss = get_session(request.session)
+    proj = _db.get_project(project_id)
+    if not proj:
+        raise HTTPException(404, "Projekt nicht gefunden")
+    proj.setdefault("ej_project_number", "")
+
+    loop = asyncio.get_event_loop()
+    # Projektnummer einmalig nachtragen, falls lokal noch nicht gespeichert —
+    # das blockiert nur den (ohnehin nachgeladenen) Content, nicht die Shell.
+    if not proj["ej_project_number"] and proj.get("ej_project_id") and ss.ej_client:
+        try:
+            _num = await loop.run_in_executor(
+                None, lambda: ss.ej_client.get_project_number(int(proj["ej_project_id"]))
+            )
+            if _num:
+                await loop.run_in_executor(None, lambda: _db.set_project_number(project_id, _num))
+        except Exception:
+            pass
+
+    # ── D83-Gruppenstruktur + Vorbemerkungen (gecacht, Parse im Thread) ──────
+    _data = await loop.run_in_executor(None, _overview_data, project_id)
+    groups = _data["groups"]
+    preliminaries = _data["preliminaries"]
+
+    # ── Personal-Stammdaten (klein) ──────────────────────────────────────────
+    personal_raw = await loop.run_in_executor(None, _db.load_personal_db)
+    personal_by_id: dict[int, dict] = {
+        int(p["id"]): p for p in personal_raw if p.get("id")
+    }
+    # Artikel werden erst NACH den Buchungen geladen — dann gezielt nur die
+    # tatsächlich gebuchten (statt aller ~11.500).
+    articles_by_ej_id: dict[int, dict] = {}
+
+    # ── Buchungen: Live aus EJ-DB oder lokaler Snapshot ──────────────────────
+    fallback_mode = False
+    bookings_by_item: dict[str, list[dict]] = {}
+    cost_mat  = 0.0
+    cost_pers = 0.0
+
+    job_ids = [
+        int(x) for x in (proj.get("ej_job_ids") or "").split(",")
+        if x.strip().isdigit()
+    ]
+
+    if ss.ej_db_conn and job_ids:
+        # ── Live-Modus: EJ-DB direkt abfragen ────────────────────────────────
+        cn = None
+        try:
+            cn  = pyodbc.connect(ss.ej_db_conn)
+            cur = cn.cursor()
+            job_ph = ",".join("?" for _ in job_ids)
+
+            # Gruppen-Caption → item_id (OZ-Mapping aus gespeicherten Buchungen)
+            local_bookings = _db.get_project_bookings(project_id)
+            # oz → item_id aus der GAEB-Struktur (deckt ALLE Positionen ab, auch
+            # reine Ressourcen-Positionen, die nicht in project_bookings stehen).
+            oz_to_item: dict[str, str] = {}
+            for _hg in groups:
+                for _pos in _iter_blocks(_hg):
+                    if _pos.get("oz"):
+                        oz_to_item.setdefault(_pos["oz"], _pos["item_id"])
+            for b in local_bookings:
+                if b.get("oz"):
+                    oz_to_item.setdefault(b["oz"], b["item_id"])
+            # item_id → ej_group_id (für Ressourcen-Zuordnung)
+            item_to_grp: dict[str, int] = {
+                b["item_id"]: int(b["ej_group_id"])
+                for b in local_bookings if b.get("ej_group_id")
+            }
+
+            # Gebuchte Artikel (StockType2Job) je Gruppe
+            # Hinweis: In EJ heißt die Mengenspalte "Factor" (Stückzahl),
+            # "TimeFactor" ist der Preisfaktor (Berechnungsgrundlage).
+            cur.execute(
+                f"""
+                SELECT s2j.IdStockType, s2j.Factor, s2j.IdStockType2JobGroup,
+                       COALESCE(s2j.RentalPrice, s2j.BasePrice, 0) AS UnitPrice,
+                       s2j.TimeFactor,
+                       g.Caption AS GrpCaption
+                FROM StockType2Job s2j
+                LEFT JOIN StockType2JobGroup g
+                    ON g.IdStockType2JobGroup = s2j.IdStockType2JobGroup
+                WHERE s2j.IdJob IN ({job_ph})
+                  -- Fest gebundene Referenzartikel (BOM-Komponenten, die EJ beim
+                  -- Buchen des Elternartikels automatisch anlegt) nicht auflisten:
+                  -- sie haben IdStockType2Job_Parent gesetzt und Preis 0.
+                  AND (s2j.IdStockType2Job_Parent IS NULL OR s2j.IdStockType2Job_Parent = 0)
+                ORDER BY s2j.IdStockType2JobGroup, s2j.IdStockType2Job
+                """,
+                *job_ids,
+            )
+            for r in cur.fetchall():
+                id_st   = int(r[0] or 0)
+                qty     = float(r[1] or 1)   # Factor = Stückzahl
+                grp_id  = int(r[2] or 0)
+                up      = float(r[3] or 0)
+                tf      = float(r[4] or 1)   # TimeFactor = Preisfaktor
+                grp_cap = r[5] or ""
+
+                # OZ aus Gruppen-Caption "[OZ] Beschreibung" extrahieren
+                oz = ""
+                if grp_cap.startswith("[") and "]" in grp_cap:
+                    oz = grp_cap[1:grp_cap.index("]")].strip()
+
+                item_id = oz_to_item.get(oz, "")
+                if not item_id:
+                    # Fallback: item_id über ej_group_id aus lokalen Buchungen
+                    for b in local_bookings:
+                        if b.get("ej_group_id") and int(b["ej_group_id"]) == grp_id:
+                            item_id = b["item_id"]
+                            break
+
+                if not item_id:
+                    continue
+
+                eff_up = up * tf
+                cost_mat += qty * eff_up
+                bookings_by_item.setdefault(item_id, []).append({
+                    "type":           "article",
+                    "ej_stock_type_id": id_st,
+                    "qty":            qty,
+                    "unit_price":     eff_up,
+                    "caption":        "",
+                })
+
+            # Gebuchte Ressourcen (ResourceFunctionAllocation) je Gruppe
+            cur.execute(
+                f"""
+                SELECT rfa.IdResourceFunction, rfa.DaysInAction,
+                       rfa.TotalPrice, rfa.IdStockType2JobGroup,
+                       g.Caption AS GrpCaption
+                FROM ResourceFunctionAllocation rfa
+                LEFT JOIN StockType2JobGroup g
+                    ON g.IdStockType2JobGroup = rfa.IdStockType2JobGroup
+                WHERE rfa.IdJob IN ({job_ph})
+                ORDER BY rfa.IdStockType2JobGroup, rfa.IdResourceFunctionAllocation
+                """,
+                *job_ids,
+            )
+            for r in cur.fetchall():
+                res_id  = int(r[0] or 0)
+                days    = float(r[1] or 0)
+                total_p = float(r[2] or 0)
+                grp_id  = int(r[3] or 0) if r[3] else 0
+                grp_cap = r[4] or ""
+
+                # item_id primär über OZ aus der Gruppen-Caption "[OZ] …" — deckt
+                # reine Ressourcen-Gruppen ab, die in project_bookings fehlen;
+                # sonst über ej_group_id aus den lokalen (Artikel-)Buchungen.
+                oz = ""
+                if grp_cap.startswith("[") and "]" in grp_cap:
+                    oz = grp_cap[1:grp_cap.index("]")].strip()
+                item_id = oz_to_item.get(oz, "")
+                if not item_id:
+                    for b in local_bookings:
+                        if b.get("ej_group_id") and int(b["ej_group_id"]) == grp_id:
+                            item_id = b["item_id"]
+                            break
+
+                if not item_id:
+                    continue
+
+                cost_pers += total_p
+                bookings_by_item.setdefault(item_id, []).append({
+                    "type":        "resource",
+                    "resource_id": res_id,
+                    "qty":         days,
+                    "total_price": total_p,
+                    "caption":     "",
+                })
+
+        except Exception as _e:
+            logging.error("project_overview: EJ-DB-Abfrage fehlgeschlagen: %s", _e)
+            fallback_mode = True
+        finally:
+            if cn is not None:
+                try:
+                    cn.close()
+                except Exception:
+                    pass
+
+    if fallback_mode or (not ss.ej_db_conn and job_ids):
+        # ── Fallback: lokaler Snapshot aus project_bookings ───────────────────
+        fallback_mode = True
+        local_bookings = _db.get_project_bookings(project_id)
+        for b in local_bookings:
+            item_id = b["item_id"]
+            up      = float(b.get("unit_price") or 0)
+            qty     = float(b.get("qty") or 1)
+            if (b.get("kind") or "article") == "resource":
+                total_p = qty * up   # Tage × Tagessatz
+                cost_pers += total_p
+                bookings_by_item.setdefault(item_id, []).append({
+                    "type":        "resource",
+                    "resource_id": int(b.get("ej_stock_type_id") or 0),
+                    "qty":         qty,
+                    "total_price": total_p,
+                    "caption":     b.get("description") or "",
+                })
+            else:
+                cost_mat += qty * up
+                bookings_by_item.setdefault(item_id, []).append({
+                    "type":             "article",
+                    "ej_stock_type_id": int(b.get("ej_stock_type_id") or 0),
+                    "qty":              qty,
+                    "unit_price":       up,
+                    "caption":          b.get("description") or "",
+                })
+
+    # ── Nur die tatsächlich gebuchten Artikel laden (statt aller ~11.500) ────
+    _st_ids = {
+        b["ej_stock_type_id"]
+        for bks in bookings_by_item.values() for b in bks
+        if b.get("type") == "article" and b.get("ej_stock_type_id")
+    }
+    if _st_ids:
+        articles_by_ej_id = {
+            int(a["ej_id"]): a
+            for a in await loop.run_in_executor(None, _db.load_articles_by_ej_ids, _st_ids)
+            if a.get("ej_id")
+        }
+
+    # ── Kennzahlen ───────────────────────────────────────────────────────────
+    total_pos   = sum(
+        len(list(_iter_blocks(hg))) for hg in groups
+    )
+    booked_pos  = sum(
+        1 for hg in groups
+        for pos in _iter_blocks(hg)
+        if bookings_by_item.get(pos["item_id"])
+    )
+    art_count   = sum(
+        1 for bks in bookings_by_item.values()
+        for b in bks if b["type"] == "article"
+    )
+    res_count   = sum(
+        1 for bks in bookings_by_item.values()
+        for b in bks if b["type"] == "resource"
+    )
+    metrics = {
+        "total_pos":   total_pos,
+        "booked_pos":  booked_pos,
+        "unbooked_pos": max(0, total_pos - booked_pos),
+        "art_count":   art_count,
+        "res_count":   res_count,
+        "cost_mat":    cost_mat,
+        "cost_pers":   cost_pers,
+        "cost_total":  cost_mat + cost_pers,
+    }
+
+    # ── Kosten je Hauptgruppe (für Anzeige im Gruppen-Header) ────────────────
+    grp_costs: dict[str, dict] = {}
+    for hg in groups:
+        mat = pers = 0.0
+        for pos in _iter_blocks(hg):
+            for bk in bookings_by_item.get(pos["item_id"], []):
+                if bk["type"] == "article":
+                    mat += float(bk.get("qty", 1)) * float(bk.get("unit_price", 0))
+                elif bk["type"] == "resource":
+                    pers += float(bk.get("total_price", 0))
+        grp_costs[hg["name"]] = {"mat": mat, "pers": pers, "total": mat + pers}
+
+    return templates.TemplateResponse(request, "partials/overview_content.html", {
+        "project":          proj,
+        "is_admin":         ss.is_admin,
+        "groups":           groups,
+        "preliminaries":    preliminaries,
+        "bookings_by_item": bookings_by_item,
+        "articles_by_ej_id": articles_by_ej_id,
+        "personal_by_id":   personal_by_id,
+        "metrics":          metrics,
+        "grp_costs":        grp_costs,
+        "fallback_mode":    fallback_mode,
+    })
+
+
+def _iter_blocks(hg: dict):
+    """Iteriert alle primären Positionen einer Hauptgruppe (inkl. Untergruppen)."""
+    for block in hg.get("blocks", []):
+        yield block["primary"]
+    for sub in hg.get("sub", []):
+        for block in sub.get("blocks", []):
+            yield block["primary"]
