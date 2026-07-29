@@ -71,7 +71,8 @@
     <input type="hidden" name="extra_nums" id="replace-extra-nums" value="">
     <input type="hidden" name="extra_qtys" id="replace-extra-qtys" value="">
     <label style="font-size:.82rem">Menge:</label>
-    <input type="number" name="qty" value="{{ default_qty|int }}" min="0" step="1" style="width:80px">
+    <input type="number" name="qty" value="{{ default_qty|int }}" min="0" step="1" style="width:80px"
+           oninput="if(window.ejUpdateExtraHidden)ejUpdateExtraHidden(this)">
     <button type="submit" id="ej-set-btn" class="btn btn-green" disabled>
       {% if add_action %}🔄 Ersetzen{% else %}✅ Als Match setzen{% endif %}
     </button>

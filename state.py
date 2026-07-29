@@ -125,26 +125,38 @@ class UserSession:
 
 # ─── Session-Registry ─────────────────────────────────────────────────────────
 
-_SESSION_TTL = 8 * 3600  # Sekunden — passt zum Cookie max_age
+_SESSION_TTL = 15 * 3600  # Sekunden — passt zum Cookie max_age (Weiterarbeiten am Folgetag)
+_SESSION_MAX = 200        # harte Obergrenze gegen unbegrenztes Session-Wachstum
 
 _sessions:      dict[str, UserSession] = {}
 _last_seen:     dict[str, float]       = {}
 
 
 def _cleanup_sessions() -> None:
-    """Entfernt Sessions die seit TTL nicht mehr aktiv waren."""
+    """Entfernt Sessions, die seit TTL nicht mehr aktiv waren, und begrenzt die
+    Gesamtzahl (älteste zuerst) — verhindert unbegrenztes Wachstum."""
     cutoff = time.monotonic() - _SESSION_TTL
-    stale = [sid for sid, t in _last_seen.items() if t < cutoff]
-    for sid in stale:
+    for sid in [s for s, t in list(_last_seen.items()) if t < cutoff]:
+        _sessions.pop(sid, None)
+        _last_seen.pop(sid, None)
+    while len(_sessions) > _SESSION_MAX and _last_seen:
+        oldest = min(_last_seen, key=_last_seen.get)
+        _sessions.pop(oldest, None)
+        _last_seen.pop(oldest, None)
+
+
+def drop_session(session: dict) -> None:
+    """Löscht die serverseitige Session (Logout) — entfernt Credentials und
+    Matcher-/Projekt-State sofort aus dem RAM."""
+    sid = session.get("app_sid")
+    if sid:
         _sessions.pop(sid, None)
         _last_seen.pop(sid, None)
 
 
 def get_session(session: dict) -> UserSession:
     """Gibt den UserSession der aktuellen Browser-Session zurück (lazy create)."""
-    # Gelegentlich aufräumen (jede ~100. Anfrage)
-    if len(_sessions) > 10 and int(time.monotonic()) % 100 == 0:
-        _cleanup_sessions()
+    _cleanup_sessions()   # deterministisch bei jedem Zugriff (Registry ist klein)
 
     sid = session.get("app_sid")
     if not sid or sid not in _sessions:

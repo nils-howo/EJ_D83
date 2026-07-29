@@ -85,7 +85,7 @@
 {% else %}
 
 {# ── Makro: eine einzelne Positions-Zeile (pos-row Stil wie Hauptseite) ────── #}
-{% macro pos_row(pos, is_alt_style) %}
+{% macro pos_row(pos, is_alt_style, skip_remarks=false) %}
 {% set m   = matches.get(pos.item_id) %}
 {% set pct = [[m.score|int, 100]|min, 0]|max if m else 0 %}
 {% set bq  = booking_qtys.get(pos.item_id) %}
@@ -103,12 +103,13 @@
 {% else %}
   {% set border_clr = '#ccc' %}
 {% endif %}
-{% if pos.remarks %}{{ render_remarks(pos.remarks) }}{% endif %}
+{% if pos.remarks and not skip_remarks %}{{ render_remarks(pos.remarks) }}{% endif %}
 <div class="pos-row{% if is_alt_style %} pos-row-alt{% endif %}{% if pct >= 99 and m and m.article %} imp-pos-done{% endif %}">
 
   {# Links: GAEB-Info #}
   <div class="pos-left" style="border-left-color:{{ border_clr }}">
     {% if is_alt_style %}<span class="alt-badge">⇄ Alternativ</span>{% endif %}
+    {% if pos.is_eventual %}<span class="alt-badge" style="background:#8e24aa">◇ Eventual</span>{% endif %}
     {% if pos.oz %}<span class="oz-badge">{{ pos.oz }}</span>{% endif %}
     <div class="pos-desc">{{ pos.desc }}</div>
     <div class="pos-meta">Gefordert: <b>{{ pos.qty }} {{ pos.unit }}</b></div>
@@ -299,6 +300,8 @@
 {# ── Makro: Block (einfach oder Alt-Paar) ────────────────────────────────── #}
 {% macro render_block(block) %}
 {% if block.has_alt %}
+{# Hinweis der Grundposition gehört ÜBER den Alt-Block (vor den Umschalter) #}
+{% if block.primary.remarks %}{{ render_remarks(block.primary.remarks) }}{% endif %}
 <div class="alt-block{% if (matches.get(block.primary.item_id) and matches.get(block.primary.item_id).score >= 99) and (matches.get(block.alt.item_id) and matches.get(block.alt.item_id).score >= 99) %} imp-pos-done{% endif %}" style="margin:4px 0 2px">
   <div class="alt-label">🔀 Alternativpositionen</div>
   <div class="alt-btns">
@@ -312,9 +315,9 @@
   </div>
 </div>
 {% if block.render_primary %}
-  {{ pos_row(block.primary, false) }}
+  {{ pos_row(block.primary, false, true) }}
 {% else %}
-  <div class="pos-row-inactive">{{ pos_row(block.primary, false) }}</div>
+  <div class="pos-row-inactive">{{ pos_row(block.primary, false, true) }}</div>
 {% endif %}
 {% if block.alt %}
   {% if block.render_alt %}

@@ -938,7 +938,7 @@ class UnifiedMatcher:
             self._res_nums    = list(ns)
             self._res_sources = list(srcs)
         else:
-            self._res_keys = self._res_nums = self._res_sources = []
+            self._res_keys, self._res_nums, self._res_sources = [], [], []
 
     def add_learned_bundle(self, gaeb_description: str, numbers: list[str]) -> None:
         """Aktualisiert In-Memory-Index für Primary + Extras. Leere Liste = vergessen."""
@@ -956,7 +956,7 @@ class UnifiedMatcher:
             self._res_nums    = list(ns)
             self._res_sources = list(ss)
         else:
-            self._res_keys = self._res_nums = self._res_sources = []
+            self._res_keys, self._res_nums, self._res_sources = [], [], []
 
         extras = [n for n in numbers[1:] if n in self._num_to_idx]
         if extras:
@@ -995,7 +995,7 @@ class UnifiedMatcher:
             if hits and hits[0][1] > best_score:
                 best_score = hits[0][1]
                 best_extras = self._bundle_extras[keys[hits[0][2]]]
-        return best_extras if best_score >= 85 else []
+        return list(best_extras) if best_score >= 85 else []
 
     def match(self, query: str, limit: int = 5,
               category_path: list[str] | None = None,
@@ -1176,29 +1176,22 @@ class UnifiedMatcher:
         for art in self.articles:
             for syn in art.gaeb_synonyms:
                 if syn.lower() in q_lower or q_lower in syn.lower():
-                    results.append((97.0, art, "synonym"))
+                    results.append((97.0, art, "synonym", {}))
                     seen.add(art.display_id)
                     break
 
-        # 1d. Verkabelungs-Pauschal-Artikel vorab in mapping_boosts aufnehmen
-        # → verhindert dass sie durch Fuzzy-Vorfilter herausfallen
-        # Generisch: alle "Verkabelung"-Artikel bekommen Basis-Boost
-        # Spezifisch: passendes AUDIO/STROM/LICHT/… → vollen Boost
+        # 1d. Verkabelungs-Pauschal-Artikel nur als Kandidat sichern (Pre-Hit-Aufnahme,
+        # KEIN Score) — genau wie 1e–1h. Der eigentliche Verkabelungs-Boost wird EINMAL
+        # im Scoring-Loop vergeben (siehe unten); früher wurde hier zusätzlich geboostet
+        # → Doppelzählung (Wert floss über mapping_boosts nochmal in den Score).
         if is_verkabelung:
             for art in self.articles:
                 bez_l = art.bezeichnung.lower()
                 # "Verbrauch Verkabelung ..." = Materialverbrauch, keine Pauschale → überspringen
                 if "verkabelung" in bez_l and "verbrauch" not in bez_l:
                     pidx = self._num_to_idx.get(art.nummer)
-                    if pidx is None:
-                        continue
-                    boost = VERKABELUNG_BOOST // 2  # generisch immer
-                    for subcat_keys, art_label in VERKABELUNG_SUBCAT:
-                        if any(k in _q_combined for k in subcat_keys) \
-                                and art_label in art.bezeichnung.upper():
-                            boost = VERKABELUNG_BOOST  # spezifisch > generisch
-                            break
-                    mapping_boosts[pidx] = max(mapping_boosts.get(pidx, 0), boost)
+                    if pidx is not None and pidx not in mapping_boosts:
+                        mapping_boosts[pidx] = 0  # kein Boost, nur Kandidat sichern
 
         # 1e. Motor-Artikel vorab in mapping_boosts eintragen → garantiert Aufnahme in Pre-Hits
         if is_motor:
@@ -1758,7 +1751,7 @@ def make_article_from_ej(item: dict, details: dict | None = None,
         local_idx = local_matcher._num_to_idx.get(nummer)
         if local_idx is not None:
             return local_matcher._pool[local_idx]
-    inv     = int(details.get("RentalInventory", 0)) if details else 0
+    inv     = int(details.get("RentalInventory") or 0) if details else 0
     comment = (details.get("Comment", "") or "").strip() if details else ""
     return Article(
         ej_id=int(item.get("ID") or item.get("IdStockType") or 0),

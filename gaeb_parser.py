@@ -18,19 +18,13 @@ class GaebItem:
     unit: str
     category_path: list[str]
     unit_price: Optional[float] = None           # filled from X84
-    is_alt: bool = False                         # Type="A" in GAEB XML
+    is_alt: bool = False                         # Alternativposition (ALNSerNo≥1 / Type="A")
+    is_eventual: bool = False                    # Eventual-/Bedarfsposition (<Provis>)
     long_text_images: list[str] = field(default_factory=list)  # data-URIs aus Langtext
 
     @property
     def full_position(self) -> str:
         return " > ".join(self.category_path)
-
-    @property
-    def match_query(self) -> str:
-        """Kombination aus Kurz- und Langtext für bestmögliches Matching."""
-        if self.long_text and self.long_text != self.description:
-            return f"{self.description} {self.long_text[:300]}"
-        return self.description
 
 
 @dataclass
@@ -232,13 +226,19 @@ def _parse_body(body_el: ET.Element, ns: dict, path: list[str],
                     desc            = _extract_outline_text(item_el, ns)
                     long_text, imgs = _extract_long_text(item_el, ns)
                     item_type       = item_el.get("Type", "N").strip().upper()
-                    # Fallback: wenn kein Type-Attribut gesetzt, Beschreibungstext prüfen
-                    is_alt = item_type == "A" or (
+                    # Alternativposition: Mitglied einer GAEB-Wahlgruppe mit ALNSerNo≥1
+                    # (Grundposition = ALNSerNo 0). Strukturell → robust gegen Tippfehler
+                    # im Text ("Aternative"). Fallbacks: Type="A" bzw. Text-Präfix
+                    # (a?lternativ… fängt auch das fehlende "l" ab).
+                    aln_ser = (item_el.findtext(tag("ALNSerNo")) or "").strip()
+                    is_alt = (aln_ser.isdigit() and int(aln_ser) >= 1) or item_type == "A" or (
                         item_type == "N" and bool(
-                            re.match(r'^(alternative|alternativposition|alternativ)\b',
-                                     (desc or "").strip(), re.IGNORECASE)
+                            re.match(r'^al?ternativ', (desc or "").strip(), re.IGNORECASE)
                         )
                     )
+                    # Eventual-/Bedarfsposition: <Provis> (z.B. "WithoutTotal") → zählt
+                    # nicht zur Angebotssumme, wird in EJ als Alternative gebucht.
+                    is_eventual = item_el.find(tag("Provis")) is not None
                     items.append(GaebItem(
                         item_id=item_id,
                         rno_part=rno,
@@ -249,6 +249,7 @@ def _parse_body(body_el: ET.Element, ns: dict, path: list[str],
                         unit=unit,
                         category_path=path[:],
                         is_alt=is_alt,
+                        is_eventual=is_eventual,
                         long_text_images=imgs,
                     ))
                     # gepufferte Hinweise gehören vor diese Position

@@ -120,8 +120,8 @@
       <td>
         {% if is_admin %}
         <form hx-post="/api/projects/{{ p.id }}/delete"
-              hx-target="#proj-list" hx-swap="outerHTML"
-              onsubmit="return confirm('Projekt {{ p.name|e }} wirklich löschen?')">
+              hx-target="#proj-list" hx-select="#proj-list" hx-swap="outerHTML"
+              hx-confirm="Projekt {{ p.name }} wirklich löschen?">
           <button type="submit" class="btn-del">✕</button>
         </form>
         {% endif %}
@@ -140,7 +140,8 @@
 <script>
 document.body.addEventListener('htmx:afterSettle', function(e) {
   if (e.detail.target && e.detail.target.id === 'export-modal-body') {
-    document.getElementById('export-modal').showModal();
+    var dlg = document.getElementById('export-modal');
+    if (dlg && !dlg.open) dlg.showModal();
   }
 });
 function expToggleText(sel) {

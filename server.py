@@ -97,33 +97,35 @@ async def _require_auth(request: Request, call_next):
         return await call_next(request)
     if not request.session.get("authenticated"):
         return RedirectResponse("/login", status_code=303)
-    # UserSession nach Server-Neustart aus Cookie wiederherstellen
+    # Serverseitige Session (Matcher/Projekt/EJ-Client) lebt im RAM (TTL 15 h) und
+    # trägt am Folgetag weiter, solange der Server läuft. Ist sie weg (Neustart /
+    # TTL abgelaufen), lässt sich der EJ-Client mangels Passwort NICHT rekonstruieren
+    # (Passwörter liegen bewusst NICHT im Cookie) und der Heavy-State ist ohnehin
+    # verloren → sauber neu anmelden statt mit halbem Zustand weiterzulaufen.
     ss = get_session(request.session)
-    if ss.ej_client is None and request.session.get("ej_user"):
-        ss.ej_url     = request.session.get("ej_url", "")
-        ss.ej_user    = request.session.get("ej_user", "")
-        ss.ej_pass    = request.session.get("ej_pass", "")
-        ss.ej_db_conn = request.session.get("db_conn", "")
-        ss.ej_user_id = int(request.session.get("ej_user_id", 0))
-        ss.is_admin   = bool(request.session.get("is_admin", False))
-        if ss.ej_url and ss.ej_user and ss.ej_pass:
-            try:
-                loop = asyncio.get_event_loop()
-                ss.ej_client = await loop.run_in_executor(
-                    None, lambda: EjLiveClient(ss.ej_url, ss.ej_user, ss.ej_pass)
-                )
-                logging.info("EJ-Client aus Session wiederhergestellt (%s@%s)", ss.ej_user, ss.ej_url)
-            except Exception as _e:
-                logging.error("EJ-Client Wiederherstellung fehlgeschlagen: %s", _e)
+    if ss.ej_client is None:
+        request.session.clear()
+        return RedirectResponse("/login", status_code=303)
     return await call_next(request)
 
 
 # SessionMiddleware muss NACH @app.middleware registriert werden (LIFO-Stack).
+_SESSION_SECRET = os.environ.get("SESSION_SECRET", "")
+if len(_SESSION_SECRET) < 16 or _SESSION_SECRET == "dev-secret-change-me":
+    raise RuntimeError(
+        "SESSION_SECRET fehlt oder ist zu kurz/unsicher. Bitte in der .env eine lange "
+        "Zufallszeichenkette setzen (erzeugen mit: "
+        "python -c \"import secrets; print(secrets.token_hex(32))\")."
+    )
+# Hinter TLS-Proxy → Secure-Cookie. Für lokalen HTTP-Test: COOKIE_SECURE=false.
+_cookie_secure = os.environ.get("COOKIE_SECURE", "true").strip().lower() != "false"
 app.add_middleware(
     SessionMiddleware,
-    secret_key=os.environ.get("SESSION_SECRET", "dev-secret-change-me"),
+    secret_key=_SESSION_SECRET,
     session_cookie="gaeb_session",
-    max_age=8 * 3600,
+    max_age=15 * 3600,          # 15 h — Weiterarbeiten am Folgetag
+    https_only=_cookie_secure,
+    same_site="lax",
 )
 
 # ─── Admin-Endpunkte ──────────────────────────────────────────────────────────

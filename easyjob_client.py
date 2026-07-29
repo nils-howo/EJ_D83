@@ -16,7 +16,16 @@ class EasyjobClient:
         self._refresh_token: str | None = None
         self._token_expires: datetime = datetime.min
         self._session = requests.Session()
-        self._session.verify = False  # self-signed cert
+        # TLS-Prüfung standardmäßig AN. Für ein self-signed-EJ: EJ_CA_CERT=<Pfad zur CA-PEM>.
+        # Notausstieg (unsicher, MITM möglich): EJ_TLS_INSECURE=true.
+        import os as _os
+        if _os.environ.get("EJ_TLS_INSECURE", "").strip().lower() == "true":
+            self._session.verify = False
+            import urllib3 as _u3
+            _u3.disable_warnings()
+        else:
+            self._session.verify = _os.environ.get("EJ_CA_CERT", "").strip() or True
+        self._timeout = (5, 30)  # (connect, read) Sekunden — verhindert Event-Loop-Freeze
 
     # ------------------------------------------------------------------
     # Auth
@@ -34,6 +43,7 @@ class EasyjobClient:
                 "password": self.password,
             },
             headers={"Content-Type": "application/x-www-form-urlencoded", **self._EJ_HEADER},
+            timeout=self._timeout,
         )
         if not resp.ok:
             raise RuntimeError(
@@ -60,6 +70,7 @@ class EasyjobClient:
                 f"{self.base_url}{path}",
                 headers=self._auth_header(),
                 params={k: v for k, v in (params or {}).items() if v is not None},
+                timeout=self._timeout,
             )
             if resp.status_code == 200:
                 return resp.json()
@@ -76,6 +87,7 @@ class EasyjobClient:
                 headers=self._auth_header(),
                 json=body,
                 params={k: v for k, v in (params or {}).items() if v is not None},
+                timeout=self._timeout,
             )
             last_resp = resp
             if resp.status_code == 200 and resp.text:

@@ -74,6 +74,15 @@
 
 ---
 
+### 6b. Alternativ-/Eventualpositionen: Gruppe als „Alternative" markieren
+**Datei:** `routes/import_.py` · **Art:** WRITE (UPDATE)  
+**Tabelle:** `StockType2JobGroup`  
+**SQL:** `UPDATE StockType2JobGroup SET Alternative = 1 WHERE IdStockType2JobGroup IN (…)`  
+**Warum:** GAEB-Alternativpositionen (erkannt an `ALNSerNo ≥ 1`) und Eventual-/Bedarfspositionen (erkannt an `<Provis>`) werden in EJ zwar gebucht, sollen aber **nicht** in die Angebotssumme zählen. EJ kennt dafür das Gruppen-Flag `StockType2JobGroup.Alternative`. Nach dem Anlegen der Gruppen (Punkt 5) und dem Einbuchen der aktiven Positionen werden die Gruppen der gebuchten Alternativ-/Eventualpositionen auf `Alternative = 1` gesetzt. `StockType2Job` (Buchungszeile) hat kein solches Flag — die Alternative sitzt auf der Gruppe. (Hinweis: Der D84-Export im **Gruppen-Modus/HG** ist noch nicht sauber; die Modus-Auswahl ist in der GUI daher vorerst ausgeblendet, es läuft nur Positions-Modus.)  
+**API-ersetzbar:** Nein (kein Endpunkt für das Alternative-Flag; Teil der ohnehin direkten DB-Gruppenanlage aus Punkt 5)
+
+---
+
 ### ~~7. Artikel-ID per Artikelnummer nachschlagen~~ ✅ Erledigt
 `IdStockType` wird jetzt beim Nightly Sync als `ej_id` in der lokalen `articles`-Tabelle gespeichert und direkt über `mr.article.ej_id` abgerufen. Kein EJ-DB-Call mehr nötig.
 
@@ -140,8 +149,8 @@
 ### 12d. D84-Export-Learning: aktuelle Buchung + Stückliste lesen
 **Datei:** `routes/projects.py` (`_learn_from_ej`) · **Art:** READ  
 **Tabellen:** `StockType2Job`, `ResourceFunctionAllocation`, `StockTypeReference`  
-**SQL:** je Gruppe die Top-Level-Artikel (`IdStockType2Job_Parent IS NULL`) und Ressourcen, sowie `SELECT IdStockType_Parent, IdStockType FROM StockTypeReference WHERE IdStockType_Parent IN (…)`  
-**Warum:** Beim D84-Export wird die aktuelle EJ-Buchung je Position mit dem Import-Snapshot verglichen, um in EJ getauschte/ergänzte Artikel/Ressourcen als GUI-Mapping zu lernen. Der Stücklisten-Read (`StockTypeReference`) filtert gebundene Referenzartikel (z.B. Bolzen/Federstecker einer Traverse) heraus, damit nur **eigenständige** Artikel gelernt werden. Kein API-Endpunkt liefert Buchung-je-Gruppe + Stückliste kompakt.  
+**SQL:** je Gruppe die Top-Level-Artikel (`IdStockType2Job_Parent IS NULL`) und Ressourcen, sowie `SELECT IdStockType_Parent, IdStockType FROM StockTypeReference WHERE IdStockType_Parent IN (…) AND (IsOptional = 0 OR IsOptional IS NULL)`  
+**Warum:** Beim D84-Export wird die aktuelle EJ-Buchung je Position mit dem Import-Snapshot verglichen, um in EJ getauschte/ergänzte Artikel/Ressourcen als GUI-Mapping zu lernen. Der Stücklisten-Read (`StockTypeReference`) filtert die **nicht-optionalen** Referenzartikel (`IsOptional = 0`/`NULL`) heraus — das automatisch mitgebuchte Zubehör (Bolzen, Federstecker, Y-Case, Netzkabel, Batterie …), egal welcher `IdStockTypeReferenceType` (1 = Gebunden, 3 = Normal). **Optionale** Referenzen (`IsOptional = 1`, z.B. ein wählbarer ETC-Tubus) bleiben als eigenständige Artikel lernbar. So wird nur wirklich Getauschtes gelernt, nicht das ohnehin automatische Zubehör (das sonst beim nächsten Import doppelt gebucht würde). Kein API-Endpunkt liefert Buchung-je-Gruppe + Stückliste kompakt.  
 **API-ersetzbar:** Nein (Aggregat/Join über mehrere Tabellen)
 
 ---
@@ -182,4 +191,4 @@ Die menschenlesbare Projektnummer (`Project.Number`, z.B. „26-0994") wird **re
 
 ---
 
-*Letzte Aktualisierung: 2026-07-27*
+*Letzte Aktualisierung: 2026-07-29*

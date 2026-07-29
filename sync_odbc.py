@@ -217,6 +217,16 @@ def sync_time_factors() -> int:
     finally:
         conn.close()
 
+    # Schutz: ein transient leeres EJ-Ergebnis würde sonst die lokalen Kurven löschen
+    # (die upserts machen DELETE + INSERT). Lieber den alten Stand behalten.
+    if not curve_rows or not item_rows:
+        logging.warning(
+            "Berechnungsgrundlagen-Sync übersprungen: EJ lieferte %d Kurven / %d Stufen "
+            "(leeres Ergebnis — lokaler Stand bleibt erhalten).",
+            len(curve_rows), len(item_rows),
+        )
+        return 0
+
     db.upsert_time_factors(curve_rows)
     db.upsert_time_factor_items(item_rows)
     logging.info(

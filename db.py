@@ -177,8 +177,11 @@ def init_db() -> None:
         ]:
             try:
                 conn.execute(sql)
-            except Exception:
-                pass  # Spalte existiert bereits
+            except Exception as _e:
+                # Nur den erwarteten Fall (Spalte existiert bereits) verschlucken —
+                # echte Migrationsfehler (gesperrte DB o.ä.) nicht verstecken.
+                if "duplicate column" not in str(_e).lower():
+                    raise
 
 
 # ── Zähler (für Migrationscheck) ──────────────────────────────────────────────
@@ -317,6 +320,7 @@ def load_personal_db() -> list[dict]:
 
 def save_gui_bundle(description: str, numbers: list[str]) -> None:
     """Speichert Primary + Extras für eine Beschreibung. Leere Liste = löschen."""
+    numbers = list(dict.fromkeys(numbers))  # Duplikate raus (Extras-PK verträgt keine)
     with get_conn() as conn:
         conn.execute("DELETE FROM mappings_gui        WHERE description=?", (description,))
         conn.execute("DELETE FROM mappings_gui_extras WHERE description=?", (description,))
@@ -448,6 +452,8 @@ def migrate_from_json(
                 "mietpreis":         float(it.get("Mietpreis") or 0),
                 "einheit":           it.get("Einheit") or "",
                 "mietinventar":      int(it.get("Mietinventar") or 0),
+                "ej_id":             int(it.get("IdStockType") or it.get("EjId") or 0),
+                "id_time_factor":    int(it.get("IdTimeFactor") or 0),
             }
             for it in items if it.get("Nummer")
         ]
@@ -466,6 +472,7 @@ def migrate_from_json(
                 "ressourcenart": r.get("Ressourcenart", ""),
                 "tagessatz":    float(r.get("Tagessatz") or 0),
                 "satzname":     r.get("Satzname") or "",
+                "eigenkosten":  float(r.get("FixedCostDayPayment") or 0),
             }
             for r in rows_r if (r.get("Funktion") or "").strip()
         ]

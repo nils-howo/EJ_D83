@@ -51,6 +51,7 @@ def _pos_dict(item) -> dict:
         "unit":             item.unit,
         "item_id":          item.item_id,
         "is_alt":           item.is_alt,
+        "is_eventual":      item.is_eventual,
         "long_text":        lt,
         "long_text_images": item.long_text_images,
     }
@@ -195,18 +196,20 @@ def _calc_import_metrics(ss, curves: dict | None = None) -> dict:
         mr  = ss.matches.get(it.item_id)
         bq  = ss.d83_booking_qtys.get(it.item_id) or {}
         qty = float(bq.get("qty", it.qty))
+        # Alternativ-/Eventualpositionen werden gebucht, zählen aber NICHT zur Summe.
+        in_total = not (it.is_alt or it.is_eventual)
         if mr and mr.matched and mr.score > 0 and mr.method != "kalkpos":
             matched += 1
             if mr.score >= 85:
                 confident += 1
             if mr.article:
                 art_count += 1
-                if getattr(mr.article, "mietpreis", 0):
+                if getattr(mr.article, "mietpreis", 0) and in_total:
                     factor = resolve_time_factor(curves, mr.article.id_time_factor, einsatztage)
                     cost_mat += qty * mr.article.mietpreis * factor
             elif isinstance(mr.matched, _Resource):
                 res_count += 1
-                if mr.matched.tagessatz:
+                if mr.matched.tagessatz and in_total:
                     cost_pers += qty * mr.matched.tagessatz
         for b in ss.bundles.get(it.item_id, []):
             bres = b.get("resource")
@@ -214,11 +217,11 @@ def _calc_import_metrics(ss, curves: dict | None = None) -> dict:
             bqty = float(b.get("qty", 1))
             if bres and isinstance(bres, _Resource):
                 res_count += 1
-                if bres.tagessatz:
+                if bres.tagessatz and in_total:
                     cost_pers += bqty * bres.tagessatz
             elif bart:
                 art_count += 1
-                if getattr(bart, "mietpreis", 0):
+                if getattr(bart, "mietpreis", 0) and in_total:
                     factor = resolve_time_factor(curves, bart.id_time_factor, einsatztage)
                     cost_mat += bqty * bart.mietpreis * factor
     return dict(
@@ -306,9 +309,10 @@ async def import_upload(request: Request, file: UploadFile = File(...)):
         with tempfile.NamedTemporaryFile(suffix=suf, delete=False) as tf:
             tf.write(data)
             tmp = tf.name
-
-        project = parse_gaeb(tmp)
-        pathlib.Path(tmp).unlink(missing_ok=True)
+        try:
+            project = parse_gaeb(tmp)
+        finally:
+            pathlib.Path(tmp).unlink(missing_ok=True)
 
         ss.d83_project     = project
         ss.d83_name        = file.filename or "X83"
@@ -477,12 +481,17 @@ async def import_set_match(
     ej_num:   str   = Form(default=""),
     raw_json: str   = Form(default=""),
     qty:      float = Form(default=1.0),
+    extra_nums: str = Form(default=""),
+    extra_qtys: str = Form(default=""),
 ):
     import json as _json
     ss = get_session(request.session)
     if not ej_num or not raw_json:
         return '<p class="error-msg">Bitte zuerst einen Artikel auswählen.</p>'
-    raw = _json.loads(raw_json)
+    try:
+        raw = _json.loads(raw_json)
+    except ValueError:
+        return '<p class="error-msg">Ungültige Artikeldaten.</p>'
     art = make_article_from_ej(raw, None, ss.matcher)
     ss.matches[item_id] = MatchResult(matched=art, score=99.0, method="manual", confident=True)
     # Buchungsmenge: Traverse-Check auf GAEB-Position
@@ -496,6 +505,8 @@ async def import_set_match(
                 ss.d83_booking_qtys[item_id] = {"qty": float(pieces), "lfm_converted": True, "piece_len": piece_len}
             else:
                 ss.d83_booking_qtys[item_id] = {"qty": float(item.qty), "lfm_converted": False, "piece_len": None}
+    _add_optional_ref_bundles(ss, item_id, extra_nums, extra_qtys)
+    _learn_article_match(ss, item_id)
     return templates.TemplateResponse(
         request, "partials/import_groups.html", _import_ctx(ss)
     )
@@ -508,15 +519,22 @@ async def import_add_match(
     ej_num:   str   = Form(default=""),
     raw_json: str   = Form(default=""),
     qty:      float = Form(default=1.0),
+    extra_nums: str = Form(default=""),
+    extra_qtys: str = Form(default=""),
 ):
     import json as _json
     ss = get_session(request.session)
     if not ej_num or not raw_json:
         return '<p class="error-msg">Bitte zuerst einen Artikel auswählen.</p>'
-    raw = _json.loads(raw_json)
+    try:
+        raw = _json.loads(raw_json)
+    except ValueError:
+        return '<p class="error-msg">Ungültige Artikeldaten.</p>'
     art = make_article_from_ej(raw, None, ss.matcher)
     bundle = ss.bundles.setdefault(item_id, [])
     bundle.append({"article": art, "qty": qty})
+    _add_optional_ref_bundles(ss, item_id, extra_nums, extra_qtys)
+    _learn_article_match(ss, item_id)
     return templates.TemplateResponse(
         request, "partials/import_groups.html", _import_ctx(ss)
     )
@@ -672,8 +690,9 @@ async def import_ej_dialog(item_id: str, request: Request):
             top = await loop.run_in_executor(
                 None,
                 lambda: ss.matcher.match(
-                    item.match_query, limit=5,
+                    item.description, limit=5,
                     qty=float(item.qty), unit=item.unit,
+                    long_text=item.long_text,
                 ),
             )
             for mr, art in top:
@@ -705,6 +724,75 @@ async def import_ej_dialog(item_id: str, request: Request):
         "form_target":       "#import-groups",
         "add_action":        f"/api/import/add-match/{item_id}",
         "search_url":        f"/api/import/ej/search/{item_id}",
+    })
+
+
+def _add_optional_ref_bundles(ss, item_id: str, extra_nums: str, extra_qtys: str) -> None:
+    """Fügt vom Nutzer in der Referenzkarte gewählte OPTIONALE Referenzartikel
+    (IsOptional=1, z.B. ETC-Tubus) als Bundle-Artikel zur Position hinzu — sie werden
+    beim Anlegen mitgebucht (nicht-optionale Referenzen kommen ohnehin automatisch)."""
+    if not extra_nums or not ss.matcher:
+        return
+    nums = [n.strip() for n in extra_nums.split(",") if n.strip()]
+    qtys = [q.strip() for q in extra_qtys.split(",") if q.strip()]
+    bundle = ss.bundles.setdefault(item_id, [])
+    for i, num in enumerate(nums):
+        idx = ss.matcher._num_to_idx.get(num)
+        if idx is None and "." not in num:          # EJ liefert evtl. "123", Stamm hat "123.00"
+            idx = ss.matcher._num_to_idx.get(f"{num}.00")
+        if idx is None:
+            continue
+        try:
+            q = float(qtys[i]) if i < len(qtys) else 1.0
+        except ValueError:
+            q = 1.0
+        if q > 0:
+            bundle.append({"article": ss.matcher._pool[idx], "qty": q})
+
+
+def _learn_article_match(ss, item_id: str) -> None:
+    """Speichert die aktuelle Artikel-Zuordnung (Primär-Match + Artikel-Bundles) als
+    gelerntes GUI-Mapping — so bleibt eine manuelle Zuordnung beim nächsten Import /
+    Neu-Matchen erhalten (analog zum Ressourcen-Lernen in import_set_resource)."""
+    if not ss.d83_project:
+        return
+    item = next((it for it in ss.d83_project.items if it.item_id == item_id), None)
+    if not item or not item.description.strip():
+        return
+    nums: list[str] = []
+    mr = ss.matches.get(item_id)
+    if mr and mr.article and (mr.article.nummer or "").strip():
+        nums.append(mr.article.nummer)
+    for b in ss.bundles.get(item_id, []):
+        art = b.get("article")
+        if art and (getattr(art, "nummer", "") or "").strip() and art.nummer not in nums:
+            nums.append(art.nummer)
+    if not nums:
+        return
+    from db import save_gui_bundle
+    save_gui_bundle(item.description, nums)
+    if ss.matcher:
+        ss.matcher.add_learned_bundle(item.description, nums)
+
+
+@router.get("/api/import/references/{ej_id}", response_class=HTMLResponse)
+async def import_references(ej_id: int, request: Request, name: str = ""):
+    """Referenzkarte für einen gewählten Artikel: optionale Referenzen (IsOptional=1,
+    z.B. ETC-Tubus) zum Mitbuchen + automatisch mitkommende Referenzen als Info."""
+    ss = get_session(request.session)
+    if not ss.ej_client or ej_id <= 0:
+        return HTMLResponse("")
+    loop = asyncio.get_event_loop()
+    try:
+        refs = await loop.run_in_executor(None, ss.ej_client.get_references, ej_id)
+    except Exception:
+        return HTMLResponse("")
+    optional = [r for r in refs if r.get("IsOptional")]
+    auto     = [r for r in refs if not r.get("IsOptional")]
+    if not optional and not auto:
+        return HTMLResponse("")
+    return templates.TemplateResponse(request, "partials/ej_related.html", {
+        "optional": optional, "auto": auto, "article_name": name,
     })
 
 
@@ -761,7 +849,7 @@ async def import_resource_dialog(item_id: str, request: Request):
         # match() mit großem Limit → Ressourcen mit GUI-Boost floaten nach oben
         top = await loop.run_in_executor(
             None,
-            lambda: ss.matcher.match(item.match_query, limit=30),
+            lambda: ss.matcher.match(item.description, limit=30, long_text=item.long_text),
         )
         for mr, obj in top:
             if isinstance(obj, _Resource):
@@ -825,6 +913,8 @@ async def import_add_resource(
 ):
     from matcher import Resource as _Resource
     ss = get_session(request.session)
+    if not ss.matcher:
+        return HTMLResponse('<p class="error-msg">Kein Matcher geladen — bitte neu einlesen.</p>')
     res = next(
         (obj for obj in ss.matcher._pool if isinstance(obj, _Resource) and obj.id == resource_id),
         None,
@@ -1283,6 +1373,35 @@ async def _do_create_bg(
                 active_ids = set()
                 log.append({"ok": True, "text": "Nur-Gruppen-Modus: kein Material/Personal gebucht", "indent": False})
 
+            # Alternativ-/Eventualpositionen: ihre EJ-Gruppe als "Alternative" markieren
+            # → stehen im Job, zählen aber nicht in die Angebotssumme. Nur tatsächlich
+            # gebuchte (= aktive) Positionen werden markiert (Umschalten bleibt gültig).
+            alt_gids: set[int] = set()
+            for _it in ss.d83_project.items:
+                if _it.item_id not in active_ids:
+                    continue
+                if not (_it.is_alt or getattr(_it, "is_eventual", False)):
+                    continue
+                _hg  = oz_to_hg.get(_it.oz or "")
+                _lid = ss.d83_group_jobs.get(_hg, 1) if _hg else 1
+                _job = lid_map.get(_lid, first_job_id)
+                if import_mode == "positions":
+                    _cap = f'[{_it.oz}] {_it.description}' if _it.oz else _it.description
+                else:
+                    _cap = oz_to_sub_cap.get(_it.oz or "")
+                _gid = cap_to_gid.get((_job, _cap), 0) if _cap else 0
+                if _gid:
+                    alt_gids.add(_gid)
+            if alt_gids:
+                _gph = ",".join("?" for _ in alt_gids)
+                cur.execute(
+                    f"UPDATE StockType2JobGroup SET Alternative=1 "
+                    f"WHERE IdStockType2JobGroup IN ({_gph})",
+                    *alt_gids,
+                )
+                cn.commit()
+                log.append({"ok": True, "text": f"{len(alt_gids)} Gruppe(n) als Alternative markiert ✓", "indent": False})
+
             # Sync: alle DB-Lookups + Aufbau Buchungs-Taskliste (schnell)
             book_tasks: list[tuple] = []
             for item in ss.d83_project.items:
@@ -1312,6 +1431,38 @@ async def _do_create_bg(
                 bq_i  = ss.d83_booking_qtys.get(item.item_id, {})
                 qty_i = float(bq_i.get("qty", item.qty))
                 book_tasks.append((item, mr.article.nummer, id_st, job_i, grp_i, qty_i))
+
+            # Artikel-Bundles (Motor-Hängepunkt-Pauschale, Auto-Extras, manuell
+            # ergänzte Artikel) ebenfalls buchen — sie stehen in der bestätigten
+            # Kostenvorschau, wurden bislang aber weder gebucht noch gespeichert.
+            for item in ss.d83_project.items:
+                if item.item_id not in active_ids:
+                    continue
+                item_bundles = ss.bundles.get(item.item_id, [])
+                if not item_bundles:
+                    continue
+                hg_name = oz_to_hg.get(item.oz or "")
+                lid_i   = ss.d83_group_jobs.get(hg_name, 1) if hg_name else 1
+                job_i   = lid_map.get(lid_i, first_job_id)
+                if import_mode == "positions":
+                    g_cap = f'[{item.oz}] {item.description}' if item.oz else item.description
+                else:
+                    g_cap = oz_to_sub_cap.get(item.oz or "")
+                grp_i = cap_to_gid.get((job_i, g_cap), 0) if g_cap else 0
+                for b in item_bundles:
+                    bart = b.get("article")
+                    if not bart:
+                        continue  # Ressourcen-Bundles werden in Abschnitt 4b gebucht
+                    id_st_b = getattr(bart, "ej_id", 0)
+                    if not id_st_b:
+                        log.append({
+                            "ok": False,
+                            "text": f"Bundle-Artikel {getattr(bart, 'nummer', '?')} hat keine EJ-ID — bitte Sync ausführen",
+                            "indent": True,
+                        })
+                        continue
+                    book_tasks.append((item, bart.nummer, id_st_b, job_i, grp_i,
+                                       float(b.get("qty", 1))))
 
             # Sequenziell mit Progress-Tracking (EJ-Server verträgt keine gleichzeitigen Buchungen)
             cp.step  = "Artikel buchen"
@@ -1362,7 +1513,10 @@ async def _do_create_bg(
             res_count = 0
 
             from datetime import timedelta as _td
-            dt_start = datetime.fromisoformat(start_date)
+            try:
+                dt_start = datetime.fromisoformat(start_date)
+            except (ValueError, TypeError):
+                dt_start = datetime.now()   # unerwartetes Format → heute, statt Abbruch
             dt_end_1 = dt_start + _td(days=1)
 
             def _insert_rfa(res_id: int, job_id_r: int, days: float, grp_id: int,
@@ -1459,6 +1613,10 @@ async def _do_create_bg(
 
         except Exception as e:
             traceback.print_exc()
+            # RFA-Inserts wurden nicht committet (Rollback beim close) → die lokal
+            # gesammelten Ressourcen-Zeilen dürfen NICHT als Snapshot gespeichert
+            # werden, sonst zeigt die Übersicht Ressourcen, die in EJ nicht existieren.
+            res_bookings.clear()
             log.append({"ok": False, "text": f"Fehler (Buchung): {e}", "indent": False})
 
         # ── 5. Lokal speichern ───────────────────────────────────────────────
@@ -1481,7 +1639,7 @@ async def _do_create_bg(
                     ej_project_id=id_project,
                     gaeb_name=ss.d83_name,
                     item_count=len(ss.d83_project.items),
-                    booking_count=len(bookings),
+                    booking_count=len(bookings) + len(res_bookings),
                     gaeb_bytes=ss.x83_bytes,
                     ej_job_ids=job_ids_csv,
                     ej_project_number=ej_project_number,

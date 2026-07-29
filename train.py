@@ -151,13 +151,23 @@ def resolve_to_nummer(search_text: str, items: list, corpus: list[str],
 def load_mappings() -> dict:
     if MAPPINGS_FILE.exists():
         with open(MAPPINGS_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    return {"article_resolutions": {}, "section_articles": {}, "query_boosts": {}}
+            data = json.load(f)
+    else:
+        data = {}
+    # Fehlende Keys ergänzen — schützt vor KeyError bei altem/handgepflegtem Format.
+    data.setdefault("article_resolutions", {})
+    data.setdefault("section_articles", {})
+    data.setdefault("query_boosts", {})
+    return data
 
 
 def save_mappings(data: dict):
-    with open(MAPPINGS_FILE, "w", encoding="utf-8") as f:
+    # Atomar schreiben: erst Tempfile, dann ersetzen — ein Absturz beim Schreiben
+    # korrumpiert die vorhandene mappings.json nicht.
+    tmp = MAPPINGS_FILE.with_suffix(MAPPINGS_FILE.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    tmp.replace(MAPPINGS_FILE)
     print(f"Gespeichert: {MAPPINGS_FILE}")
 
 

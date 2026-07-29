@@ -4,6 +4,7 @@ import logging
 import os
 import pathlib
 import re
+import threading
 import xml.etree.ElementTree as ET
 
 import pyodbc
@@ -22,6 +23,7 @@ router = APIRouter()
 # Speicher unbegrenzt.
 _OVERVIEW_GROUPS_CACHE: "dict[int, dict]" = {}
 _OVERVIEW_CACHE_MAX = 12
+_OVERVIEW_CACHE_LOCK = threading.Lock()
 
 
 def _overview_data(project_id: int) -> dict:
@@ -41,8 +43,10 @@ def _overview_data(project_id: int) -> dict:
             with tempfile.NamedTemporaryFile(suffix=".x83", delete=False) as tf:
                 tf.write(gaeb_bytes)
                 tmp = tf.name
-            gaeb_proj = parse_gaeb(tmp)
-            pathlib.Path(tmp).unlink(missing_ok=True)
+            try:
+                gaeb_proj = parse_gaeb(tmp)
+            finally:
+                pathlib.Path(tmp).unlink(missing_ok=True)
             groups = _import_gaeb_groups(gaeb_proj, level=0, alt_active={})
             preliminaries = [
                 {"title": r.title, "long_text": r.long_text, "images": r.images}
@@ -51,10 +55,13 @@ def _overview_data(project_id: int) -> dict:
         except Exception as _e:
             logging.error("project_overview: GAEB-Parse fehlgeschlagen: %s", _e)
     data = {"groups": groups, "preliminaries": preliminaries}
-    # FIFO-Begrenzung: ältesten Eintrag verwerfen, wenn voll
-    if len(_OVERVIEW_GROUPS_CACHE) >= _OVERVIEW_CACHE_MAX:
-        _OVERVIEW_GROUPS_CACHE.pop(next(iter(_OVERVIEW_GROUPS_CACHE)), None)
-    _OVERVIEW_GROUPS_CACHE[project_id] = data
+    # FIFO-Begrenzung: ältesten Eintrag verwerfen, wenn voll. Der Lock schützt die
+    # Iteration (next(iter(...))) gegen gleichzeitige Mutationen aus anderen
+    # Executor-Threads / project_delete — sonst "dict changed size during iteration".
+    with _OVERVIEW_CACHE_LOCK:
+        if len(_OVERVIEW_GROUPS_CACHE) >= _OVERVIEW_CACHE_MAX:
+            _OVERVIEW_GROUPS_CACHE.pop(next(iter(_OVERVIEW_GROUPS_CACHE)), None)
+        _OVERVIEW_GROUPS_CACHE[project_id] = data
     return data
 
 
@@ -177,7 +184,8 @@ async def project_delete(project_id: int, request: Request):
     if not ss.is_admin:
         return HTMLResponse('<span class="error-msg">Nur für Admins</span>', status_code=403)
     _db.delete_project(project_id)
-    _OVERVIEW_GROUPS_CACHE.pop(project_id, None)
+    with _OVERVIEW_CACHE_LOCK:
+        _OVERVIEW_GROUPS_CACHE.pop(project_id, None)
     projects = _db.list_projects()
     await _attach_project_numbers(ss, projects)
     return templates.TemplateResponse(request, "projects.html", {
@@ -256,14 +264,22 @@ def _learn_from_ej(cur, bookings: list[dict],
     for r in cur.fetchall():
         grp_arts.setdefault(int(r[0]), []).append(int(r[1] or 0))
 
-    # Stückliste: Kind-Artikel je Elternartikel (für den Referenz-Filter)
+    # Stückliste: NUR NICHT-optionale Kind-Artikel je Elternartikel (für den Filter).
+    # Maßgeblich ist StockTypeReference.IsOptional — NICHT der ReferenceType:
+    #   IsOptional = 0/NULL → Zubehör, das beim Buchen des Elternartikels automatisch
+    #     mitkommt (Bolzen, Federstecker, Y-Case, Netzkabel, Batterie …) → NIE lernen,
+    #     sonst wird beim nächsten Import doppelt gebucht.
+    #   IsOptional = 1 → echte Wahlmöglichkeit (z.B. ETC-Tubus), kommt NICHT automatisch
+    #     → SOLL gelernt werden, wenn gebucht → hier NICHT herausfiltern.
+    # (Der ReferenceType 1/3 taugt nicht: Bolzen sind z.B. Typ 3, aber IsOptional=0.)
     all_arts = {a for arts in grp_arts.values() for a in arts if a}
     parent_children: dict[int, set] = {}
     if all_arts:
         aph = ",".join("?" for _ in all_arts)
         cur.execute(
             f"""SELECT IdStockType_Parent, IdStockType FROM StockTypeReference
-                WHERE IdStockType_Parent IN ({aph})""",
+                WHERE IdStockType_Parent IN ({aph})
+                  AND (IsOptional = 0 OR IsOptional IS NULL)""",
             *all_arts,
         )
         for r in cur.fetchall():
@@ -290,11 +306,14 @@ def _learn_from_ej(cur, bookings: list[dict],
         kt   = kurz[iid]
         arts = grp_arts.get(g, [])
         in_grp = set(arts)
-        # Referenz = Kind eines anderen Artikels DERSELBEN Gruppe
+        orig_nums = snap_art.get(iid, set())
+        # Nicht-optionale Referenz = Kind eines anderen Artikels DERSELBEN Gruppe (steht
+        # in parent_children). Nur diese fallen raus (Zubehör, wird automatisch mitgebucht).
+        # Optionale Referenzen (IsOptional=1, z.B. ETC-Tubus) stehen NICHT in
+        # parent_children und bleiben als eigenständige, lernbare Artikel erhalten.
         referenced = {c for p in in_grp for c in parent_children.get(p, set()) if c in in_grp}
         standalone = [a for a in arts if a and a not in referenced]
         cur_nums  = {num_by_ej_id[a] for a in standalone if a in num_by_ej_id}
-        orig_nums = snap_art.get(iid, set())
         # Artikel geändert / ergänzt / komplett entfernt → lernen + anzeigen.
         # Leere Liste an save_gui_bundle löscht das Mapping (z.B. Material raus,
         # dafür Personal rein) — sonst würde beim nächsten Import wieder das alte
@@ -307,9 +326,14 @@ def _learn_from_ej(cur, bookings: list[dict],
         cur_res  = grp_res.get(g, set())
         orig_res = snap_res.get(iid, set())
         if cur_res != orig_res and (cur_res or orig_res):
-            _db.save_gui_resource_mapping(kt, sorted(cur_res)[0] if cur_res else 0)
+            # Ressourcen-Mapping ist 1:1 (der Matcher wendet je Position genau eine
+            # Ressource an) — nur die primäre (kleinste ID) wird gelernt. Der Bericht
+            # zeigt genau das Gelernte, statt mehr zu versprechen als gespeichert wird.
+            primary = sorted(cur_res)[0] if cur_res else 0
+            _db.save_gui_resource_mapping(kt, primary)
             learned.append({"oz": oz_of.get(iid, ""), "kurztext": kt, "kind": "Ressource",
-                            "old": _res_names(orig_res), "new": _res_names(cur_res)})
+                            "old": _res_names(orig_res),
+                            "new": _res_names({primary} if primary else set())})
     return learned
 
 
@@ -438,6 +462,12 @@ async def project_export_d84(project_id: int, request: Request):
         except Exception as _le:
             logging.error("Export-Learning fehlgeschlagen: %s", _le)
             learned = []
+    except pyodbc.Error as _dbe:
+        logging.error("Export: EJ-Kostenabfrage fehlgeschlagen: %s", _dbe)
+        raise HTTPException(
+            status_code=502,
+            detail="EJ-Datenbank nicht erreichbar — Kostenabfrage fehlgeschlagen, Export abgebrochen.",
+        )
     finally:
         cn.close()
 
@@ -771,12 +801,6 @@ async def project_overview_content(project_id: int, request: Request):
             for b in local_bookings:
                 if b.get("oz"):
                     oz_to_item.setdefault(b["oz"], b["item_id"])
-            # item_id → ej_group_id (für Ressourcen-Zuordnung)
-            item_to_grp: dict[str, int] = {
-                b["item_id"]: int(b["ej_group_id"])
-                for b in local_bookings if b.get("ej_group_id")
-            }
-
             # Gebuchte Artikel (StockType2Job) je Gruppe
             # Hinweis: In EJ heißt die Mengenspalte "Factor" (Stückzahl),
             # "TimeFactor" ist der Preisfaktor (Berechnungsgrundlage).

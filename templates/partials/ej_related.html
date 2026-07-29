@@ -1,0 +1,45 @@
+{# Referenzkarte im Artikel-Dialog: optionale Referenzen zum Mitbuchen + Info-Liste
+   der automatisch mitkommenden. Kontext: optional[], auto[], article_name. #}
+{% if optional or auto %}
+<div class="ref-card">
+  <div class="ref-card-head">
+    Referenzartikel zu <strong>{{ article_name or "gewähltem Artikel" }}</strong>
+  </div>
+
+  {% if optional %}
+  <div class="ref-section">
+    <div class="ref-section-label ref-label-opt" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span>⚙ Optional — anhaken oder Menge eingeben</span>
+      <label style="font-weight:400;color:#555;text-transform:none;letter-spacing:0;display:flex;align-items:center;gap:3px;cursor:pointer">
+        <input type="checkbox" class="opt-ref-multiply" onchange="ejUpdateExtraHidden(this)" style="cursor:pointer">
+        × Hauptartikel-Menge
+      </label>
+    </div>
+    {% for r in optional %}
+    <div class="ref-opt-row">
+      <input type="checkbox" class="opt-ref-check" data-num="{{ r.Number }}"
+             onchange="ejOptCheckChange(this)" style="cursor:pointer;flex-shrink:0;width:16px;height:16px">
+      <input type="number" class="opt-ref-qty" min="0" step="1" value="0"
+             oninput="ejOptQtyChange(this)"
+             style="width:44px;text-align:center;border:1px solid #90caf9;border-radius:3px;padding:2px 3px;font-size:.8rem;flex-shrink:0">
+      <span class="ref-num">{{ r.Number }}</span>
+      <span class="ref-cap">{{ r.Caption }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if auto %}
+  <div class="ref-section">
+    <div class="ref-section-label ref-label-auto">✓ Kommt automatisch mit (keine Auswahl nötig)</div>
+    {% for r in auto %}
+    <div class="ref-row ref-row-dim">
+      <span class="ref-badge ref-badge-normal">×{{ r.Factor|int if r.Factor == r.Factor|int else "%.2f"|format(r.Factor) }}</span>
+      <span class="ref-num">{{ r.Number }}</span>
+      <span class="ref-cap">{{ r.Caption }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endif %}

@@ -495,6 +495,12 @@
         </div>
 
         <!-- Import-Struktur -->
+        <!-- Gruppen-Modus (HG = Hauptgruppe) vorerst ausgeblendet: der D84-Export
+             dafuer hat noch den offenen Doppelzaehl-Bug. Positions-Modus wird ueber
+             das hidden-Feld erzwungen. Reaktivieren: hidden-Feld entfernen und die
+             "if false"-Klammer unten wieder auf true setzen. -->
+        <input type="hidden" name="import_mode" value="positions">
+        {% if false %}
         <div class="form-row">
           <label>Gruppenstruktur</label>
           <div style="display:flex;flex-direction:column;gap:3px;padding:2px 0">
@@ -524,6 +530,7 @@
             </label>
           </div>
         </div>
+        {% endif %}
 
         <!-- Nur Gruppen anlegen (kein Material/Personal) -->
         <div class="form-row">
@@ -617,6 +624,64 @@ function ejRowClick(tr, num, rawJson) {
   if (btn) btn.disabled = false;
   var addBtn = document.getElementById('ej-add-btn');
   if (addBtn) addBtn.disabled = false;
+  // Referenzkarte laden (optionale Referenzen zum Mitbuchen, z.B. ETC-Tubus)
+  var relBox = document.getElementById('ej-replace-related');
+  if (relBox) {
+    relBox.innerHTML = '';
+    var en0 = document.getElementById('replace-extra-nums'); if (en0) en0.value = '';
+    var eq0 = document.getElementById('replace-extra-qtys'); if (eq0) eq0.value = '';
+    var ejId = 0, nm = '';
+    try { var raw = JSON.parse(rawJson); ejId = raw.IdStockType || raw.ID || 0; nm = raw.Caption || ''; } catch (e) {}
+    if (ejId && window.htmx) {
+      htmx.ajax('GET', '/api/import/references/' + ejId + '?name=' + encodeURIComponent(nm),
+                { target: '#ej-replace-related', swap: 'innerHTML' });
+    }
+  }
+}
+
+// Gewählte optionale Referenz-Mengen in die Hidden-Felder des Set-Formulars schreiben
+function ejUpdateExtraHidden(el) {
+  var box = document.getElementById('ej-replace-related');
+  if (!box) return;
+  // "× Hauptartikel-Menge": jede optionale Menge mit der gebuchten Hauptmenge
+  // multiplizieren (z.B. 1 Kabel je Scheinwerfer × 6 Scheinwerfer = 6).
+  var factor = 1;
+  var mult = box.querySelector('.opt-ref-multiply');
+  if (mult && mult.checked) {
+    var form = document.getElementById('ej-set-form');
+    var qi = form && form.querySelector('input[name=qty]');
+    factor = (qi && parseFloat(qi.value)) || 1;
+  }
+  var nums = [], qtys = [];
+  box.querySelectorAll('.ref-opt-row').forEach(function (row) {
+    var chk = row.querySelector('.opt-ref-check');
+    if (!chk || !chk.checked) return;
+    var qEl = row.querySelector('.opt-ref-qty');
+    var q = (qEl && parseFloat(qEl.value)) || 1;
+    if (q <= 0) return;
+    nums.push(chk.dataset.num);
+    qtys.push(q * factor);   // × Hauptmenge, wenn Multiply-Checkbox aktiv
+  });
+  var en = document.getElementById('replace-extra-nums');
+  var eq = document.getElementById('replace-extra-qtys');
+  if (en) en.value = nums.join(',');
+  if (eq) eq.value = qtys.join(',');
+}
+
+// Häkchen an/aus: ohne getippte Menge zählt 1
+function ejOptCheckChange(chk) {
+  var row = chk.closest('.ref-opt-row');
+  var qEl = row && row.querySelector('.opt-ref-qty');
+  if (chk.checked && qEl && (parseFloat(qEl.value) || 0) <= 0) qEl.value = 1;
+  ejUpdateExtraHidden(chk);
+}
+
+// Zahl eingeben aktiviert/deaktiviert das Häkchen automatisch
+function ejOptQtyChange(inp) {
+  var row = inp.closest('.ref-opt-row');
+  var chk = row && row.querySelector('.opt-ref-check');
+  if (chk) chk.checked = (parseFloat(inp.value) || 0) > 0;
+  ejUpdateExtraHidden(inp);
 }
 
 // ── Ressource-Dialog ─────────────────────────────────────────────────────────
@@ -812,13 +877,20 @@ function impSearchProject(inputEl) {
           list.innerHTML = '<div class="ac-item" style="color:#aaa;pointer-events:none">Keine Ergebnisse</div>';
           list.classList.add('open'); return;
         }
-        list.innerHTML = items.map(function(p) {
-          const esc = function(s){ return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'"); };
-          return '<div class="ac-item" onclick="impSelectProject(' + p.id + ',\'' +
-            esc(p.num) + '\',\'' + esc(p.name) + '\',\'' + esc(p.start) + '\',\'' + esc(p.end) + '\')">' +
-            '[' + (p.num || '') + '] ' + (p.name || '') +
-            ' <span style="color:#999">· ' + (p.start || '') + '</span></div>';
-        }).join('');
+        list.innerHTML = '';
+        items.forEach(function(p) {
+          const row = document.createElement('div');
+          row.className = 'ac-item';
+          row.appendChild(document.createTextNode('[' + (p.num || '') + '] ' + (p.name || '') + ' '));
+          const meta = document.createElement('span');
+          meta.style.color = '#999';
+          meta.textContent = '· ' + (p.start || '');
+          row.appendChild(meta);
+          row.addEventListener('click', function() {
+            impSelectProject(p.id, p.num || '', p.name || '', p.start || '', p.end || '');
+          });
+          list.appendChild(row);
+        });
         list.classList.add('open');
       }).catch(function(){ list.classList.remove('open'); });
   }, 280);
