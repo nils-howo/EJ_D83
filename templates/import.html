@@ -254,6 +254,15 @@
     .btn-primary:hover:not(:disabled) { background:#303f9f; }
     .btn-primary:disabled { opacity:.45; cursor:not-allowed; }
 
+    /* Btn Sekundär (Zwischenspeichern) — dezenter Outline im gleichen Format */
+    .btn-secondary {
+      background:#fff; color:#3f51b5; border:1px solid #c5cae9; border-radius:5px;
+      padding:9px 16px; font-size:.9rem; cursor:pointer; font-weight:600;
+      width:100%; margin-top:4px;
+    }
+    .btn-secondary:hover:not(:disabled) { background:#f5f5ff; border-color:#9fa8da; }
+    .btn-secondary:disabled { opacity:.45; cursor:not-allowed; }
+
     .error-msg { color:#c62828; font-size:.85rem; padding:8px; }
     .save-ok { color:#2e7d32; font-size:.82rem; }
 
@@ -349,6 +358,14 @@
     <div class="imp-panel">
       <h2>2. Easyjob-Projekt anlegen</h2>
 
+      {% if S.draft_id %}
+      <div style="background:#f3e5f5;border:1px solid #ce93d8;border-radius:6px;padding:8px 12px;margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="font-size:.85rem;color:#6a1b9a">✎ Du bearbeitest einen <b>Entwurf</b>{% if S.d83_draft_setup.get('proj_name') %} — „{{ S.d83_draft_setup.get('proj_name') }}"{% endif %} (für andere gesperrt)</span>
+        <button type="button" class="btn btn-grey" style="font-size:.78rem;padding:3px 10px"
+                hx-post="/api/import/draft/{{ S.draft_id }}/release" hx-swap="none">Freigeben (ohne Speichern)</button>
+      </div>
+      {% endif %}
+
       <form hx-post="/api/import/create-project"
             hx-target="#imp-result"
             hx-swap="innerHTML"
@@ -358,18 +375,21 @@
 
         <!-- Modus-Umschalter: neues Projekt vs. Jobs zu bestehendem Projekt -->
         <div class="mode-toggle">
-          <label class="mode-opt mode-opt-active" id="imp-mode-new-lbl">
-            <input type="radio" name="target_mode" value="new" checked onchange="impSetMode('new')">
+          <label class="mode-opt{% if S.d83_draft_setup.get('target_mode') != 'existing' %} mode-opt-active{% endif %}" id="imp-mode-new-lbl">
+            <input type="radio" name="target_mode" value="new" {% if S.d83_draft_setup.get('target_mode') != 'existing' %}checked{% endif %} onchange="impSetMode('new')">
             <span>Neues Projekt</span>
           </label>
-          <label class="mode-opt" id="imp-mode-existing-lbl">
-            <input type="radio" name="target_mode" value="existing" onchange="impSetMode('existing')">
+          <label class="mode-opt{% if S.d83_draft_setup.get('target_mode') == 'existing' %} mode-opt-active{% endif %}" id="imp-mode-existing-lbl">
+            <input type="radio" name="target_mode" value="existing" {% if S.d83_draft_setup.get('target_mode') == 'existing' %}checked{% endif %} onchange="impSetMode('existing')">
             <span>Jobs zu bestehendem Projekt</span>
           </label>
         </div>
 
-        <input type="hidden" name="existing_project_id"   id="imp-existing-pid"   value="0">
-        <input type="hidden" name="existing_project_name" id="imp-existing-pname" value="">
+        <input type="hidden" name="existing_project_id"   id="imp-existing-pid"   value="{{ S.d83_draft_setup.get('existing_project_id') or 0 }}">
+        <input type="hidden" name="existing_project_name" id="imp-existing-pname" value="{{ S.d83_draft_setup.get('existing_project_name') or '' }}">
+        <input type="hidden" name="draft_name" value="">
+        <input type="hidden" name="address_name" id="address_name" value="{{ S.d83_draft_setup.get('address_name') or '' }}">
+        <input type="hidden" name="contact_name" id="contact_name" value="{{ S.d83_draft_setup.get('contact_name') or '' }}">
 
         <!-- Bestehendes Projekt (nur im Bestehend-Modus) -->
         <div id="imp-existing-block" style="display:none">
@@ -392,7 +412,7 @@
         <div class="form-row">
           <label>Projektname <span class="req">*</span></label>
           <input type="text" name="proj_name" id="imp-proj-name"
-                 value="{{ S.d83_project.name if S.d83_project else '' }}"
+                 value="{{ S.d83_draft_setup.get('proj_name') or (S.d83_project.name if S.d83_project else '') }}"
                  placeholder="z.B. Messe Berlin 2026" required
                  oninput="impSyncJobName(this.value)">
         </div>
@@ -401,14 +421,15 @@
         <div class="form-grid-2">
           <div class="form-row">
             <label>Referenznummer</label>
-            <input type="text" name="ref_number" placeholder="z.B. ANG-2026-001">
+            <input type="text" name="ref_number" placeholder="z.B. ANG-2026-001"
+                   value="{{ S.d83_draft_setup.get('ref_number') or '' }}">
           </div>
           <div class="form-row">
             <label>Typ <span class="req">*</span></label>
             <select name="id_project_type" required>
-              <option value="" disabled selected>— bitte wählen —</option>
+              <option value="" disabled {% if not S.d83_draft_setup.get('id_project_type') %}selected{% endif %}>— bitte wählen —</option>
               {% for pt in proj_types %}
-              <option value="{{ pt.id }}">{{ pt.cap }}</option>
+              <option value="{{ pt.id }}" {% if S.d83_draft_setup.get('id_project_type')|string == pt.id|string %}selected{% endif %}>{{ pt.cap }}</option>
               {% endfor %}
             </select>
           </div>
@@ -418,11 +439,12 @@
         <div class="form-row">
           <label>Veranstaltung</label>
           <select name="id_event_calendar" id="imp-event-cal" onchange="impOnEventSelect(this)">
-            <option value="0">— keine —</option>
+            <option value="0" {% if not S.d83_draft_setup.get('id_event_calendar') %}selected{% endif %}>— keine —</option>
             {% for ev in events %}
             <option value="{{ ev.id }}"
                     data-start="{{ ev.start }}"
-                    data-end="{{ ev.end }}">
+                    data-end="{{ ev.end }}"
+                    {% if S.d83_draft_setup.get('id_event_calendar')|string == ev.id|string %}selected{% endif %}>
               {{ ev.start[:10] if ev.start else '' }} – {{ ev.end[:10] if ev.end else '' }} &middot; {{ ev.name }}
             </option>
             {% endfor %}
@@ -438,8 +460,8 @@
                    autocomplete="off" required>
             <div id="imp-cust-list" class="ac-list"></div>
           </div>
-          <input type="hidden" name="id_address" id="id_address" value="1">
-          <input type="hidden" name="id_contact" id="id_contact" value="0">
+          <input type="hidden" name="id_address" id="id_address" value="{{ S.d83_draft_setup.get('id_address') or 1 }}">
+          <input type="hidden" name="id_contact" id="id_contact" value="{{ S.d83_draft_setup.get('id_contact') or 0 }}">
           <div id="imp-cust-sel" class="ac-selected"></div>
         </div>
 
@@ -453,7 +475,8 @@
                    autocomplete="off">
             <div id="imp-deliv-list" class="ac-list"></div>
           </div>
-          <input type="hidden" name="id_delivery" id="id_delivery" value="0">
+          <input type="hidden" name="id_delivery" id="id_delivery" value="{{ S.d83_draft_setup.get('id_delivery') or 0 }}">
+          <input type="hidden" name="delivery_name" id="delivery_name" value="{{ S.d83_draft_setup.get('delivery_name') or '' }}">
           <div id="imp-deliv-sel" class="ac-selected"></div>
         </div>
 
@@ -465,12 +488,13 @@
           <div class="form-row">
             <label>Von <span class="req">*</span></label>
             <input type="date" name="start_date" id="imp-start"
-                   value="{{ S.d83_project.date[:10] if S.d83_project and S.d83_project.date else '' }}"
+                   value="{{ S.d83_draft_setup.get('start_date') or (S.d83_project.date[:10] if S.d83_project and S.d83_project.date else '') }}"
                    required>
           </div>
           <div class="form-row">
             <label>Bis <span class="req">*</span></label>
-            <input type="date" name="end_date" id="imp-end" required>
+            <input type="date" name="end_date" id="imp-end"
+                   value="{{ S.d83_draft_setup.get('end_date') or '' }}" required>
           </div>
         </div>
 
@@ -551,9 +575,54 @@
         <span id="imp-spin" class="htmx-indicator" style="font-size:.8rem;color:#888">
           ⏳ Wird erstellt …
         </span>
+        <button type="button" class="btn-secondary" id="imp-draft-save-btn"
+                {% if not S.d83_project %}disabled{% endif %}
+                hx-post="/api/import/draft/save"
+                hx-target="#imp-draft-msg" hx-swap="innerHTML">💾 Zwischenspeichern</button>
+        <span id="imp-draft-msg"
+              style="display:block;text-align:center;font-size:.82rem;margin-top:6px"></span>
       </form>
 
       <div id="imp-result" class="result-log"></div>
+
+      <script>
+      // Entwurf-Vorbefüllung: Modus + Kunden-/Projektanzeige beim Laden herstellen.
+      window.addEventListener('DOMContentLoaded', function () {
+        var ex = document.querySelector('input[name=target_mode][value=existing]');
+        if (ex && ex.checked && window.impSetMode) impSetMode('existing');
+      {% if S.draft_id %}
+        // Heartbeat: hält die Sperre, solange diese Seite offen ist (alle 30 s).
+        setInterval(function () {
+          fetch('/api/import/draft/{{ S.draft_id }}/heartbeat', { method: 'POST' }).catch(function () {});
+        }, 30000);
+        // Verlassen der Seite (Navigation / Tab zu) → Sperre sofort freigeben.
+        window.addEventListener('pagehide', function () {
+          try { navigator.sendBeacon('/api/import/draft/{{ S.draft_id }}/release'); } catch (e) {}
+        });
+      {% endif %}
+      {% if S.draft_id and (S.d83_draft_setup.get('id_address') or 0)|int > 1 %}
+        var _an = {{ (S.d83_draft_setup.get('address_name') or '')|tojson }};
+        var _ai = {{ (S.d83_draft_setup.get('id_address') or '')|tojson }};
+        var _cn = {{ (S.d83_draft_setup.get('contact_name') or '')|tojson }};
+        var ci = document.getElementById('imp-cust-search');
+        if (ci && !ci.value) {
+          var _lbl = _an || ('Kunde #' + _ai);
+          if (_cn) _lbl += ' — ' + _cn;
+          ci.value = _lbl;
+        }
+      {% endif %}
+      {% if S.draft_id and (S.d83_draft_setup.get('id_delivery') or 0)|int > 0 %}
+        var _dn = {{ (S.d83_draft_setup.get('delivery_name') or '')|tojson }};
+        var _di = {{ (S.d83_draft_setup.get('id_delivery') or '')|tojson }};
+        var di = document.getElementById('imp-deliv-search');
+        if (di && !di.value) di.value = _dn || ('Adresse #' + _di);
+      {% endif %}
+      {% if S.draft_id and S.d83_draft_setup.get('existing_project_name') %}
+        var ps = document.getElementById('imp-proj-sel');
+        if (ps && !ps.textContent.trim()) ps.textContent = '✓ ' + {{ S.d83_draft_setup.get('existing_project_name')|tojson }};
+      {% endif %}
+      });
+      </script>
     </div>
 
   </div><!-- /linke Spalte -->
@@ -838,6 +907,13 @@ function impPickAddress(listId, hiddenId, selectedId, id, compName, idc, contact
   let label = compName;
   if (contactName) label += ' — ' + contactName;
   document.getElementById(selectedId).textContent = '✓ ' + label;
+  if (hiddenId === 'id_address') {   // Kundenname für den Entwurf mitspeichern
+    var _an = document.getElementById('address_name'); if (_an) _an.value = compName || '';
+    var _cn = document.getElementById('contact_name'); if (_cn) _cn.value = contactName || '';
+  }
+  if (hiddenId === 'id_delivery') {  // Lieferadresse-Name für den Entwurf mitspeichern
+    var _dn = document.getElementById('delivery_name'); if (_dn) _dn.value = compName || '';
+  }
   const list = document.getElementById(listId);
   list.classList.remove('open');
   const input = list.previousElementSibling;

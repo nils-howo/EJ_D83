@@ -116,6 +116,14 @@ async def login_submit(
 
 @router.get("/logout")
 async def logout(request: Request):
+    # Offenen Entwurf freigeben, damit die Bearbeitungs-Sperre nicht hängen bleibt.
+    try:
+        ss = get_session(request.session)
+        if getattr(ss, "draft_id", None):
+            import db as _db
+            _db.release_draft_lock(ss.draft_id, ss.ej_user or "")
+    except Exception:
+        pass
     drop_session(request.session)   # Credentials/State serverseitig aus dem RAM löschen
     request.session.clear()         # Cookie leeren
     return RedirectResponse("/login", status_code=303)

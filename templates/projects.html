@@ -85,6 +85,7 @@
          oninput="projFilter(this.value)" autocomplete="off"
          style="width:100%;box-sizing:border-box;margin:0 0 12px;padding:8px 11px;
                 border:1px solid #ccc;border-radius:6px;font-size:.9rem">
+  <div id="draft-msg" style="margin:0 0 8px"></div>
   <table class="proj-table">
     <thead>
       <tr>
@@ -101,13 +102,23 @@
     <tbody>
     {% for p in projects %}
     <tr data-search="{{ ((p.ej_project_number or '') ~ ' ' ~ p.name ~ ' ' ~ (p.gaeb_name or ''))|lower|e }}">
-      <td style="font-family:monospace;font-weight:700;color:#1a237e">{{ p.ej_project_number or '—' }}</td>
-      <td><b>{{ p.name }}</b></td>
+      <td style="font-family:monospace;font-weight:700;color:#1a237e">
+        {% if p.status == 'draft' %}<span style="background:#8e24aa;color:#fff;font-size:.68rem;font-weight:700;padding:2px 7px;border-radius:4px">✎ ENTWURF</span>{% else %}{{ p.ej_project_number or '—' }}{% endif %}
+      </td>
+      <td><b>{{ p.name }}</b>
+        {% if p.status == 'draft' and p.locked_by %} <span style="font-size:.72rem;color:#c62828;white-space:nowrap">🔒 {{ p.locked_by_name or 'in Bearbeitung' }}</span>{% endif %}
+        {% if p.status == 'draft' and p.updated_by %}<span style="display:block;font-size:.72rem;color:#999">zuletzt: {{ p.updated_by }}{% if p.updated_at %} · {{ p.updated_at[:16] }}{% endif %}</span>{% endif %}
+      </td>
       <td style="font-size:.8rem;color:#555">{{ p.gaeb_name or '—' }}</td>
       <td style="text-align:right">{{ p.item_count }}</td>
-      <td style="text-align:right">{{ p.booking_count }}</td>
+      <td style="text-align:right">{% if p.status == 'draft' %}—{% else %}{{ p.booking_count }}{% endif %}</td>
       <td style="font-size:.78rem;color:#888">{{ p.created_at[:16] if p.created_at else '—' }}</td>
       <td style="white-space:nowrap">
+        {% if p.status == 'draft' %}
+        <button class="btn-export" style="background:#8e24aa"
+                hx-post="/api/import/draft/{{ p.id }}/load"
+                hx-target="#draft-msg" hx-swap="innerHTML">✎ Bearbeiten</button>
+        {% else %}
         <a href="/projects/{{ p.id }}/overview" class="btn-export"
            style="background:#1565c0;margin-right:4px">
           👁 Übersicht
@@ -116,9 +127,15 @@
                 hx-target="#export-modal-body" hx-swap="innerHTML">
           ⬇ D84 Export
         </button>{% else %}<span class="no-gaeb">kein GAEB</span>{% endif %}
+        {% endif %}
       </td>
       <td>
-        {% if is_admin %}
+        {% if is_admin and p.status == 'draft' %}
+        <button class="btn-del"
+                hx-post="/api/import/draft/{{ p.id }}/delete"
+                hx-target="#draft-msg" hx-swap="innerHTML"
+                hx-confirm="Entwurf „{{ p.name }}“ wirklich löschen?">✕</button>
+        {% elif is_admin %}
         <form hx-post="/api/projects/{{ p.id }}/delete"
               hx-target="#proj-list" hx-select="#proj-list" hx-swap="outerHTML"
               hx-confirm="Projekt {{ p.name }} wirklich löschen?">

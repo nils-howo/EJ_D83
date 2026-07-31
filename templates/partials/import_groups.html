@@ -136,7 +136,9 @@
     {% endif %}
     {% if m and m.article %}
       <span class="score-badge {% if pct >= 85 %}score-high{% elif pct >= 55 %}score-mid{% else %}score-low{% endif %}">{{ pct }}% · {{ m.method }}</span>
-    {% elif not m %}
+    {% elif m and m.matched and m.score > 0 %}
+      <span class="score-badge {% if pct >= 85 %}score-high{% elif pct >= 55 %}score-mid{% else %}score-low{% endif %}">{{ pct }}% · {{ m.method }}</span>
+    {% elif not m and not bundles.get(pos.item_id) %}
       <span class="score-badge score-low">⚠ Nicht zugeordnet</span>
     {% endif %}
   </div>
@@ -231,7 +233,7 @@
         <button type="button" class="btn btn-red">✕</button>
       </a>
     </div>
-    {% elif not m %}
+    {% elif not m and not bundles.get(pos.item_id) %}
     <span style="font-size:.78rem;color:#c00">⚠ Kein Artikel zugeordnet</span>
     {% endif %}
 

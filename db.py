@@ -140,7 +140,15 @@ CREATE TABLE IF NOT EXISTS projects (
     item_count        INTEGER DEFAULT 0,
     booking_count     INTEGER DEFAULT 0,
     created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    gaeb_bytes        BLOB
+    gaeb_bytes        BLOB,
+    status            TEXT    DEFAULT 'uploaded',   -- 'draft' | 'uploaded'
+    state_json        TEXT,                          -- serialisierter Import-State (nur Entwurf)
+    locked_by         TEXT,                          -- Sperr-Inhaber (Session-ID)
+    locked_by_name    TEXT,                          -- Anzeigename des Sperr-Inhabers
+    locked_at         TIMESTAMP,
+    created_by        TEXT,
+    updated_by        TEXT,
+    updated_at        TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS project_bookings (
@@ -174,6 +182,14 @@ def init_db() -> None:
             "ALTER TABLE projects ADD COLUMN ej_job_ids TEXT",
             "ALTER TABLE projects ADD COLUMN ej_project_number TEXT",
             "ALTER TABLE project_bookings ADD COLUMN kind TEXT DEFAULT 'article'",
+            "ALTER TABLE projects ADD COLUMN status TEXT DEFAULT 'uploaded'",
+            "ALTER TABLE projects ADD COLUMN state_json TEXT",
+            "ALTER TABLE projects ADD COLUMN locked_by TEXT",
+            "ALTER TABLE projects ADD COLUMN locked_by_name TEXT",
+            "ALTER TABLE projects ADD COLUMN locked_at TIMESTAMP",
+            "ALTER TABLE projects ADD COLUMN created_by TEXT",
+            "ALTER TABLE projects ADD COLUMN updated_by TEXT",
+            "ALTER TABLE projects ADD COLUMN updated_at TIMESTAMP",
         ]:
             try:
                 conn.execute(sql)
@@ -682,6 +698,8 @@ def list_projects(limit: int = 100) -> list[dict]:
             """
             SELECT id, name, ej_project_id, ej_project_number, gaeb_name,
                    item_count, booking_count, created_at,
+                   COALESCE(status, 'uploaded') AS status,
+                   locked_by, locked_by_name, locked_at, created_by, updated_by, updated_at,
                    CASE WHEN gaeb_bytes IS NOT NULL THEN 1 ELSE 0 END AS has_gaeb
             FROM projects ORDER BY id DESC LIMIT ?
             """,
@@ -732,6 +750,112 @@ def delete_project(project_id: int) -> None:
     with get_conn() as conn:
         conn.execute("DELETE FROM project_bookings WHERE project_id = ?", (project_id,))
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+
+
+# ── Import-Entwürfe (Zwischenspeichern vor dem Hochladen) ─────────────────────
+# Ein Entwurf ist eine projects-Zeile mit status='draft' (noch keine EJ-ID). Beim
+# Hochladen wird DIESELBE Zeile zu status='uploaded' (siehe promote_draft_to_project).
+
+def save_draft(name: str, gaeb_name: str, gaeb_bytes: bytes | None,
+               state_json: str, user_name: str, item_count: int = 0,
+               draft_id: int | None = None) -> int:
+    """Legt einen neuen Entwurf an oder aktualisiert einen bestehenden und frischt die
+    (benutzerbezogene) Bearbeitungs-Sperre auf. Gibt die Entwurf-ID zurück."""
+    with get_conn() as conn:
+        if draft_id:
+            conn.execute(
+                "UPDATE projects SET name=?, gaeb_name=?, state_json=?, item_count=?, "
+                "updated_by=?, updated_at=CURRENT_TIMESTAMP, "
+                "locked_by=?, locked_by_name=?, locked_at=CURRENT_TIMESTAMP "
+                "WHERE id=? AND status='draft'",
+                (name, gaeb_name, state_json, item_count, user_name, user_name, user_name, draft_id),
+            )
+            if gaeb_bytes is not None:
+                conn.execute("UPDATE projects SET gaeb_bytes=? WHERE id=?", (gaeb_bytes, draft_id))
+            return draft_id
+        cur = conn.execute(
+            "INSERT INTO projects "
+            "(name, ej_project_id, gaeb_name, item_count, booking_count, gaeb_bytes, "
+            " status, state_json, created_by, updated_by, updated_at, locked_by, locked_by_name, locked_at) "
+            "VALUES (?, 0, ?, ?, 0, ?, 'draft', ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, CURRENT_TIMESTAMP)",
+            (name, gaeb_name, item_count, gaeb_bytes, state_json, user_name, user_name, user_name, user_name),
+        )
+        return cur.lastrowid
+
+
+def get_draft(draft_id: int) -> dict | None:
+    """Vollständiger Entwurf inkl. state_json + gaeb_bytes + Sperr-Info."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, name, gaeb_name, state_json, "
+            "COALESCE(status,'uploaded') AS status, locked_by, locked_by_name, locked_at, "
+            "created_by, updated_by, updated_at, gaeb_bytes "
+            "FROM projects WHERE id = ?",
+            (draft_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def acquire_draft_lock(draft_id: int, user_name: str, timeout_sec: int = 75) -> tuple[bool, bool]:
+    """Sperre pro BENUTZER: derselbe Nutzer kommt IMMER rein (sperrt sich nie selbst aus),
+    ein ANDERER Benutzer wird blockiert, solange die Sperre frisch gehalten wird (Heartbeat).
+    Ohne Heartbeat läuft sie nach timeout_sec ab → beim Verlassen der Seite wieder frei.
+    Gibt (ok, war_fremd)."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT locked_by FROM projects WHERE id=? AND COALESCE(status,'uploaded')='draft'",
+            (draft_id,),
+        ).fetchone()
+        if not row:
+            return False, False
+        locked_by = row["locked_by"]
+        if locked_by and locked_by != user_name:
+            stale = conn.execute(
+                "SELECT 1 FROM projects WHERE id=? AND (locked_at IS NULL "
+                "OR locked_at < datetime('now', ?))",
+                (draft_id, f"-{int(timeout_sec)} seconds"),
+            ).fetchone()
+            if not stale:
+                return False, True
+        conn.execute(
+            "UPDATE projects SET locked_by=?, locked_by_name=?, locked_at=CURRENT_TIMESTAMP WHERE id=?",
+            (user_name, user_name, draft_id),
+        )
+        return True, False
+
+
+def heartbeat_draft_lock(draft_id: int, user_name: str) -> None:
+    """Heartbeat der offenen Seite: frischt die eigene Sperre auf bzw. holt sie wieder,
+    falls sie zwischenzeitlich frei wurde (z.B. Beacon-Freigabe beim Neuladen)."""
+    acquire_draft_lock(draft_id, user_name)
+
+
+def release_draft_lock(draft_id: int, user_name: str = "", force: bool = False) -> None:
+    """Gibt die Sperre frei — nur wenn vom selben Benutzer gehalten (oder force=Admin)."""
+    with get_conn() as conn:
+        if force:
+            conn.execute("UPDATE projects SET locked_by=NULL, locked_by_name=NULL, locked_at=NULL WHERE id=?", (draft_id,))
+        else:
+            conn.execute(
+                "UPDATE projects SET locked_by=NULL, locked_by_name=NULL, locked_at=NULL WHERE id=? AND locked_by=?",
+                (draft_id, user_name),
+            )
+
+
+def promote_draft_to_project(draft_id: int, name: str, ej_project_id: int, ej_job_ids: str,
+                             item_count: int, booking_count: int,
+                             ej_project_number: str, user: str) -> None:
+    """Wandelt einen hochgeladenen Entwurf in ein normales Projekt um (gleiche Zeile):
+    status='uploaded', EJ-Felder + Name gesetzt, Entwurf-State + Sperre entfernt."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE projects SET status='uploaded', name=?, ej_project_id=?, ej_job_ids=?, "
+            "item_count=?, booking_count=?, ej_project_number=?, updated_by=?, "
+            "updated_at=CURRENT_TIMESTAMP, state_json=NULL, locked_by=NULL, locked_by_name=NULL, locked_at=NULL "
+            "WHERE id=?",
+            (name, ej_project_id, ej_job_ids, item_count, booking_count,
+             ej_project_number, user, draft_id),
+        )
 
 
 def get_recent_changes(hours: int = 48) -> list[dict]:

@@ -298,11 +298,295 @@ async def import_page(request: Request):
     })
 
 
+# ─── Import-Entwürfe: State serialisieren / wiederherstellen ──────────────────
+
+def serialize_import_state(ss) -> dict:
+    """Serialisiert den Import-State (matches/bundles als Referenzen + Konfiguration)
+    für einen Entwurf. GAEB/Matcher werden NICHT gespeichert (beim Laden neu gebaut).
+    Ohne setup-Felder — die ergänzt der Save-Endpoint aus dem Seitenformular."""
+    from matcher import Resource as _Resource
+
+    def _ref(obj):
+        if obj is None:
+            return None
+        if isinstance(obj, _Resource):
+            return {"kind": "resource", "ref": obj.id}
+        # Artikel VOLLSTÄNDIG serialisieren (auch EJ-only ohne lokale Nummer) — sonst
+        # gehen manuell per EJ-Suche hinzugefügte Artikel beim Speichern verloren.
+        return {
+            "kind": "article",
+            "ref": getattr(obj, "nummer", "") or "",
+            "art": {
+                "ej_id":             int(getattr(obj, "ej_id", 0) or 0),
+                "id_time_factor":    int(getattr(obj, "id_time_factor", 0) or 0),
+                "nummer":            getattr(obj, "nummer", "") or "",
+                "bezeichnung":       getattr(obj, "bezeichnung", "") or "",
+                "warengruppe":       getattr(obj, "warengruppe", "") or "",
+                "mutterwarengruppe": getattr(obj, "mutterwarengruppe", "") or "",
+                "artikelart":        getattr(obj, "artikelart", "") or "",
+                "hersteller":        getattr(obj, "hersteller", "") or "",
+                "detail":            getattr(obj, "detail", "") or "",
+                "kommentar":         getattr(obj, "kommentar", "") or "",
+                "mietpreis":         float(getattr(obj, "mietpreis", 0) or 0),
+                "einheit":           getattr(obj, "einheit", "") or "",
+                "mietinventar":      int(getattr(obj, "mietinventar", 0) or 0),
+            },
+        }
+
+    matches: dict = {}
+    for iid, mr in (ss.matches or {}).items():
+        if not mr or not getattr(mr, "matched", None):
+            continue
+        r = _ref(mr.matched)
+        if r:
+            matches[iid] = {**r, "score": mr.score, "method": mr.method,
+                            "confident": mr.confident}
+    bundles: dict = {}
+    for iid, blist in (ss.bundles or {}).items():
+        out = []
+        for b in blist:
+            r = _ref(b.get("article") or b.get("resource"))
+            if r:
+                out.append({**r, "qty": float(b.get("qty", 1))})
+        if out:
+            bundles[iid] = out
+    return {
+        "v": 1,
+        "matches": matches,
+        "bundles": bundles,
+        "booking_qtys": ss.d83_booking_qtys or {},
+        "alt_active": ss.d83_alt_active or {},
+        "group_jobs": ss.d83_group_jobs or {},
+        "local_jobs": ss.d83_local_jobs or [],
+        "next_lid": ss.d83_next_lid,
+        "standard_job_name": ss.d83_standard_job_name or "",
+        "import_mode": ss.d83_import_mode or "positions",
+        "einsatztage": ss.einsatztage,
+    }
+
+
+def apply_import_state(ss, state: dict) -> list[str]:
+    """Stellt matches/bundles/Konfiguration aus einem Entwurf wieder her. Voraussetzung:
+    ss.d83_project + ss.matcher sind bereits aufgebaut. Es wird NICHT neu gematcht —
+    leere Positionen bleiben leer. Gibt Warnungen zurück (Referenz nicht mehr im Stamm)."""
+    from matcher import Resource as _Resource
+    warnings: list[str] = []
+    m = ss.matcher
+
+    from matcher import Article as _Article
+
+    def _resolve(entry: dict):
+        kind, ref = entry.get("kind"), entry.get("ref")
+        if kind == "resource":
+            if not m or ref is None:
+                return None
+            idx = m._id_to_resource_idx.get(int(ref))
+            return m._pool[idx] if idx is not None else None
+        # Artikel: erst lokaler Pool (volle Stammdaten), sonst aus gespeicherten Daten
+        # rekonstruieren (EJ-only-Artikel, die nicht im Stamm liegen).
+        if m and ref:
+            idx = m._num_to_idx.get(str(ref))
+            if idx is None and "." not in str(ref):
+                idx = m._num_to_idx.get(f"{ref}.00")
+            if idx is not None:
+                return m._pool[idx]
+        art = entry.get("art")
+        if art:
+            return _Article(
+                ej_id=int(art.get("ej_id") or 0),
+                id_time_factor=int(art.get("id_time_factor") or 0),
+                nummer=art.get("nummer") or "",
+                bezeichnung=art.get("bezeichnung") or "",
+                warengruppe=art.get("warengruppe") or "",
+                mutterwarengruppe=art.get("mutterwarengruppe") or "",
+                artikelart=art.get("artikelart") or "",
+                hersteller=art.get("hersteller") or "",
+                detail=art.get("detail") or "",
+                kommentar=art.get("kommentar") or "",
+                mietpreis=float(art.get("mietpreis") or 0),
+                einheit=art.get("einheit") or "",
+                mietinventar=int(art.get("mietinventar") or 0),
+                gaeb_synonyms=[],
+            )
+        return None
+
+    ss.matches = {}
+    for iid, mm in (state.get("matches") or {}).items():
+        obj = _resolve(mm)
+        if obj is None:
+            warnings.append(f"Zuordnung {mm.get('ref')} (Pos. {iid}) nicht mehr im Stamm")
+            continue
+        ss.matches[iid] = MatchResult(matched=obj, score=mm.get("score", 99.0),
+                                      method=mm.get("method", "draft"),
+                                      confident=mm.get("confident", True))
+    ss.bundles = {}
+    for iid, blist in (state.get("bundles") or {}).items():
+        out = []
+        for b in blist:
+            obj = _resolve(b)
+            if obj is None:
+                warnings.append(f"Bundle {b.get('ref')} (Pos. {iid}) nicht mehr im Stamm")
+                continue
+            key = "resource" if isinstance(obj, _Resource) else "article"
+            out.append({key: obj, "qty": float(b.get("qty", 1))})
+        if out:
+            ss.bundles[iid] = out
+    ss.d83_booking_qtys      = state.get("booking_qtys") or {}
+    ss.d83_alt_active        = state.get("alt_active") or {}
+    ss.d83_group_jobs        = state.get("group_jobs") or {}
+    ss.d83_local_jobs        = state.get("local_jobs") or []
+    ss.d83_next_lid          = int(state.get("next_lid") or 2)
+    ss.d83_standard_job_name = state.get("standard_job_name") or ""
+    ss.d83_import_mode       = state.get("import_mode") or "positions"
+    ss.einsatztage           = float(state.get("einsatztage") or 2.0)
+    return warnings
+
+
+# ─── Import-Entwürfe: Speichern / Laden / Freigeben / Löschen ─────────────────
+
+@router.post("/api/import/draft/save", response_class=HTMLResponse)
+async def import_draft_save(
+    request:               Request,
+    draft_name:            str = Form(""),
+    target_mode:           str = Form("new"),
+    proj_name:             str = Form(""),
+    ref_number:            str = Form(""),
+    start_date:            str = Form(""),
+    end_date:              str = Form(""),
+    id_address:            int = Form(0),
+    address_name:          str = Form(""),
+    id_contact:            int = Form(0),
+    contact_name:          str = Form(""),
+    id_delivery:           int = Form(0),
+    delivery_name:         str = Form(""),
+    id_project_type:       int = Form(0),
+    id_event_calendar:     int = Form(0),
+    existing_project_id:   int = Form(0),
+    existing_project_name: str = Form(""),
+):
+    import json as _json
+    ss = get_session(request.session)
+    if not ss.d83_project:
+        return HTMLResponse('<span class="error-msg">Kein Import geladen — nichts zu speichern.</span>')
+    state = serialize_import_state(ss)
+    state["setup"] = {
+        "target_mode": target_mode, "proj_name": proj_name, "ref_number": ref_number,
+        "start_date": start_date, "end_date": end_date,
+        "id_address": id_address, "address_name": address_name,
+        "id_contact": id_contact, "contact_name": contact_name,
+        "id_delivery": id_delivery, "delivery_name": delivery_name,
+        "id_project_type": id_project_type, "id_event_calendar": id_event_calendar,
+        "existing_project_id": existing_project_id, "existing_project_name": existing_project_name,
+    }
+    ss.d83_draft_setup = state["setup"]
+    name = (draft_name.strip() or proj_name.strip() or existing_project_name.strip()
+            or ss.import_filename or "Entwurf")
+    gb = ss.x83_bytes if not ss.draft_id else None   # GAEB nur beim ersten Mal ablegen
+    ss.draft_id = _db.save_draft(
+        name=name, gaeb_name=ss.import_filename or ss.d83_name,
+        gaeb_bytes=gb, state_json=_json.dumps(state, ensure_ascii=False),
+        user_name=ss.ej_user or "?",
+        item_count=len(ss.d83_project.items), draft_id=ss.draft_id,
+    )
+    return HTMLResponse(f'<span class="save-ok">💾 Entwurf „{name}" gespeichert ✓</span>')
+
+
+@router.post("/api/import/draft/{draft_id}/load")
+async def import_draft_load(draft_id: int, request: Request):
+    import json as _json
+    ss = get_session(request.session)
+    d = _db.get_draft(draft_id)
+    if not d or d.get("status") != "draft":
+        return HTMLResponse('<span class="error-msg">Entwurf nicht gefunden.</span>', status_code=404)
+    _usr = ss.ej_user or ""
+    ok, _ = _db.acquire_draft_lock(draft_id, _usr)
+    if not ok:
+        return HTMLResponse('<span class="error-msg">🔒 Dieser Entwurf wird gerade von jemand anderem bearbeitet.</span>')
+    gb = d.get("gaeb_bytes")
+    if not gb:
+        _db.release_draft_lock(draft_id, _usr)
+        return HTMLResponse('<span class="error-msg">Entwurf ohne GAEB-Datei.</span>', status_code=400)
+
+    loop = asyncio.get_event_loop()
+
+    def _setup():
+        with tempfile.NamedTemporaryFile(suffix=".x83", delete=False) as tf:
+            tf.write(gb)
+            tmp = tf.name
+        try:
+            project = parse_gaeb(tmp)
+        finally:
+            pathlib.Path(tmp).unlink(missing_ok=True)
+        matcher = UnifiedMatcher(load_articles_db(), load_resources_db())
+        return project, matcher
+
+    project, matcher = await loop.run_in_executor(None, _setup)
+    ss.d83_project     = project
+    ss.d83_name        = d.get("gaeb_name") or "X83"
+    ss.import_filename = d.get("gaeb_name") or "X83"
+    ss.x83_bytes       = gb
+    ss.matcher         = matcher
+    ss.matcher.apply_mapping_filter(ss.use_train_mappings, ss.use_gui_mappings)
+
+    state = _json.loads(d.get("state_json") or "{}")
+    apply_import_state(ss, state)     # KEIN Auto-Match — Stand 1:1 wiederherstellen
+    ss.d83_draft_setup = state.get("setup") or {}
+    level = 1 if ss.d83_import_mode == "groups" else 0
+    ss.d83_groups = _import_gaeb_groups(project, level, ss.d83_alt_active)
+    ss.draft_id = draft_id
+
+    resp = HTMLResponse("")
+    resp.headers["HX-Redirect"] = "/import"
+    return resp
+
+
+@router.post("/api/import/draft/{draft_id}/release")
+async def import_draft_release(draft_id: int, request: Request):
+    ss = get_session(request.session)
+    _db.release_draft_lock(draft_id, ss.ej_user or "", force=ss.is_admin)
+    if ss.draft_id == draft_id:
+        ss.draft_id = None
+    resp = HTMLResponse("")
+    resp.headers["HX-Redirect"] = "/projects"
+    return resp
+
+
+@router.post("/api/import/draft/{draft_id}/heartbeat")
+async def import_draft_heartbeat(draft_id: int, request: Request):
+    """Hält die Bearbeitungs-Sperre am Leben, solange die Import-Seite offen ist."""
+    ss = get_session(request.session)
+    _db.heartbeat_draft_lock(draft_id, ss.ej_user or "")
+    return HTMLResponse("")
+
+
+@router.post("/api/import/draft/{draft_id}/delete")
+async def import_draft_delete(draft_id: int, request: Request):
+    ss = get_session(request.session)
+    if not ss.is_admin:
+        return HTMLResponse('<span class="error-msg">Nur für Admins.</span>')
+    d = _db.get_draft(draft_id)
+    if not d or d.get("status") != "draft":
+        return HTMLResponse('<span class="error-msg">Kein Entwurf.</span>', status_code=400)
+    _db.delete_project(draft_id)
+    if ss.draft_id == draft_id:
+        ss.draft_id = None
+    resp = HTMLResponse("")
+    resp.headers["HX-Redirect"] = "/projects"
+    return resp
+
+
 # ─── Upload + Auto-Matching ───────────────────────────────────────────────────
 
 @router.post("/api/import/upload", response_class=HTMLResponse)
 async def import_upload(request: Request, file: UploadFile = File(...)):
     ss = get_session(request.session)
+    # Frischer Upload → evtl. offenen Entwurf freigeben (neuer Import ≠ Entwurf).
+    if getattr(ss, "draft_id", None):
+        try:
+            _db.release_draft_lock(ss.draft_id, ss.ej_user or "")
+        except Exception:
+            pass
+        ss.draft_id = None
     try:
         data = await file.read()
         suf  = pathlib.Path(file.filename or "upload").suffix or ".xml"
@@ -465,10 +749,36 @@ async def import_alt_toggle(alt_key: str, request: Request, choice: str = Form(.
 
 # ─── Match-Verwaltung ─────────────────────────────────────────────────────────
 
+def _promote_bundle_to_primary(ss, item_id: str) -> None:
+    """Ohne Haupt-Match, aber mit Zusatz-Artikeln/-Ressourcen: der erste Eintrag
+    rückt als neues Haupt-Match auf. Hält die Invariante „Position mit Artikeln
+    hat immer ein Haupt-Match" — sonst zeigt die Position „Nicht zugeordnet",
+    obwohl noch Artikel gebucht sind."""
+    cur = ss.matches.get(item_id)
+    if cur and cur.matched and cur.score > 0:
+        return
+    bundle = ss.bundles.get(item_id, [])
+    if not bundle:
+        return
+    first = bundle.pop(0)
+    obj = first.get("article") or first.get("resource")
+    if obj is None:
+        return
+    ss.matches[item_id] = MatchResult(matched=obj, score=99.0, method="manual", confident=True)
+    ss.d83_booking_qtys[item_id] = {
+        "qty": float(first.get("qty", 1) or 1), "lfm_converted": False, "piece_len": None,
+    }
+    if not bundle:
+        ss.bundles.pop(item_id, None)
+
+
 @router.get("/api/import/clear-match/{item_id}", response_class=HTMLResponse)
 async def import_clear_match(request: Request, item_id: str):
     ss = get_session(request.session)
     ss.matches.pop(item_id, None)
+    # Falls noch Zusatz-Artikel/-Ressourcen an der Position hängen, rückt der erste
+    # als neues Haupt-Match auf — sonst zeigte die Position „Nicht zugeordnet".
+    _promote_bundle_to_primary(ss, item_id)
     return templates.TemplateResponse(
         request, "partials/import_groups.html", _import_ctx(ss)
     )
@@ -531,8 +841,15 @@ async def import_add_match(
     except ValueError:
         return '<p class="error-msg">Ungültige Artikeldaten.</p>'
     art = make_article_from_ej(raw, None, ss.matcher)
-    bundle = ss.bundles.setdefault(item_id, [])
-    bundle.append({"article": art, "qty": qty})
+    cur = ss.matches.get(item_id)
+    if not (cur and cur.matched and cur.score > 0):
+        # Noch keine Haupt-Zuordnung → hinzugefügter Artikel wird Haupt-Match,
+        # damit die Position als „zugeordnet" gilt (statt als loses Bundle ohne
+        # Haupt-Match, das fälschlich „Nicht zugeordnet" anzeigt).
+        ss.matches[item_id] = MatchResult(matched=art, score=99.0, method="manual", confident=True)
+        ss.d83_booking_qtys[item_id] = {"qty": float(qty), "lfm_converted": False, "piece_len": None}
+    else:
+        ss.bundles.setdefault(item_id, []).append({"article": art, "qty": qty})
     _add_optional_ref_bundles(ss, item_id, extra_nums, extra_qtys)
     _learn_article_match(ss, item_id)
     return templates.TemplateResponse(
@@ -912,6 +1229,7 @@ async def import_add_resource(
     qty:         float = Form(1.0),
 ):
     from matcher import Resource as _Resource
+    from db import save_gui_resource_mapping
     ss = get_session(request.session)
     if not ss.matcher:
         return HTMLResponse('<p class="error-msg">Kein Matcher geladen — bitte neu einlesen.</p>')
@@ -921,7 +1239,19 @@ async def import_add_resource(
     )
     if res is None:
         return HTMLResponse('<p class="error-msg">Ressource nicht gefunden.</p>')
-    ss.bundles.setdefault(item_id, []).append({"resource": res, "qty": qty})
+    cur = ss.matches.get(item_id)
+    if not (cur and cur.matched and cur.score > 0):
+        # Noch keine Haupt-Zuordnung → Ressource wird Haupt-Match (Position gilt als
+        # zugeordnet) und wird — wie bei „Ersetzen" — als Mapping gelernt.
+        ss.matches[item_id] = MatchResult(matched=res, score=99.0, method="manual", confident=True)
+        ss.d83_booking_qtys[item_id] = {"qty": float(qty), "lfm_converted": False, "piece_len": None}
+        if ss.d83_project:
+            item = next((it for it in ss.d83_project.items if it.item_id == item_id), None)
+            if item and item.description.strip():
+                save_gui_resource_mapping(item.description, resource_id)
+                ss.matcher.add_learned_resource(item.description, resource_id)
+    else:
+        ss.bundles.setdefault(item_id, []).append({"resource": res, "qty": qty})
     return templates.TemplateResponse(request, "partials/import_groups.html", _import_ctx(ss))
 
 
@@ -1632,19 +1962,36 @@ async def _do_create_bg(
                 )
             except Exception:
                 pass
-            project_db_id = await loop.run_in_executor(
-                None,
-                lambda: _db.save_project(
-                    name=proj_name,
-                    ej_project_id=id_project,
-                    gaeb_name=ss.d83_name,
-                    item_count=len(ss.d83_project.items),
-                    booking_count=len(bookings) + len(res_bookings),
-                    gaeb_bytes=ss.x83_bytes,
-                    ej_job_ids=job_ids_csv,
-                    ej_project_number=ej_project_number,
-                ),
-            )
+            # Aus einem Entwurf hochgeladen? Dann dieselbe Zeile umwandeln
+            # (Entwurf → Projekt), sonst ein neues Projekt anlegen.
+            _draft_id = getattr(ss, "draft_id", None)
+            _bcount   = len(bookings) + len(res_bookings)
+            if _draft_id:
+                await loop.run_in_executor(
+                    None,
+                    lambda: _db.promote_draft_to_project(
+                        draft_id=_draft_id, name=proj_name, ej_project_id=id_project,
+                        ej_job_ids=job_ids_csv, item_count=len(ss.d83_project.items),
+                        booking_count=_bcount, ej_project_number=ej_project_number,
+                        user=ss.ej_user or "",
+                    ),
+                )
+                project_db_id = _draft_id
+                ss.draft_id = None
+            else:
+                project_db_id = await loop.run_in_executor(
+                    None,
+                    lambda: _db.save_project(
+                        name=proj_name,
+                        ej_project_id=id_project,
+                        gaeb_name=ss.d83_name,
+                        item_count=len(ss.d83_project.items),
+                        booking_count=_bcount,
+                        gaeb_bytes=ss.x83_bytes,
+                        ej_job_ids=job_ids_csv,
+                        ej_project_number=ej_project_number,
+                    ),
+                )
             from matcher import resolve_time_factor as _resolve_tf
             _curves = _db.load_time_factor_curves_db()
             for bk in bookings:

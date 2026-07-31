@@ -120,6 +120,8 @@ class UserSession:
         self.d83_booking_qtys:     dict = {}   # item_id → {"qty": float, "lfm_converted": bool}
         self.einsatztage:          float = 2.0  # Berechnungstage für Preis-Progression (Job.CommitmentDays), Dezimal erlaubt
         self.import_filename: str = ""  # zuletzt hochgeladene Datei auf /import
+        self.draft_id:   Optional[int] = None  # geladener Entwurf (projects.status='draft'); None = frischer Import
+        self.d83_draft_setup: dict = {}         # setup-Felder aus dem Entwurf (Seitenleiste vorbefüllen)
         self.create_progress: CreateProgress = CreateProgress()
 
 
