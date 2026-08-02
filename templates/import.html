@@ -675,7 +675,30 @@ document.body.addEventListener('htmx:afterSettle', function(e) {
 document.body.addEventListener('htmx:afterSwap', function(e) {
   if (e.detail.target && e.detail.target.id === 'import-groups') {
     var m = document.getElementById('imp-modal');
-    if (m && m.open) m.close();
+    if (m && m.open) {
+      // Beim Schließen springt der Fokus zurück auf den Auslöser-Button und scrollt
+      // ihn in den Blick → Scroll-Position (aus dem letzten Klick in #import-groups)
+      // sofort und im nächsten Frame wiederherstellen, sonst „springt" die Seite.
+      var y = _impScrollY;
+      m.close();
+      window.scrollTo({top: y, behavior: 'instant'});
+      requestAnimationFrame(function() { window.scrollTo({top: y, behavior: 'instant'}); });
+    }
+  }
+});
+
+// Enter in einem Zahlenfeld (Menge/Preis) darf das Formular NICHT nativ abschicken —
+// die Mengen-Formulare nutzen hx-trigger="change", nicht submit. Ein nativer Submit
+// würde die Seite neu laden und nach ganz oben springen. Stattdessen bestätigt Enter
+// den Wert: blur() löst change → normaler HTMX-Swap (Scroll-Position bleibt erhalten).
+// Nur Zahlenfelder — Textfelder (Job umbenennen/anlegen) sollen per Enter absenden.
+document.addEventListener('keydown', function(e) {
+  if (e.key !== 'Enter') return;
+  var t = e.target;
+  if (t && t.tagName === 'INPUT' && t.type === 'number' &&
+      t.closest && t.closest('#import-groups')) {
+    e.preventDefault();
+    t.blur();
   }
 });
 
@@ -1141,12 +1164,15 @@ document.addEventListener('mousedown', function(e) {
   }
 }, true);
 
-// Einsatztage-Feld liegt links in der Sidebar (nicht in #import-groups), löst aber
-// einen Swap von #import-groups aus. Scroll-Position vor dem Request merken, damit
-// der afterSwap/afterSettle-Restore unten sie korrekt hält statt nach oben zu springen.
+// Vor jedem Swap, der aus der Liste kommt (Menge/Preis ändern, Bundle usw.) oder vom
+// Einsatztage-Feld in der Sidebar, die aktuelle Scroll-Position sichern — auch bei
+// Tastatur-/Spinner-Bedienung ohne frischen Mausklick. Der afterSwap/afterSettle-
+// Restore hält die Position dann korrekt, statt „ein bisschen" bzw. nach oben zu springen.
 document.addEventListener('htmx:beforeRequest', function(e) {
   const elt = e.detail && e.detail.elt;
-  if (elt && elt.id === 'imp-einsatztage') {
+  if (!elt) return;
+  const grp = document.getElementById('import-groups');
+  if (elt.id === 'imp-einsatztage' || (grp && grp.contains(elt))) {
     _impScrollY = window.scrollY;
   }
 });

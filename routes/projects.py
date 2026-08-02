@@ -17,6 +17,14 @@ from routes.import_ import _clean_gaeb_for_export, _import_gaeb_groups
 
 router = APIRouter()
 
+
+def _fmt_qty(q: float) -> str:
+    """Menge für GAEB-<Qty> formatieren: bis zu 3 Nachkommastellen, ohne
+    überflüssige Nullen (2.0 → „2", 2.5 → „2.5")."""
+    s = f"{q:.3f}".rstrip("0").rstrip(".")
+    return s or "0"
+
+
 # Geparste GAEB-Gruppenstruktur je Projekt cachen — sie ist unveränderlich, das
 # erneute Parsen kostet sonst je Übersichtsaufruf ~130 ms. Die Struktur enthält
 # eingebettete base64-Bilder, daher die Anzahl begrenzen (FIFO), sonst wächst der
@@ -390,6 +398,18 @@ async def project_export_d84(project_id: int, request: Request):
         if b.get("ej_group_id")
     }
 
+    # item_id → bestimmte (gebuchte) Menge — erste Buchung je Position (= Haupt-Match).
+    # Für offene Ausschreibungspositionen (Menge 0, z.B. Spesen/Hotel/Personaltage)
+    # wird diese selbst festgelegte Menge in die D84 (<Qty>) übernommen, statt der 0.
+    qty_by_item: dict[str, float] = {}
+    for b in bookings:
+        iid = b.get("item_id")
+        if iid and iid not in qty_by_item:
+            try:
+                qty_by_item[iid] = float(b.get("qty") or 0)
+            except (TypeError, ValueError):
+                pass
+
     # EJ-DB: Gruppenkosten lesen
     # Artikel-Kosten pro Gruppe: SUM(Anzahl × Preis) aller Artikel in der Gruppe
     # Personal-Kosten pro Gruppe: SUM(TotalPrice) aller Ressourcen in der Gruppe
@@ -556,8 +576,27 @@ async def project_export_d84(project_id: int, request: Request):
     for item_el in root.iter(tag("Item")):
         item_id = item_el.get("ID", "")
 
-        qty_el  = item_el.find(tag("Qty"))
-        qty_val = float(qty_el.text.replace(",", ".")) if qty_el is not None and qty_el.text else 1.0
+        qty_el    = item_el.find(tag("Qty"))
+        qtytbd_el = item_el.find(tag("QtyTBD"))
+        qty_txt   = qty_el.text.strip() if (qty_el is not None and qty_el.text) else ""
+        qty_val   = float(qty_txt.replace(",", ".")) if qty_txt else 0.0
+
+        # Offene Position: entweder <Qty>0 oder GAEB-<QtyTBD> ("Menge vom Bieter
+        # anzugeben"). Die bestimmte (gebuchte) Menge übernehmen — sonst blieben EP/GP
+        # 0 bzw. der EP falsch. Die Menge wird in die D84 geschrieben; aus <QtyTBD>
+        # wird eine feste <Qty>, da die Menge nun festgelegt ist (überlebt das Cleanup).
+        if qty_val <= 0:
+            booked_q = qty_by_item.get(item_id, 0.0)
+            qty_val  = booked_q if booked_q > 0 else 1.0
+            if booked_q > 0:
+                if qty_el is not None:
+                    qty_el.text = _fmt_qty(booked_q)
+                elif qtytbd_el is not None:
+                    idx = list(item_el).index(qtytbd_el)
+                    item_el.remove(qtytbd_el)
+                    qty_el = ET.Element(tag("Qty"))
+                    qty_el.text = _fmt_qty(booked_q)
+                    item_el.insert(idx, qty_el)
 
         grp_id = group_by_item.get(item_id, 0)
         if not grp_id:
@@ -607,10 +646,38 @@ async def project_export_d84(project_id: int, request: Request):
     # Befüllung je Feld-Typ gemäß Dialog-Konfiguration:
     #   auto → Hersteller · Detail aus gebuchtem Artikel · text → fester Text · leer → nichts
     art_by_num  = {a["nummer"]: a for a in _db.load_articles_db()}
-    booked_art  = {b["item_id"]: b.get("art_num") for b in bookings}
+
+    def _art_price(art: dict) -> float:
+        try:
+            return float(art.get("mietpreis") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    # Je Position den Artikel mit dem größten Kostenblock bestimmen (Menge × Mietpreis) —
+    # so zeigt das Bieter-Feld Hersteller/Detail vom kostenmäßig dominierenden Gerät der
+    # Gruppe, nicht von einem beliebigen (Zubehör-)Artikel. Zusatz-/Bundle-Artikel zählen mit.
+    priciest_art_by_item: dict[str, dict] = {}
+    _best_cost_by_item:   dict[str, float] = {}
+    for b in bookings:
+        if b.get("kind") == "resource":
+            continue
+        art = art_by_num.get(b.get("art_num"))
+        if not art:
+            continue
+        try:
+            qty = float(b.get("qty") or 0)
+        except (TypeError, ValueError):
+            qty = 0.0
+        if qty <= 0:
+            qty = 1.0
+        cost = _art_price(art) * qty
+        iid  = b["item_id"]
+        if iid not in _best_cost_by_item or cost > _best_cost_by_item[iid]:
+            _best_cost_by_item[iid]   = cost
+            priciest_art_by_item[iid] = art
 
     def _auto_text(item_id: str) -> str:
-        art = art_by_num.get(booked_art.get(item_id))
+        art = priciest_art_by_item.get(item_id)
         if not art:
             return ""
         parts = [str(art.get(f, "") or "").strip() for f in ("hersteller", "detail")]

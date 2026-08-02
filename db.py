@@ -763,13 +763,15 @@ def save_draft(name: str, gaeb_name: str, gaeb_bytes: bytes | None,
     (benutzerbezogene) Bearbeitungs-Sperre auf. Gibt die Entwurf-ID zurück."""
     with get_conn() as conn:
         if draft_id:
-            conn.execute(
+            cur = conn.execute(
                 "UPDATE projects SET name=?, gaeb_name=?, state_json=?, item_count=?, "
                 "updated_by=?, updated_at=CURRENT_TIMESTAMP, "
                 "locked_by=?, locked_by_name=?, locked_at=CURRENT_TIMESTAMP "
                 "WHERE id=? AND status='draft'",
                 (name, gaeb_name, state_json, item_count, user_name, user_name, user_name, draft_id),
             )
+            if cur.rowcount == 0:
+                return 0   # Zeile existiert nicht (mehr) als Entwurf → Aufrufer meldet Fehler
             if gaeb_bytes is not None:
                 conn.execute("UPDATE projects SET gaeb_bytes=? WHERE id=?", (gaeb_bytes, draft_id))
             return draft_id

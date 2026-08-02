@@ -112,7 +112,7 @@
     {% if pos.is_eventual %}<span class="alt-badge" style="background:#8e24aa">◇ Eventual</span>{% endif %}
     {% if pos.oz %}<span class="oz-badge">{{ pos.oz }}</span>{% endif %}
     <div class="pos-desc">{{ pos.desc }}</div>
-    <div class="pos-meta">Gefordert: <b>{{ pos.qty }} {{ pos.unit }}</b></div>
+    <div class="pos-meta">Gefordert: <b>{% if pos.qty %}{{ pos.qty }} {{ pos.unit }}{% else %}offen <span style="font-weight:400;color:#888">(Menge selbst festlegen)</span>{% endif %}</b></div>
     {% set has_imgs = pos.long_text_images and pos.long_text_images|length > 0 %}
     {% if pos.long_text or has_imgs %}
       {% if pos.long_text|length > 160 or has_imgs %}

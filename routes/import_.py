@@ -165,6 +165,17 @@ def _import_gaeb_groups(project: GaebProject, level: int = 0, alt_active: dict |
     return result
 
 
+def _bqty(raw_qty) -> float:
+    """Buchungsmenge — nie 0, da EasyJob eine Menge von 0 nicht zulässt. Offene
+    Ausschreibungspositionen (Menge 0, z.B. Spesen/Hotel/Personaltage) werden mit
+    1 vorbelegt; die tatsächliche Menge bestimmt der Nutzer im Buchungsfeld selbst."""
+    try:
+        q = float(raw_qty)
+    except (TypeError, ValueError):
+        q = 0.0
+    return q if q > 0 else 1.0
+
+
 def _active_item_ids(ss) -> set[str]:
     """Item-IDs der aktuell aktiven Positionen — respektiert die Alt-Auswahl
     (render_primary/render_alt) aus ss.d83_groups. Dieselbe Logik wie beim Import."""
@@ -310,7 +321,20 @@ def serialize_import_state(ss) -> dict:
         if obj is None:
             return None
         if isinstance(obj, _Resource):
-            return {"kind": "resource", "ref": obj.id}
+            # Ressource VOLLSTÄNDIG serialisieren (wie Artikel) — liegt sie beim Laden
+            # nicht mehr im Pool, wird sie aus diesen Daten rekonstruiert.
+            return {
+                "kind": "resource",
+                "ref": obj.id,
+                "res": {
+                    "id":            int(getattr(obj, "id", 0) or 0),
+                    "funktion":      getattr(obj, "funktion", "") or "",
+                    "ressourcenart": getattr(obj, "ressourcenart", "") or "",
+                    "tagessatz":     float(getattr(obj, "tagessatz", 0) or 0),
+                    "eigenkosten":   float(getattr(obj, "eigenkosten", 0) or 0),
+                    "satzname":      getattr(obj, "satzname", "") or "",
+                },
+            }
         # Artikel VOLLSTÄNDIG serialisieren (auch EJ-only ohne lokale Nummer) — sonst
         # gehen manuell per EJ-Suche hinzugefügte Artikel beim Speichern verloren.
         return {
@@ -378,10 +402,23 @@ def apply_import_state(ss, state: dict) -> list[str]:
     def _resolve(entry: dict):
         kind, ref = entry.get("kind"), entry.get("ref")
         if kind == "resource":
-            if not m or ref is None:
-                return None
-            idx = m._id_to_resource_idx.get(int(ref))
-            return m._pool[idx] if idx is not None else None
+            if m and ref is not None:
+                idx = m._id_to_resource_idx.get(int(ref))
+                if idx is not None:
+                    return m._pool[idx]
+            # nicht (mehr) im Pool → aus gespeicherten Daten rekonstruieren
+            res = entry.get("res")
+            if res:
+                return _Resource(
+                    id=int(res.get("id") or 0),
+                    funktion=res.get("funktion") or "",
+                    ressourcenart=res.get("ressourcenart") or "",
+                    tagessatz=float(res.get("tagessatz") or 0),
+                    eigenkosten=float(res.get("eigenkosten") or 0),
+                    satzname=res.get("satzname") or "",
+                    gaeb_synonyms=[],
+                )
+            return None
         # Artikel: erst lokaler Pool (volle Stammdaten), sonst aus gespeicherten Daten
         # rekonstruieren (EJ-only-Artikel, die nicht im Stamm liegen).
         if m and ref:
@@ -432,6 +469,15 @@ def apply_import_state(ss, state: dict) -> list[str]:
         if out:
             ss.bundles[iid] = out
     ss.d83_booking_qtys      = state.get("booking_qtys") or {}
+    # Buchungsmenge jeder zugeordneten Position auf mind. 1 anheben — offene Positionen
+    # (QtyTBD, „Menge selbst bestimmen") aus älteren Entwürfen hatten evtl. 0 bzw. gar
+    # keine Menge gespeichert; EJ verbietet Menge 0, Vorgabe ist „Standard 1".
+    for _iid in ss.matches:
+        _bq = ss.d83_booking_qtys.get(_iid)
+        if _bq is None:
+            ss.d83_booking_qtys[_iid] = {"qty": 1.0, "lfm_converted": False, "piece_len": None}
+        else:
+            _bq["qty"] = _bqty(_bq.get("qty"))
     ss.d83_alt_active        = state.get("alt_active") or {}
     ss.d83_group_jobs        = state.get("group_jobs") or {}
     ss.d83_local_jobs        = state.get("local_jobs") or []
@@ -482,12 +528,16 @@ async def import_draft_save(
     name = (draft_name.strip() or proj_name.strip() or existing_project_name.strip()
             or ss.import_filename or "Entwurf")
     gb = ss.x83_bytes if not ss.draft_id else None   # GAEB nur beim ersten Mal ablegen
-    ss.draft_id = _db.save_draft(
+    saved_id = _db.save_draft(
         name=name, gaeb_name=ss.import_filename or ss.d83_name,
         gaeb_bytes=gb, state_json=_json.dumps(state, ensure_ascii=False),
         user_name=ss.ej_user or "?",
         item_count=len(ss.d83_project.items), draft_id=ss.draft_id,
     )
+    if not saved_id:
+        # Entwurf existiert nicht mehr als Entwurf (z.B. zwischenzeitlich hochgeladen)
+        return HTMLResponse('<span class="error-msg">Entwurf nicht mehr vorhanden (evtl. bereits hochgeladen).</span>')
+    ss.draft_id = saved_id
     return HTMLResponse(f'<span class="save-ok">💾 Entwurf „{name}" gespeichert ✓</span>')
 
 
@@ -510,30 +560,31 @@ async def import_draft_load(draft_id: int, request: Request):
     loop = asyncio.get_event_loop()
 
     def _setup():
-        with tempfile.NamedTemporaryFile(suffix=".x83", delete=False) as tf:
-            tf.write(gb)
-            tmp = tf.name
-        try:
-            project = parse_gaeb(tmp)
-        finally:
-            pathlib.Path(tmp).unlink(missing_ok=True)
+        project = parse_gaeb(gb)   # parse_gaeb akzeptiert Bytes direkt — keine Temp-Datei nötig
         matcher = UnifiedMatcher(load_articles_db(), load_resources_db())
         return project, matcher
 
-    project, matcher = await loop.run_in_executor(None, _setup)
-    ss.d83_project     = project
-    ss.d83_name        = d.get("gaeb_name") or "X83"
-    ss.import_filename = d.get("gaeb_name") or "X83"
-    ss.x83_bytes       = gb
-    ss.matcher         = matcher
-    ss.matcher.apply_mapping_filter(ss.use_train_mappings, ss.use_gui_mappings)
+    try:
+        project, matcher = await loop.run_in_executor(None, _setup)
+        ss.d83_project     = project
+        ss.d83_name        = d.get("gaeb_name") or "X83"
+        ss.import_filename = d.get("gaeb_name") or "X83"
+        ss.x83_bytes       = gb
+        ss.matcher         = matcher
+        ss.matcher.apply_mapping_filter(ss.use_train_mappings, ss.use_gui_mappings)
 
-    state = _json.loads(d.get("state_json") or "{}")
-    apply_import_state(ss, state)     # KEIN Auto-Match — Stand 1:1 wiederherstellen
-    ss.d83_draft_setup = state.get("setup") or {}
-    level = 1 if ss.d83_import_mode == "groups" else 0
-    ss.d83_groups = _import_gaeb_groups(project, level, ss.d83_alt_active)
-    ss.draft_id = draft_id
+        state = _json.loads(d.get("state_json") or "{}")
+        apply_import_state(ss, state)     # KEIN Auto-Match — Stand 1:1 wiederherstellen
+        ss.d83_draft_setup = state.get("setup") or {}
+        level = 1 if ss.d83_import_mode == "groups" else 0
+        ss.d83_groups = _import_gaeb_groups(project, level, ss.d83_alt_active)
+        ss.draft_id = draft_id
+    except Exception as e:
+        # Sperre nicht hängen lassen, wenn Parsen/Wiederherstellen scheitert.
+        _db.release_draft_lock(draft_id, _usr)
+        logging.error("Entwurf laden fehlgeschlagen (id=%s): %s", draft_id, e)
+        return HTMLResponse('<span class="error-msg">Entwurf konnte nicht geladen werden.</span>',
+                            status_code=500)
 
     resp = HTMLResponse("")
     resp.headers["HX-Redirect"] = "/import"
@@ -658,7 +709,7 @@ async def import_upload(request: Request, file: UploadFile = File(...)):
                         if pieces is not None:
                             booking_qtys[item.item_id] = {"qty": float(pieces), "lfm_converted": True, "piece_len": piece_len}
                         else:
-                            booking_qtys[item.item_id] = {"qty": float(item.qty), "lfm_converted": False, "piece_len": None}
+                            booking_qtys[item.item_id] = {"qty": _bqty(item.qty), "lfm_converted": False, "piece_len": None}
 
                         # Hängepunkt-Pauschale bei Motor-Positionen
                         if is_motor_position(item.description) and hp_art:
@@ -814,7 +865,7 @@ async def import_set_match(
             if pieces is not None:
                 ss.d83_booking_qtys[item_id] = {"qty": float(pieces), "lfm_converted": True, "piece_len": piece_len}
             else:
-                ss.d83_booking_qtys[item_id] = {"qty": float(item.qty), "lfm_converted": False, "piece_len": None}
+                ss.d83_booking_qtys[item_id] = {"qty": _bqty(item.qty), "lfm_converted": False, "piece_len": None}
     _add_optional_ref_bundles(ss, item_id, extra_nums, extra_qtys)
     _learn_article_match(ss, item_id)
     return templates.TemplateResponse(
@@ -847,7 +898,7 @@ async def import_add_match(
         # damit die Position als „zugeordnet" gilt (statt als loses Bundle ohne
         # Haupt-Match, das fälschlich „Nicht zugeordnet" anzeigt).
         ss.matches[item_id] = MatchResult(matched=art, score=99.0, method="manual", confident=True)
-        ss.d83_booking_qtys[item_id] = {"qty": float(qty), "lfm_converted": False, "piece_len": None}
+        ss.d83_booking_qtys[item_id] = {"qty": _bqty(qty), "lfm_converted": False, "piece_len": None}
     else:
         ss.bundles.setdefault(item_id, []).append({"article": art, "qty": qty})
     _add_optional_ref_bundles(ss, item_id, extra_nums, extra_qtys)
@@ -1033,7 +1084,7 @@ async def import_ej_dialog(item_id: str, request: Request):
         "item_id":           item_id,
         "item_desc":         item.description,
         "default_q":         item.description[:60],
-        "default_qty":       float(item.qty),
+        "default_qty":       _bqty(item.qty),
         "results":           [],
         "suggestions":       suggestions,
         "suggestions_error": suggestions_error,
@@ -1192,7 +1243,7 @@ async def import_resource_dialog(item_id: str, request: Request):
         "item_id":        item_id,
         "item_desc":      item.description,
         "suggestions":    suggestions,
-        "default_qty":    float(item.qty),
+        "default_qty":    _bqty(item.qty),
         "search_url":     f"/api/import/resource/search/{item_id}",
         "add_action":     f"/api/import/add-resource/{item_id}",
         "replace_action": replace_action,
@@ -1244,7 +1295,7 @@ async def import_add_resource(
         # Noch keine Haupt-Zuordnung → Ressource wird Haupt-Match (Position gilt als
         # zugeordnet) und wird — wie bei „Ersetzen" — als Mapping gelernt.
         ss.matches[item_id] = MatchResult(matched=res, score=99.0, method="manual", confident=True)
-        ss.d83_booking_qtys[item_id] = {"qty": float(qty), "lfm_converted": False, "piece_len": None}
+        ss.d83_booking_qtys[item_id] = {"qty": _bqty(qty), "lfm_converted": False, "piece_len": None}
         if ss.d83_project:
             item = next((it for it in ss.d83_project.items if it.item_id == item_id), None)
             if item and item.description.strip():
@@ -1759,7 +1810,7 @@ async def _do_create_bg(
                 grp_i = cap_to_gid.get((job_i, g_cap), 0) if g_cap else 0
 
                 bq_i  = ss.d83_booking_qtys.get(item.item_id, {})
-                qty_i = float(bq_i.get("qty", item.qty))
+                qty_i = _bqty(bq_i.get("qty", item.qty))   # nie 0 → EJ verbietet Menge 0
                 book_tasks.append((item, mr.article.nummer, id_st, job_i, grp_i, qty_i))
 
             # Artikel-Bundles (Motor-Hängepunkt-Pauschale, Auto-Extras, manuell
@@ -1792,7 +1843,7 @@ async def _do_create_bg(
                         })
                         continue
                     book_tasks.append((item, bart.nummer, id_st_b, job_i, grp_i,
-                                       float(b.get("qty", 1))))
+                                       _bqty(b.get("qty", 1))))
 
             # Sequenziell mit Progress-Tracking (EJ-Server verträgt keine gleichzeitigen Buchungen)
             cp.step  = "Artikel buchen"
@@ -1994,12 +2045,29 @@ async def _do_create_bg(
                 )
             from matcher import resolve_time_factor as _resolve_tf
             _curves = _db.load_time_factor_curves_db()
+            # Einzelpreis je Buchung aus dem TATSÄCHLICH gebuchten Artikel (Haupt- ODER
+            # Bundle-Artikel) — nicht pauschal vom Haupt-Match, sonst bekämen Bundle-Zeilen
+            # im lokalen Snapshot den Preis des Hauptartikels.
+            _art_obj_by_key: dict = {}
+            for _iid, _mr in ss.matches.items():
+                _a = getattr(_mr, "article", None)
+                if _a and getattr(_a, "ej_id", 0):
+                    _art_obj_by_key[(_iid, int(_a.ej_id))] = _a
+            for _iid, _blist in ss.bundles.items():
+                for _b in _blist:
+                    _a = _b.get("article")
+                    if _a and getattr(_a, "ej_id", 0):
+                        _art_obj_by_key[(_iid, int(_a.ej_id))] = _a
+
+            def _ep_for(item_id, ej_id):
+                a = _art_obj_by_key.get((item_id, int(ej_id or 0)))
+                if not a:
+                    return 0.0
+                return float(getattr(a, "mietpreis", 0) or 0) * _resolve_tf(
+                    _curves, getattr(a, "id_time_factor", 0), einsatztage)
+
             for bk in bookings:
-                mr_bk = ss.matches.get(bk["item_id"])
-                art_bk = getattr(mr_bk, "article", None) if mr_bk else None
-                ep_bk = float(getattr(art_bk, "mietpreis", 0) or 0)
-                if art_bk:
-                    ep_bk *= _resolve_tf(_curves, getattr(art_bk, "id_time_factor", 0), einsatztage)
+                ep_bk = _ep_for(bk["item_id"], bk.get("ej_stock_type_id"))
                 _db.add_project_booking(
                     project_id=project_db_id,
                     item_id=bk["item_id"],
