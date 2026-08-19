@@ -205,6 +205,18 @@ _BOXCORNER_RE = re.compile(
     r'\bbox[\s-]?corner\b|\beckelement\b|\bcorner[\s-]?block\b|\bkonnektor[\s-]?ecke\b',
     re.IGNORECASE,
 )
+# Eindeutige Traversen-Marke/-Serie (Eurotruss/Prolyte/Global Truss/HD-/F-Serie, Holm).
+# Nur damit wird ein Kurztext ohne Traverse-Wort (z.B. "Eckelement") als Traverse
+# behandelt — grenzt gegen LED-Eckmodule ab (die haben keine Truss-Marke).
+_TRAVERSE_STRONG_RE = re.compile(
+    r'\beurotruss\b|\bprolyte\b|global\s*truss|\bhd\s?[34][1-4]\b'
+    r'|\bf3[234]\b|\bf44\b|zweiholm|dreiholm|vierholm|kastentraverse|leitertraverse',
+    re.IGNORECASE,
+)
+# Eck-/Verbinder-Wort im Kurztext (Eckelement, Ecke, Kreuz, T-Stück)
+_CORNER_WORD_RE = re.compile(
+    r'eck\w*|\becke\b|\bkreuz\b|\bt[\s-]?st[üu]ck\b', re.IGNORECASE,
+)
 
 # Touch-Display-Anfrage: Query ist eindeutig ein Display-Gerät
 _DISPLAY_QUERY_RE = re.compile(
@@ -344,22 +356,33 @@ class TraverseInfo:
         return " ".join(parts)
 
 
-def parse_traverse_info(description: str) -> Optional[TraverseInfo]:
-    """Erkennt Traverse-Beschreibungen und extrahiert Holmzahl, Größe, Länge, Farbe."""
-    if not _TRAVERSE_WORD_RE.search(description):
+def parse_traverse_info(description: str, long_text: str = "") -> Optional[TraverseInfo]:
+    """Erkennt Traverse-Beschreibungen und extrahiert Holmzahl, Größe, Länge, Farbe.
+
+    Die Spezifikation (HD-Serie, Länge, Farbe) darf auch aus dem Langtext kommen:
+    GAEB-Kurztexte sind oft nur „Vierholmtraverse", die Details stehen im Langtext
+    (z.B. „z.B. Eurotruss HD34 300cm schwarz"). Der Kurztext steht vorne und hat bei
+    .search() Vorrang; der Langtext füllt nur fehlende Angaben."""
+    text = f"{description}\n{long_text}" if long_text else description
+    # Kurztext hat ein Traverse-Wort ODER: Kurztext ist ein Eck-/Verbinder-Element UND
+    # der (Lang-)Text nennt eine eindeutige Truss-Marke (Eurotruss/HD-Serie/…). Damit
+    # wird "Eckelement" mit Langtext "Eurotruss HD34 2-Weg-Ecke" erkannt, ein LED-
+    # Eckmodul (ohne Truss-Marke) aber NICHT als Traverse behandelt.
+    if not (_TRAVERSE_WORD_RE.search(description)
+            or (_CORNER_WORD_RE.search(description) and _TRAVERSE_STRONG_RE.search(text))):
         return None
 
     # Holmzahl (DE: Punkt/Holm, EN: point/chord)
-    m = _TRAVERSE_POINT_RE.search(description)
+    m = _TRAVERSE_POINT_RE.search(text)
     points = int(next(g for g in m.groups() if g is not None)) if m else None
 
     # Größe in mm
-    sizes = [int(x) for x in _TRAVERSE_SIZE_RE.findall(description)]
+    sizes = [int(x) for x in _TRAVERSE_SIZE_RE.findall(text)]
     # nimm Wert der am nächsten an 290-400mm liegt (ignoriert z.B. "4-Punkt")
     size_mm = next((s for s in sizes if 200 <= s <= 500), None)
 
     # Direkte HD-Nummer (z.B. "HD34" → size=300mm, points=4) als Fallback
-    hd_m = _HDXY_RE.search(description)
+    hd_m = _HDXY_RE.search(text)
     if hd_m:
         if size_mm is None:
             size_mm = {3: 300, 4: 400}.get(int(hd_m.group(1)))
@@ -367,7 +390,7 @@ def parse_traverse_info(description: str) -> Optional[TraverseInfo]:
             points = int(hd_m.group(2))
 
     # Prolyte-Nomenklatur: H30V, H-30D, S36V, X30D etc.
-    prolyte_m = _PROLYTE_RE.search(description)
+    prolyte_m = _PROLYTE_RE.search(text)
     if prolyte_m:
         size_num = int(prolyte_m.group(1))
         type_char = prolyte_m.group(2).lower()
@@ -377,7 +400,7 @@ def parse_traverse_info(description: str) -> Optional[TraverseInfo]:
             points = _PROLYTE_TYPE_TO_POINTS.get(type_char)
 
     # Global Truss: F34, F33, F32, F44 etc.
-    global_m = _GLOBAL_TRUSS_RE.search(description)
+    global_m = _GLOBAL_TRUSS_RE.search(text)
     if global_m:
         size_digit = int(global_m.group(1))
         chord = int(global_m.group(2))
@@ -386,12 +409,20 @@ def parse_traverse_info(description: str) -> Optional[TraverseInfo]:
         if points is None:
             points = chord
 
+    # Deutsche Holmzahl-Wörter (Kurztext ist oft nur "Vierholmtraverse")
+    if points is None:
+        _DE_HOLM = {"zweiholm": 2, "dreiholm": 3, "vierholm": 4}
+        for _w, _p in _DE_HOLM.items():
+            if _w in text.lower():
+                points = _p
+                break
+
     # HB-Rohr direkt am Namen erkennen → 2-Holm auch ohne "2-Punkt"-Angabe
-    if _HB_ROHR_RE.search(description) and points is None:
+    if _HB_ROHR_RE.search(text) and points is None:
         points = 2
 
     # Stücklänge: erst in Metern suchen, dann in Zentimetern
-    lm = _TRAVERSE_LEN_RE.search(description)
+    lm = _TRAVERSE_LEN_RE.search(text)
     if lm:
         raw = (lm.group(1) or lm.group(2) or "").replace(",", ".")
         try:
@@ -403,14 +434,14 @@ def parse_traverse_info(description: str) -> Optional[TraverseInfo]:
 
     # cm-Länge als Fallback (z.B. "300cm" → 3.0m, nicht < 50cm Zubehör)
     if length_m is None:
-        cm_lm = _TRAVERSE_CM_RE.search(description)
+        cm_lm = _TRAVERSE_CM_RE.search(text)
         if cm_lm:
             cm_val = int(cm_lm.group(1))
             if 50 <= cm_val <= 600:
                 length_m = cm_val / 100
 
     # Farbe
-    cm = _TRAVERSE_COLOR_RE.search(description)
+    cm = _TRAVERSE_COLOR_RE.search(text)
     color = cm.group(0).lower() if cm else None
 
     return TraverseInfo(points=points, size_mm=size_mm,
@@ -1016,7 +1047,7 @@ class UnifiedMatcher:
         _q_combined = f"{query} {query_de} {_cat_str}".lower()
 
         led_wall       = is_led_wall(query)
-        traverse       = parse_traverse_info(query)
+        traverse       = parse_traverse_info(query, long_text)
         is_verkabelung = is_verkabelung_position(query)
         is_tcorner     = is_t_corner(query)
         is_motor       = is_motor_position(query)
@@ -1068,6 +1099,24 @@ class UnifiedMatcher:
         # Metallrohre (Alu/Stahl) sind keine Traversen → Traverse-Scoring deaktivieren
         if traverse and is_metal_pipe:
             traverse = None
+
+        # ── Ecken-Bauform & Way-Count (auch aus dem Langtext) ────────────────────
+        # GAEB-Kurztext ist oft nur "Eckelement"; die Bauform ("2-Weg-Ecke / T-Stück /
+        # X 4Weg / Boxcorner") steht im Langtext. Nur im Traversen-Kontext relevant.
+        _corner_txt  = f"{query} {query_de} {long_text or ''}".lower()
+        _wants_box   = bool(re.search(r'\bbox', _corner_txt))
+        _corner_ways = None
+        if re.search(r'\b4[\s-]?weg|\bx[\s-]?ecke\b|\bkreuz\b|\b4[\s-]?punkt', _corner_txt):
+            _corner_ways = 4
+        elif re.search(r'\b3[\s-]?weg|\bt[\s-]?st[üu]ck|\bt[\s-]?ecke|\bt[\s-]?corner|\b3[\s-]?punkt', _corner_txt):
+            _corner_ways = 3
+        elif re.search(r'\b2[\s-]?weg|90\s*°|90\s*grad|\bl[\s-]?ecke\b|\bl[\s-]?90\b|\bwinkel|\b2[\s-]?punkt', _corner_txt):
+            _corner_ways = 2
+        if traverse and _corner_ways == 3:          # T-Stück/3-Weg → T-Corner-Modus
+            is_tcorner = True
+        if traverse and (_corner_ways in (2, 4)
+                         or re.search(r'\becke\b|\beck\w*element|\bcorner\b', _corner_txt)):
+            is_boxcorner = True
 
         # Touch-Display-Kontext aus Query ableiten wenn kein Kategoriepfad vorhanden
         if _DISPLAY_QUERY_RE.search(query):
@@ -1222,11 +1271,14 @@ class UnifiedMatcher:
                     if pidx is not None and pidx not in mapping_boosts:
                         mapping_boosts[pidx] = 0
 
-        # 1h. Metall-Rohr-Anfragen: echte Rohr-Artikel vorab sichern
+        # 1h. Metall-Rohr-Anfragen: echte Pipe-/Rohr-Artikel vorab sichern (sonst fallen
+        # sie vor dem Scoring raus — engl. "Pipe" hat kaum Fuzzy-Ähnlichkeit zu "Stahlrohr").
         if is_metal_pipe:
             for art in self.articles:
                 bez_l = art.bezeichnung.lower()
-                if "rohr" in bez_l and any(m in bez_l for m in ("alu", "aluminium", "stahl", "steel")):
+                wg_l  = art.warengruppe.lower()
+                if (("pipe" in bez_l or "pipe" in wg_l or "rohr" in bez_l)
+                        and "hb-rohr" not in bez_l):
                     pidx = self._num_to_idx.get(art.nummer)
                     if pidx is not None and pidx not in mapping_boosts:
                         mapping_boosts[pidx] = 0
@@ -1503,6 +1555,53 @@ class UnifiedMatcher:
                         else:
                             # Nicht-T-Corner-Artikel bei T-Corner-Position abwerten
                             sc -= 15
+                    elif is_boxcorner:
+                        # ── Ecken-/Verbindungselement (L 2-Weg / X 4-Weg / Boxcorner) ──
+                        _al = art_lower
+                        _a_box = ("boxcorner" in _al or "box corner" in _al or "box-corner" in _al)
+                        _a_l90 = ("l90" in _al or "l-90" in _al or "2-weg" in _al
+                                  or "2weg" in _al or "l-ecke" in _al or "winkelecke" in _al)
+                        _a_x   = ("x-ecke" in _al or "x ecke" in _al or "4-weg" in _al
+                                  or "4weg" in _al or "kreuz" in _al)
+                        _a_t   = ("t-stück" in _al or "t stück" in _al or "3-weg" in _al
+                                  or "3weg" in _al or "t-ecke" in _al)
+                        _a_corner = (_a_box or _a_l90 or _a_x or _a_t
+                                     or "ecke" in _al or "eckelement" in _al or "corner" in _al)
+                        if not _a_corner:
+                            sc -= 25   # gerades Traversenstück bei Eck-Anfrage → falsch
+                        else:
+                            # HD-Serie muss passen (wie bei geraden Stücken)
+                            if not traverse.is_hb_rohr:
+                                series_l = traverse.hd_series.lower()
+                                if series_l in _al:
+                                    sc += 20
+                                elif len(series_l) >= 3 and f"hd{series_l[2]}" in _al:
+                                    sc += 8
+                            # Way-Count matchen. 2-Weg bevorzugt die L-/90°-Ecke; Boxcorner
+                            # nur wenn "box" explizit gefordert (sonst leicht abwerten).
+                            if _corner_ways == 2:
+                                if _a_l90 and not _a_box:
+                                    sc += 30
+                                elif _a_box:
+                                    sc += 20 if _wants_box else -12
+                                if _a_t or _a_x:
+                                    sc -= 30
+                            elif _corner_ways == 4:
+                                if _a_x:
+                                    sc += 30
+                                elif _a_t or (_a_l90 and not _a_box):
+                                    sc -= 30
+                                elif _a_box:
+                                    sc -= 10
+                            else:
+                                sc += 20   # kein Way-Count erkannt → generischer Eck-Boost
+                                if _a_box:
+                                    sc += 10 if _wants_box else -10
+                            # Farbe
+                            if norm_color and norm_color in _al:
+                                sc += 10
+                            elif norm_color:
+                                sc -= 8
                     else:
                         # ── Laufmeter-Traverse-Position ──────────────────────
                         if traverse.is_hb_rohr:
@@ -1579,23 +1678,60 @@ class UnifiedMatcher:
                             elif abs(art_hub - motor_hub_req) <= 6:
                                 sc += 5
 
-                # Metall-Rohr: echte Rohr-Artikel boosten, Traverse/Rigging stark abwerten
+                # Metall-Rohr / Pipe: echte Pipe-/Rohr-Artikel boosten (Ø + Länge + Material
+                # matchen), Vollmaterial-Stangen (Ballast) und Traverse/Rigging abwerten.
+                # Wichtig: die Artikel heißen englisch "Pipe" (nicht "Rohr").
                 if is_metal_pipe:
                     bez_l = item.bezeichnung.lower()
                     wg_l  = item.warengruppe.lower()
+                    _pipe_txt = f"{query} {long_text or ''}".lower()
+                    _is_solid = "vollmaterial" in bez_l or "vierkant" in bez_l
+                    _is_pipe_art = (("pipe" in bez_l or "rohr" in bez_l)
+                                    and "hb-rohr" not in bez_l)
                     if "hb-rohr" in bez_l:
                         sc -= 30
                         _bd.append((-30, "HB-Rohr ist kein Metallrohr"))
-                    elif "rohr" in bez_l and any(m in bez_l for m in
-                            ("alu", "aluminium", "stahl", "steel")):
-                        sc += 22
-                        _bd.append((22, "Alu/Stahl-Rohr (Metallrohr-Anfrage)"))
+                    elif _is_pipe_art and not _is_solid:
+                        sc += 26
+                        _bd.append((26, "Pipe/Rohr (Metallrohr-Anfrage)"))
+                        # "Pipe Stahl" wird NICHT eingesetzt → deutlich abwerten (überwiegt
+                        # auch den Fuzzy-Bonus, den "Stahl" aus "Stahlrohr" bekommt). Es
+                        # kommen nur die normalen (Alu-)Pipes zum Einsatz.
+                        if "stahl" in bez_l:
+                            sc -= 60
+                            _bd.append((-60, "Pipe Stahl (nicht im Einsatz)"))
+                        # Farbe aus Anfrage/Langtext (schwarz/silber)
+                        if "schwarz" in _pipe_txt or "black" in _pipe_txt:
+                            if "schwarz" in bez_l or "black" in bez_l:
+                                sc += 10
+                                _bd.append((10, "Farbe schwarz"))
+                            elif "silber" in bez_l or "silver" in bez_l:
+                                sc -= 6
+                        elif "silber" in _pipe_txt or "silver" in _pipe_txt:
+                            if "silber" in bez_l or "silver" in bez_l:
+                                sc += 10
+                                _bd.append((10, "Farbe silber"))
+                        # Durchmesser (z.B. 50mm) + Länge (z.B. 600cm) aus Anfrage/Langtext
+                        _mm = re.search(r'(\d{2,3})\s*mm', _pipe_txt)
+                        _cm = re.search(r'(\d{2,4})\s*cm', _pipe_txt)
+                        _bezc = bez_l.replace(" ", "")
+                        if _mm and f"{_mm.group(1)}mm" in _bezc:
+                            sc += 12
+                            _bd.append((12, f"Ø {_mm.group(1)}mm"))
+                        if _cm and (f"{_cm.group(1)}cm" in _bezc
+                                    or f"{int(_cm.group(1)):03d}cm" in _bezc):
+                            sc += 14
+                            _bd.append((14, f"Länge {_cm.group(1)}cm"))
+                    elif _is_solid and _is_pipe_art:
+                        sc -= 20
+                        _bd.append((-20, "Vollmaterial/Vierkant-Stange (kein Rohr)"))
                     elif any(kw in wg_l for kw in ("traverse", "truss", "rigging")):
                         sc -= 30
                         _bd.append((-30, f"Traverse/Rigging bei Metallrohr-Anfrage ({item.warengruppe})"))
 
-                # Boxcorner: Query sucht explizit ein Eck-Element → boosten
-                if is_boxcorner:
+                # Boxcorner-Fallback: nur wenn NICHT als Traverse erkannt (sonst
+                # übernimmt der Ecken-Zweig oben mit Way-Count/Farbe/L90-vs-Box).
+                if is_boxcorner and not traverse:
                     art_lower_bc = item.bezeichnung.lower()
                     _corner_kws = ("boxcorner", "eckelement", "eckverbinder",
                                    "winkel", "l-ecke", "l90", "90°", "90 grad", "corner 90",

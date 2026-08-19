@@ -435,20 +435,17 @@
           </div>
         </div>
 
-        <!-- Veranstaltung -->
+        <!-- Veranstaltung (durchsuchbar, rein clientseitig – keine API-Abfrage) -->
         <div class="form-row">
           <label>Veranstaltung</label>
-          <select name="id_event_calendar" id="imp-event-cal" onchange="impOnEventSelect(this)">
-            <option value="0" {% if not S.d83_draft_setup.get('id_event_calendar') %}selected{% endif %}>— keine —</option>
-            {% for ev in events %}
-            <option value="{{ ev.id }}"
-                    data-start="{{ ev.start }}"
-                    data-end="{{ ev.end }}"
-                    {% if S.d83_draft_setup.get('id_event_calendar')|string == ev.id|string %}selected{% endif %}>
-              {{ ev.start[:10] if ev.start else '' }} – {{ ev.end[:10] if ev.end else '' }} &middot; {{ ev.name }}
-            </option>
-            {% endfor %}
-          </select>
+          <div class="ac-wrap">
+            <input type="text" id="imp-event-search" placeholder="Veranstaltung suchen … (leer = keine)"
+                   oninput="impSearchEvent(this)" onfocus="impSearchEvent(this)" autocomplete="off">
+            <div id="imp-event-list" class="ac-list"></div>
+          </div>
+          <input type="hidden" name="id_event_calendar" id="imp-event-cal"
+                 value="{{ S.d83_draft_setup.get('id_event_calendar') or 0 }}">
+          <div id="imp-event-sel" class="ac-selected"></div>
         </div>
 
         <!-- Kunde -->
@@ -1007,13 +1004,63 @@ function impSelectProject(id, num, name, start, end) {
   if (end)   document.getElementById('imp-end').value   = end;
 }
 
-// ── Veranstaltungs-Dropdown ───────────────────────────────────────────────────
-function impOnEventSelect(sel) {
-  const opt = sel.options[sel.selectedIndex];
-  const start = opt.dataset.start, end = opt.dataset.end;
-  if (start) document.getElementById('imp-start').value = start;
-  if (end)   document.getElementById('imp-end').value = end;
+// ── Veranstaltung (durchsuchbar, clientseitig – keine API-Abfrage) ─────────────
+// Von der API geladene Veranstaltungen; wird lokal gefiltert (kein Request).
+window.impEventData = [
+{%- for ev in events %}
+  {"id": {{ ev.id|tojson }}, "start": {{ (ev.start or '')|tojson }}, "end": {{ (ev.end or '')|tojson }}, "name": {{ (ev.name or '')|tojson }}}{{ "," if not loop.last else "" }}
+{%- endfor %}
+];
+function _impEventLabel(e) {
+  var s = e.start ? e.start.slice(0, 10) : '', en = e.end ? e.end.slice(0, 10) : '';
+  return ((s || en) ? (s + ' – ' + en + ' · ') : '') + (e.name || '');
 }
+function impSearchEvent(inputEl) {
+  var q = (inputEl.value || '').trim().toLowerCase();
+  var list = document.getElementById('imp-event-list');
+  var data = window.impEventData || [];
+  list.innerHTML = '';
+  var none = document.createElement('div');
+  none.className = 'ac-item'; none.textContent = '— keine —';
+  none.addEventListener('click', impClearEvent);
+  list.appendChild(none);
+  var matches = (q ? data.filter(function (e) {
+      return ((e.name || '') + ' ' + (e.start || '') + ' ' + (e.end || '')).toLowerCase().indexOf(q) !== -1;
+    }) : data).slice(0, 60);
+  matches.forEach(function (e) {
+    var label = _impEventLabel(e);
+    var row = document.createElement('div');
+    row.className = 'ac-item'; row.textContent = label;
+    row.addEventListener('click', function () { impPickEvent(e.id, label, e.start || '', e.end || ''); });
+    list.appendChild(row);
+  });
+  list.classList.add('open');
+}
+function impPickEvent(id, label, start, end) {
+  document.getElementById('imp-event-cal').value = id || 0;
+  document.getElementById('imp-event-search').value = id ? label : '';
+  document.getElementById('imp-event-sel').textContent = id ? ('✓ ' + label) : '';
+  if (start) { var s = document.getElementById('imp-start'); if (s) s.value = start; }
+  if (end)   { var en = document.getElementById('imp-end'); if (en) en.value = end; }
+  document.getElementById('imp-event-list').classList.remove('open');
+}
+function impClearEvent() {
+  document.getElementById('imp-event-cal').value = 0;
+  document.getElementById('imp-event-search').value = '';
+  document.getElementById('imp-event-sel').textContent = '';
+  document.getElementById('imp-event-list').classList.remove('open');
+}
+// Auswahl aus Entwurf wiederherstellen (Label per ID aus den geladenen Daten holen).
+window.addEventListener('DOMContentLoaded', function () {
+  var idc = document.getElementById('imp-event-cal');
+  if (!idc || parseInt(idc.value, 10) <= 0) return;
+  var e = (window.impEventData || []).find(function (x) { return String(x.id) === String(idc.value); });
+  if (e) {
+    var label = _impEventLabel(e);
+    document.getElementById('imp-event-search').value = label;
+    document.getElementById('imp-event-sel').textContent = '✓ ' + label;
+  }
+});
 
 // Klick außerhalb schließt Dropdowns
 document.addEventListener('click', function(e) {

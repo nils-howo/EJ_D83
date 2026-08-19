@@ -1,1 +1,7 @@
 .venv\Scripts\python -m uvicorn server:app --host 127.0.0.1 --port 8090 --reload
+
+
+
+git add .
+git commit -m "Kurze Beschreibung was du geändert hast"
+git push
