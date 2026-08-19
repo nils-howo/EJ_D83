@@ -1201,6 +1201,19 @@ document.addEventListener('htmx:afterSettle', function(evt) {
     _impApplyFilter();
   }
 });
+
+// Sidebar-Buttons (Projekt anlegen / Zwischenspeichern) liegen AUSSERHALB von
+// #import-groups und werden serverseitig per {% if not S.d83_project %}disabled{% endif %}
+// gesetzt. Nach einem HTMX-Upload wird nur #import-groups nachgeladen → die Buttons
+// blieben sonst ausgegraut, bis man /import neu lädt. Nach jedem Settle den Zustand an
+// „Import geladen?" (Marker in #import-groups vorhanden) angleichen.
+document.addEventListener('htmx:afterSettle', function() {
+  var loaded = !!document.getElementById('import-std-job-data');
+  var cb = document.getElementById('imp-create-btn');
+  var sb = document.getElementById('imp-draft-save-btn');
+  if (cb) cb.disabled = !loaded;
+  if (sb) sb.disabled = !loaded;
+});
 </script>
 
 </body>
