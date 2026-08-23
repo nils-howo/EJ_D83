@@ -1,5 +1,6 @@
 """Projektliste + D84-Export + Projektübersicht aus gespeicherten Projekten."""
 import asyncio
+import json
 import logging
 import os
 import pathlib
@@ -8,10 +9,12 @@ import threading
 import xml.etree.ElementTree as ET
 
 import pyodbc
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
 import db as _db
+import excel_export as _xlout
+import excel_parser as _xl
 from state import get_session, templates
 from routes.import_ import _clean_gaeb_for_export, _import_gaeb_groups
 
@@ -34,6 +37,56 @@ _OVERVIEW_CACHE_MAX = 12
 _OVERVIEW_CACHE_LOCK = threading.Lock()
 
 
+def _excel_scenarios(project_id: int) -> list[str]:
+    """Szenario-Namen eines Excel-Projekts (eine je aktiver Mengenspalte).
+
+    Mehrere Szenarien treffen beim Zurückschreiben dieselben Zellen — deshalb wird je
+    Export genau eines geschrieben. Leere Liste = nur ein Szenario, keine Auswahl nötig.
+    """
+    try:
+        layout = _project_excel_layout(project_id)
+    except Exception:
+        return []
+    names: list[str] = []
+    for sl in layout.sheets:
+        if not (sl.enabled and sl.header_row):
+            continue
+        act = sl.roles.active_qty()
+        if len(act) < 2:
+            continue
+        for q in act:
+            name = _xl.scenario_name(q)
+            if name not in names:
+                names.append(name)
+    return names
+
+
+def _source_kind(project_id: int) -> str:
+    """"gaeb" oder "excel" — bestimmt, wie die gespeicherte Quelldatei gelesen und
+    wie das Angebot zurückgeschrieben wird."""
+    proj = _db.get_project(project_id)
+    return (proj or {}).get("source_kind") or "gaeb"
+
+
+def _project_excel_layout(project_id: int):
+    """Excel-Layout eines Projekts. Beim Hochladen wird state_json geleert, deshalb
+    kommt das Layout dann über den Fingerprint aus den gespeicherten Layout-Profilen."""
+    with _db.get_conn() as conn:
+        row = conn.execute("SELECT state_json FROM projects WHERE id=?", (project_id,)).fetchone()
+    if row and row["state_json"]:
+        try:
+            lay = (json.loads(row["state_json"]) or {}).get("excel_layout")
+            if lay:
+                return _xl.layout_from_dict(lay)
+        except (ValueError, TypeError):
+            pass
+    # Fallback: aus der Quelldatei neu erkennen und mit dem gemerkten Profil überlagern
+    gaeb_bytes, _ = _db.get_project_gaeb(project_id)
+    probe = _xl.probe_workbook(gaeb_bytes or b"")
+    saved = _db.get_excel_layout(probe.fingerprint)
+    return _xl.merge_profile(probe, saved["layout"]) if saved else probe.layout
+
+
 def _overview_data(project_id: int) -> dict:
     """Geparste GAEB-Daten eines Projekts (gecacht, größenbegrenzt):
     {"groups": [...], "preliminaries": [...]} — Vorbemerkungen = projektweite
@@ -46,22 +99,25 @@ def _overview_data(project_id: int) -> dict:
     preliminaries: list[dict] = []
     if gaeb_bytes:
         try:
-            import tempfile
             from gaeb_parser import parse_gaeb
-            with tempfile.NamedTemporaryFile(suffix=".x83", delete=False) as tf:
-                tf.write(gaeb_bytes)
-                tmp = tf.name
-            try:
-                gaeb_proj = parse_gaeb(tmp)
-            finally:
-                pathlib.Path(tmp).unlink(missing_ok=True)
+            if _source_kind(project_id) == "excel":
+                gaeb_proj = _xl.parse_excel(gaeb_bytes, _project_excel_layout(project_id))
+            else:
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix=".x83", delete=False) as tf:
+                    tf.write(gaeb_bytes)
+                    tmp = tf.name
+                try:
+                    gaeb_proj = parse_gaeb(tmp)
+                finally:
+                    pathlib.Path(tmp).unlink(missing_ok=True)
             groups = _import_gaeb_groups(gaeb_proj, level=0, alt_active={})
             preliminaries = [
                 {"title": r.title, "long_text": r.long_text, "images": r.images}
                 for r in (gaeb_proj.preliminaries or [])
             ]
         except Exception as _e:
-            logging.error("project_overview: GAEB-Parse fehlgeschlagen: %s", _e)
+            logging.error("project_overview: Parsen der Quelldatei fehlgeschlagen: %s", _e)
     data = {"groups": groups, "preliminaries": preliminaries}
     # FIFO-Begrenzung: ältesten Eintrag verwerfen, wenn voll. Der Lock schützt die
     # Iteration (next(iter(...))) gegen gleichzeitige Mutationen aus anderen
@@ -91,7 +147,7 @@ def _extract_bidder_fields(gaeb_bytes: bytes) -> tuple[list[dict], list[dict]]:
     try:
         root = ET.fromstring(gaeb_bytes.decode("utf-8", errors="replace").encode("utf-8"))
     except Exception:
-        return [], []
+        return [], []      # keine XML-Quelle (z.B. Excel) → keine Bieter-Textfelder
     m = re.search(r"\{(.+?)\}", root.tag)
     ns = m.group(1) if m else ""
     def tag(n): return f"{{{ns}}}{n}" if ns else n
@@ -208,12 +264,26 @@ async def export_dialog(project_id: int, request: Request):
     gewählt werden, was eingetragen wird (automatisch / fester Text / leer)."""
     gaeb_bytes, _ = _db.get_project_gaeb(project_id)
     if not gaeb_bytes:
-        return HTMLResponse('<div class="error-msg">Keine GAEB-Datei für dieses Projekt.</div>')
-    ht_labels, single_fields = _extract_bidder_fields(gaeb_bytes)
+        return HTMLResponse('<div class="error-msg">Keine Quelldatei für dieses Projekt.</div>')
+    excel = _source_kind(project_id) == "excel"
+    # Bieter-Antwortfelder sind ein GAEB-Konstrukt — bei Excel bleibt die Liste leer,
+    # der Dialog zeigt dann nur den Export-Knopf.
+    ht_labels, single_fields = ([], []) if excel else _extract_bidder_fields(gaeb_bytes)
+    # Mehrere Szenarien schreiben in dieselbe Preisspalte — pro Export eines auswählen.
+    scenarios = _excel_scenarios(project_id) if excel else []
     return templates.TemplateResponse(request, "partials/export_dialog.html", {
         "project_id":    project_id,
         "ht_labels":     ht_labels,
         "single_fields": single_fields,
+        "scenarios":     scenarios,
+        "post_url":      f"/api/projects/{project_id}/"
+                         + ("export-excel" if excel else "export-d84"),
+        "title":         "Excel-Export — Preise zurückschreiben" if excel
+                         else "D84-Export — Bieter-Angaben",
+        "empty_note":    ("Die Einzelpreise werden in die hochgeladene Excel-Datei "
+                          "geschrieben; Formatierung und Formeln bleiben erhalten.") if excel
+                         else ("Diese Ausschreibung hat keine Bieter-Antwortfelder. "
+                               "Der Export enthält nur die Preise."),
     })
 
 
@@ -345,6 +415,201 @@ def _learn_from_ej(cur, bookings: list[dict],
     return learned
 
 
+def _export_costs(ss, project_id: int, proj: dict) -> dict:
+    """Buchungen, Gruppenkosten und EJ-Learning — gemeinsame Basis für den
+    GAEB-X84- und den Excel-Export. Verbatim aus project_export_d84 gehoben."""
+    # Kosten werden ausschließlich über die beim Import angelegten Jobs aggregiert,
+    # nicht über das ganze Projekt — sonst würden im Bestehend-Projekt-Modus fremde
+    # Jobs mitgerechnet.
+    ej_project_id = int(proj.get("ej_project_id") or 0)
+    job_ids = [int(x) for x in (proj.get("ej_job_ids") or "").split(",") if x.strip().isdigit()]
+    if not job_ids:
+        raise HTTPException(400, "Projekt hat keine gespeicherten Job-IDs — bitte neu importieren.")
+    bookings = _db.get_project_bookings(project_id)
+
+    # item_id → ej_group_id (IdStockType2JobGroup)
+    group_by_item: dict[str, int] = {
+        b["item_id"]: int(b["ej_group_id"])
+        for b in bookings
+        if b.get("ej_group_id")
+    }
+
+    # item_id → bestimmte (gebuchte) Menge — erste Buchung je Position (= Haupt-Match).
+    # Für offene Ausschreibungspositionen (Menge 0, z.B. Spesen/Hotel/Personaltage)
+    # wird diese selbst festgelegte Menge in die D84 (<Qty>) übernommen, statt der 0.
+    qty_by_item: dict[str, float] = {}
+    for b in bookings:
+        iid = b.get("item_id")
+        if iid and iid not in qty_by_item:
+            try:
+                qty_by_item[iid] = float(b.get("qty") or 0)
+            except (TypeError, ValueError):
+                pass
+
+    # EJ-DB: Gruppenkosten lesen
+    # Artikel-Kosten pro Gruppe: SUM(Anzahl × Preis) aller Artikel in der Gruppe
+    # Personal-Kosten pro Gruppe: SUM(TotalPrice) aller Ressourcen in der Gruppe
+    group_art_cost:  dict[int, float] = {}
+    group_pers_cost: dict[int, float] = {}
+
+    cn = pyodbc.connect(ss.ej_db_conn)
+    try:
+        cur = cn.cursor()
+
+        # Aggregiert wird über alle Jobs des EJ-Projekts, nicht über die beim Import
+        # angelegte Job-Liste. Grund: Gruppen dürfen in Easyjob nachträglich in einen
+        # anderen Job verschoben werden — mit einem Job-Filter wären ihre Kosten dann
+        # verloren und der Einheitspreis 0. Fremde Gruppen desselben Projekts werden
+        # zwar mitsummiert, aber niemals abgefragt: nachgesehen wird ausschließlich
+        # unter den IdStockType2JobGroup aus project_bookings (Gruppen-IDs sind
+        # EJ-weit eindeutig, Verwechslung ausgeschlossen).
+        cur.execute(
+            """
+            SELECT s2j.IdStockType2JobGroup,
+                   SUM(s2j.Factor * s2j.TimeFactor * COALESCE(s2j.RentalPrice, s2j.BasePrice, 0)) AS GruppenKosten
+            FROM StockType2Job s2j
+            JOIN Job j ON j.IdJob = s2j.IdJob
+            WHERE j.IdProject = ?
+              AND s2j.IdStockType2JobGroup IS NOT NULL
+              AND s2j.IdStockType2JobGroup > 0
+            GROUP BY s2j.IdStockType2JobGroup
+            """,
+            ej_project_id,
+        )
+        for r in cur.fetchall():
+            group_art_cost[int(r[0])] = float(r[1] or 0)
+
+        cur.execute(
+            """
+            SELECT rfa.IdStockType2JobGroup,
+                   SUM(rfa.TotalPrice) AS PersKosten
+            FROM ResourceFunctionAllocation rfa
+            JOIN Job j ON j.IdJob = rfa.IdJob
+            WHERE j.IdProject = ?
+              AND rfa.IdStockType2JobGroup IS NOT NULL
+              AND rfa.IdStockType2JobGroup > 0
+            GROUP BY rfa.IdStockType2JobGroup
+            """,
+            ej_project_id,
+        )
+        for r in cur.fetchall():
+            group_pers_cost[int(r[0])] = float(r[1] or 0)
+
+        # Gruppenbezeichnungen: "[01.01.01] Beschreibung" → OZ → IdStockType2JobGroup
+        # Notnagel für Positionen ohne Buchung in project_bookings. Bricht, sobald
+        # jemand die Gruppe in Easyjob umbenennt — der Hauptweg über die gespeicherte
+        # Gruppen-ID ist davon unabhängig.
+        cur.execute(
+            """
+            SELECT g.Caption, g.IdStockType2JobGroup
+            FROM StockType2JobGroup g
+            JOIN Job j ON j.IdJob = g.IdJob
+            WHERE j.IdProject = ?
+            """,
+            ej_project_id,
+        )
+        oz_to_group: dict[str, int] = {}
+        for r in cur.fetchall():
+            cap = r[0] or ""
+            if cap.startswith('[') and ']' in cap:
+                oz = cap[1:cap.index(']')].strip()
+                if oz:
+                    oz_to_group[oz] = int(r[1])
+
+        # ── Learning: in EJ getauschte Artikel/Ressourcen als Mapping übernehmen ──
+        _articles = _db.load_articles_db()
+        num_by_ej_id = {int(a["ej_id"]): a["nummer"] for a in _articles if a.get("ej_id")}
+        name_by_num  = {a["nummer"]: (a.get("bezeichnung") or a["nummer"])
+                        for a in _articles if a.get("nummer")}
+        res_name_by_id = {
+            int(p["id"]): (p.get("funktion") or p.get("satzname") or str(p["id"]))
+            for p in _db.load_personal_db() if p.get("id")
+        }
+        try:
+            learned = _learn_from_ej(cur, bookings, num_by_ej_id, res_name_by_id, name_by_num)
+        except Exception as _le:
+            logging.error("Export-Learning fehlgeschlagen: %s", _le)
+            learned = []
+    except pyodbc.Error as _dbe:
+        logging.error("Export: EJ-Kostenabfrage fehlgeschlagen: %s", _dbe)
+        raise HTTPException(
+            status_code=502,
+            detail="EJ-Datenbank nicht erreichbar — Kostenabfrage fehlgeschlagen, Export abgebrochen.",
+        )
+    finally:
+        cn.close()
+
+    # Im Modus "positions" ist jede EJ-Gruppe genau eine LV-Position (1:1) — dann ist
+    # der EP schlicht Gruppenkosten ÷ Menge. Im Modus "groups" teilen sich mehrere
+    # Positionen eine Gruppe; dann muss die Gruppensumme auf sie verteilt werden,
+    # sonst bekäme jede Position die ganze Gruppe und die Angebotssumme wäre um den
+    # Faktor "Positionen je Gruppe" zu hoch.
+    items_per_group: dict[int, list[str]] = {}
+    item_cost:       dict[str, float]     = {}
+    for b in bookings:
+        gid = int(b.get("ej_group_id") or 0)
+        iid = b.get("item_id") or ""
+        if not iid:
+            continue
+        if gid:
+            sib = items_per_group.setdefault(gid, [])
+            if iid not in sib:
+                sib.append(iid)
+        try:
+            item_cost[iid] = item_cost.get(iid, 0.0) +                 float(b.get("qty") or 0) * float(b.get("unit_price") or 0)
+        except (TypeError, ValueError):
+            pass
+    shared = sum(1 for v in items_per_group.values() if len(v) > 1)
+    if shared:
+        logging.info("export: %d EJ-Gruppen enthalten mehrere Positionen — "
+                     "Gruppenkosten werden anteilig verteilt", shared)
+
+    return {
+        "job_ids": job_ids, "bookings": bookings,
+        "group_by_item": group_by_item, "qty_by_item": qty_by_item,
+        "group_art_cost": group_art_cost, "group_pers_cost": group_pers_cost,
+        "oz_to_group": oz_to_group, "learned": learned,
+        "items_per_group": items_per_group, "item_cost": item_cost,
+        "shared_groups": shared,
+    }
+
+
+def _shared_group_note(costs: dict) -> list[str]:
+    """Hinweis, wenn sich Positionen eine EJ-Gruppe teilen (Import-Modus „Gruppen")."""
+    n = costs.get("shared_groups") or 0
+    if not n:
+        return []
+    return [f"{n} Easyjob-Gruppe(n) enthalten mehrere LV-Positionen — die Gruppenkosten "
+            f"wurden anteilig auf sie verteilt, gewichtet nach den gebuchten Kosten. "
+            f"Positionsgenaue Preise gibt es nur, wenn im Modus 'Positionen' "
+            f"importiert wurde (dann ist jede Gruppe genau eine Position)."]
+
+
+def _export_ep(costs: dict, item_id: str, oz: str, qty: float) -> float:
+    """Einheitspreis einer Position: Kosten ihrer EJ-Gruppe (Artikel + Personal)
+    ÷ LV-Menge. Ohne Gruppe 0 — dann steht kein Preis im Angebot.
+
+    Enthält die Gruppe mehrere Positionen (Import-Modus „Gruppen"), wird die
+    Gruppensumme anteilig verteilt — gewichtet nach den beim Import gebuchten Kosten
+    der jeweiligen Position. So bleibt die Angebotssumme gleich der Gruppensumme.
+    Bei 1:1 (Modus „Positionen") ist der Anteil 1 und die Rechnung unverändert.
+    """
+    grp_id = costs["group_by_item"].get(item_id, 0) or costs["oz_to_group"].get(oz, 0)
+    if not grp_id:
+        return 0.0
+    total = (costs["group_art_cost"].get(grp_id, 0.0)
+             + costs["group_pers_cost"].get(grp_id, 0.0))
+
+    siblings = costs.get("items_per_group", {}).get(grp_id) or []
+    if len(siblings) > 1:
+        weights = {i: costs.get("item_cost", {}).get(i, 0.0) for i in siblings}
+        wsum    = sum(weights.values())
+        # Ohne belastbare Gewichte (alle Preise 0) gleichmäßig aufteilen
+        share   = (weights.get(item_id, 0.0) / wsum) if wsum > 0 else 1.0 / len(siblings)
+        total  *= share
+
+    return round(total / qty, 3) if qty else 0.0
+
 @router.post("/api/projects/{project_id}/export-d84")
 async def project_export_d84(project_id: int, request: Request):
     ss = get_session(request.session)
@@ -381,115 +646,16 @@ async def project_export_d84(project_id: int, request: Request):
     if not ej_project_id:
         raise HTTPException(400, "Projekt hat keine EasyJob-Projekt-ID")
 
-    # Kosten werden ausschließlich über die beim Import angelegten Jobs aggregiert,
-    # nicht über das ganze Projekt — sonst würden im Bestehend-Projekt-Modus fremde
-    # Jobs mitgerechnet.
-    job_ids = [int(x) for x in (proj.get("ej_job_ids") or "").split(",") if x.strip().isdigit()]
-    if not job_ids:
-        raise HTTPException(400, "Projekt hat keine gespeicherten Job-IDs — bitte neu importieren.")
-    job_ph = ",".join("?" for _ in job_ids)
-
-    bookings = _db.get_project_bookings(project_id)
-
-    # item_id → ej_group_id (IdStockType2JobGroup)
-    group_by_item: dict[str, int] = {
-        b["item_id"]: int(b["ej_group_id"])
-        for b in bookings
-        if b.get("ej_group_id")
-    }
-
-    # item_id → bestimmte (gebuchte) Menge — erste Buchung je Position (= Haupt-Match).
-    # Für offene Ausschreibungspositionen (Menge 0, z.B. Spesen/Hotel/Personaltage)
-    # wird diese selbst festgelegte Menge in die D84 (<Qty>) übernommen, statt der 0.
-    qty_by_item: dict[str, float] = {}
-    for b in bookings:
-        iid = b.get("item_id")
-        if iid and iid not in qty_by_item:
-            try:
-                qty_by_item[iid] = float(b.get("qty") or 0)
-            except (TypeError, ValueError):
-                pass
-
-    # EJ-DB: Gruppenkosten lesen
-    # Artikel-Kosten pro Gruppe: SUM(Anzahl × Preis) aller Artikel in der Gruppe
-    # Personal-Kosten pro Gruppe: SUM(TotalPrice) aller Ressourcen in der Gruppe
-    group_art_cost:  dict[int, float] = {}
-    group_pers_cost: dict[int, float] = {}
-
-    cn = pyodbc.connect(ss.ej_db_conn)
-    try:
-        cur = cn.cursor()
-
-        cur.execute(
-            f"""
-            SELECT s2j.IdStockType2JobGroup,
-                   SUM(s2j.Factor * s2j.TimeFactor * COALESCE(s2j.RentalPrice, s2j.BasePrice, 0)) AS GruppenKosten
-            FROM StockType2Job s2j
-            WHERE s2j.IdJob IN ({job_ph})
-              AND s2j.IdStockType2JobGroup IS NOT NULL
-              AND s2j.IdStockType2JobGroup > 0
-            GROUP BY s2j.IdStockType2JobGroup
-            """,
-            *job_ids,
-        )
-        for r in cur.fetchall():
-            group_art_cost[int(r[0])] = float(r[1] or 0)
-
-        cur.execute(
-            f"""
-            SELECT rfa.IdStockType2JobGroup,
-                   SUM(rfa.TotalPrice) AS PersKosten
-            FROM ResourceFunctionAllocation rfa
-            WHERE rfa.IdJob IN ({job_ph})
-              AND rfa.IdStockType2JobGroup IS NOT NULL
-              AND rfa.IdStockType2JobGroup > 0
-            GROUP BY rfa.IdStockType2JobGroup
-            """,
-            *job_ids,
-        )
-        for r in cur.fetchall():
-            group_pers_cost[int(r[0])] = float(r[1] or 0)
-
-        # Gruppenbezeichnungen: "[01.01.01] Beschreibung" → OZ → IdStockType2JobGroup
-        # Fallback für Ressourcen-Positionen, die nicht in project_bookings stehen
-        cur.execute(
-            f"""
-            SELECT g.Caption, g.IdStockType2JobGroup
-            FROM StockType2JobGroup g
-            WHERE g.IdJob IN ({job_ph})
-            """,
-            *job_ids,
-        )
-        oz_to_group: dict[str, int] = {}
-        for r in cur.fetchall():
-            cap = r[0] or ""
-            if cap.startswith('[') and ']' in cap:
-                oz = cap[1:cap.index(']')].strip()
-                if oz:
-                    oz_to_group[oz] = int(r[1])
-
-        # ── Learning: in EJ getauschte Artikel/Ressourcen als Mapping übernehmen ──
-        _articles = _db.load_articles_db()
-        num_by_ej_id = {int(a["ej_id"]): a["nummer"] for a in _articles if a.get("ej_id")}
-        name_by_num  = {a["nummer"]: (a.get("bezeichnung") or a["nummer"])
-                        for a in _articles if a.get("nummer")}
-        res_name_by_id = {
-            int(p["id"]): (p.get("funktion") or p.get("satzname") or str(p["id"]))
-            for p in _db.load_personal_db() if p.get("id")
-        }
-        try:
-            learned = _learn_from_ej(cur, bookings, num_by_ej_id, res_name_by_id, name_by_num)
-        except Exception as _le:
-            logging.error("Export-Learning fehlgeschlagen: %s", _le)
-            learned = []
-    except pyodbc.Error as _dbe:
-        logging.error("Export: EJ-Kostenabfrage fehlgeschlagen: %s", _dbe)
-        raise HTTPException(
-            status_code=502,
-            detail="EJ-Datenbank nicht erreichbar — Kostenabfrage fehlgeschlagen, Export abgebrochen.",
-        )
-    finally:
-        cn.close()
+    # Gemeinsame Kostenbasis (Buchungen, EJ-Gruppenkosten, Learning)
+    costs           = _export_costs(ss, project_id, proj)
+    job_ids         = costs["job_ids"]
+    bookings        = costs["bookings"]
+    group_by_item   = costs["group_by_item"]
+    qty_by_item     = costs["qty_by_item"]
+    group_art_cost  = costs["group_art_cost"]
+    group_pers_cost = costs["group_pers_cost"]
+    oz_to_group     = costs["oz_to_group"]
+    learned         = costs["learned"]
 
     # GAEB-XML laden, DA83 → DA84
     xml_text = gaeb_bytes.decode("utf-8", errors="replace")
@@ -598,17 +764,9 @@ async def project_export_d84(project_id: int, request: Request):
                     qty_el.text = _fmt_qty(booked_q)
                     item_el.insert(idx, qty_el)
 
-        grp_id = group_by_item.get(item_id, 0)
-        if not grp_id:
-            # Fallback: OZ aus GAEB-Hierarchie → EJ-Gruppenbezeichnung
-            grp_id = oz_to_group.get(_item_oz(item_el), 0)
-        if grp_id:
-            # Gesamtkosten der Gruppe (Artikel + Personal) ÷ GAEB-Menge = EP
-            total = group_art_cost.get(grp_id, 0.0) + group_pers_cost.get(grp_id, 0.0)
-            ep = round(total / qty_val, 3) if qty_val else 0.0
-        else:
-            ep = 0.0
-
+        # Gesamtkosten der EJ-Gruppe (Artikel + Personal) ÷ GAEB-Menge = EP.
+        # Fallback ohne Buchung: OZ aus der GAEB-Hierarchie → EJ-Gruppenbezeichnung.
+        ep = _export_ep(costs, item_id, _item_oz(item_el), qty_val)
         gp = round(qty_val * ep, 2)
 
         for old in item_el.findall(tag("UP")) + item_el.findall(tag("IT")):
@@ -756,6 +914,74 @@ async def project_export_d84(project_id: int, request: Request):
         "project_id": project_id,
         "filename":   filename,
         "learned":    learned,
+        "title":      "D84-Export bereit",
+        "notes":      _shared_group_note(costs),
+    })
+
+
+@router.post("/api/projects/{project_id}/export-excel")
+async def project_export_excel(project_id: int, request: Request,
+                               scenario: str = Form("")):
+    """Schreibt die kalkulierten Einheitspreise in die hochgeladene Excel-Datei zurück.
+
+    Nutzt dieselbe Kostenbasis wie der D84-Export (_export_costs/_export_ep); nur das
+    Ziel unterscheidet sich: Zellen statt GAEB-Elemente.
+    """
+    ss = get_session(request.session)
+    if not ss.ej_db_conn:
+        raise HTTPException(400, "Keine EasyJob-DB-Verbindung — bitte erst einloggen.")
+
+    proj = _db.get_project(project_id)
+    if not proj:
+        raise HTTPException(404, "Projekt nicht gefunden")
+    if (proj.get("source_kind") or "gaeb") != "excel":
+        raise HTTPException(400, "Dieses Projekt stammt nicht aus einer Excel-Datei.")
+    if not proj.get("ej_project_id"):
+        raise HTTPException(400, "Projekt hat keine EasyJob-Projekt-ID")
+
+    src_bytes, src_name = _db.get_project_gaeb(project_id)
+    if not src_bytes:
+        raise HTTPException(404, "Keine Excel-Quelldatei für dieses Projekt gespeichert")
+
+    costs   = _export_costs(ss, project_id, proj)
+    layout  = _project_excel_layout(project_id)
+    project = _xl.parse_excel(src_bytes, layout, name=proj.get("name") or "")
+
+    # EP je Position — offene Positionen (Menge 0) mit der gebuchten Menge rechnen,
+    # sonst bliebe der Einzelpreis 0. Gleiche Regel wie im D84-Export.
+    prices: dict[str, float] = {}
+    for item in project.items:
+        # Nur das gewählte Szenario schreiben — sonst treffen zwei Preise dieselbe Zelle.
+        if scenario and (project.scenario_by_item.get(item.item_id) or "") != scenario:
+            continue
+        qty = float(item.qty or 0)
+        if qty <= 0:
+            qty = float(costs["qty_by_item"].get(item.item_id, 0) or 0) or 1.0
+        ep = _export_ep(costs, item.item_id, item.oz, qty)
+        if ep:
+            prices[item.item_id] = ep
+
+    res = _xlout.write_prices(src_bytes, layout, project, prices)
+
+    stem = pathlib.Path(src_name or proj.get("name") or "Angebot").stem
+    # Szenario in den Dateinamen, damit mehrere Exporte derselben Datei
+    # unterscheidbar bleiben. Nur dateinamentaugliche Zeichen behalten.
+    suffix = "_" + re.sub(r"[^\w.-]+", "-", scenario).strip("-") if scenario else ""
+    filename = f"{stem}_Angebot{suffix}.xlsx"
+    notes = list(res.notes) + _shared_group_note(costs)
+    if scenario:
+        notes.insert(0, "Szenario " + scenario + " — nur dessen Preise wurden geschrieben")
+    notes.insert(0, f"{res.written} Positionen mit Preis befüllt"
+                    + (f", {res.skipped} ohne Preis" if res.skipped else "")
+                    + (f", {res.formulas} Gesamtpreis-Formeln unverändert gelassen"
+                       if res.formulas else ""))
+    ss.pending_export = {"project_id": project_id, "name": filename, "bytes": res.data}
+    return templates.TemplateResponse(request, "partials/export_result.html", {
+        "project_id": project_id,
+        "filename":   filename,
+        "learned":    costs["learned"],
+        "title":      "Excel-Export bereit",
+        "notes":      notes,
     })
 
 

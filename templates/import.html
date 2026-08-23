@@ -6,16 +6,22 @@
   <title>Import — GAEB Match + EJ Projekt</title>
   <link rel="stylesheet" href="/static/style.css">
   <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
+  <!-- Farb-Pinsel des Excel-Mapping-Dialogs. Einmalig hier, nicht im Partial: der
+       Dialog wird per htmx getauscht und würde seine Listener sonst doppelt binden. -->
+  <script src="/static/excel_mapping.js" defer></script>
   <style>
     body { margin:0; font-family:system-ui,sans-serif; background:#f4f4f6; }
 
 
     /* Layout */
     .imp-body {
-      display:grid; grid-template-columns:300px 1fr;
+      display:grid; grid-template-columns:300px minmax(0, 1fr);
       gap:14px; padding:14px; max-width:1600px; margin:0 auto;
       align-items:start;
     }
+    /* Grid-Items haben min-width:auto und würden auf Inhaltsbreite wachsen — dann
+       scrollt die ganze Seite waagerecht statt der Tabelle darin. */
+    .imp-body > *, .imp-main, .imp-panel { min-width:0; }
     .imp-sidebar {
       position:sticky; top:calc(var(--nav-h, 56px) + 8px);
       max-height:calc(100vh - var(--nav-h, 56px) - 22px); overflow-y:auto;
@@ -308,7 +314,7 @@
 
     <!-- Upload -->
     <div class="imp-panel">
-      <h2>1. X83 Datei laden</h2>
+      <h2>1. Datei laden <span style="font-weight:400;color:#999;font-size:.78rem">(GAEB oder Excel)</span></h2>
       <div id="upload-label">
         {% if S.import_filename %}
         <label class="upload-loaded" for="imp-file-input">
@@ -320,12 +326,12 @@
         <label class="upload-area" for="imp-file-input">
           <div class="upload-icon">📁</div>
           <div style="font-size:.82rem;line-height:1.2">Datei ablegen oder klicken
-            <span style="color:#999">· .d83 .x83 .xml</span></div>
+            <span style="color:#999">· .x83 .d83 .xml · .xlsx</span></div>
         </label>
         {% endif %}
       </div>
       <input type="file" id="imp-file-input" name="file"
-             accept=".d83,.D83,.x83,.X83,.xml"
+             accept=".d83,.D83,.x83,.X83,.xml,.xlsx,.xlsm,.XLSX,.XLSM"
              style="position:absolute;opacity:0;width:0;height:0;pointer-events:none"
              onchange="uploadImport(this)">
     </div>
@@ -625,7 +631,7 @@
   </div><!-- /linke Spalte -->
 
   <!-- Rechte Spalte: Gruppen + Artikel-Matches -->
-  <div>
+  <div class="imp-main">
 
     <div class="imp-panel">
       <h2 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -812,6 +818,11 @@ function _setImpUploadLabel(name, state) {
       + '<span class="upload-loaded-name">' + name + '</span>'
       + '<span class="upload-loaded-change">andere Datei</span>'
       + '</label>';
+  } else if (state === 'mapping') {
+    el.innerHTML = '<div style="padding:8px 12px;border:2px solid #ce93d8;border-radius:6px;background:#f3e5f5">'
+      + '<div style="font-size:.85rem;color:#6a1b9a">' + name + '</div>'
+      + '<div style="font-size:.74rem;color:#8e24aa">Spalten-Zuordnung rechts prüfen →</div>'
+      + '</div>';
   } else if (state === 'loading') {
     el.innerHTML = '<div style="padding:8px 12px;display:flex;align-items:center;gap:8px;border:2px solid #c5cae9;border-radius:6px;background:#e8eaf6">'
       + '<span class="imp-spinner"></span>'
@@ -821,9 +832,42 @@ function _setImpUploadLabel(name, state) {
     el.innerHTML = '<label class="upload-area" for="imp-file-input">'
       + '<div class="upload-icon">📁</div>'
       + '<div style="font-size:.88rem">Datei hier ablegen oder klicken</div>'
-      + '<div style="font-size:.72rem;color:#999">.d83 · .x83 · .xml</div>'
+      + '<div style="font-size:.72rem;color:#999">.x83 · .d83 · .xml · .xlsx</div>'
       + '</label>';
   }
+}
+
+// Nach einem Server-Neustart ist die Session weg. Der Server antwortet auf
+// fetch/htmx-Aufrufe dann mit 401 + HX-Redirect statt mit einer 303 auf /login —
+// sonst würde die Login-Seite in ein Ziel-Element gerendert. Hier der Gegencheck
+// für eigene fetch-Aufrufe (und als Netz, falls doch eine Weiterleitung durchkommt).
+function impAuthLost(resp) {
+  if (!resp) return false;
+  if (resp.status === 401 || resp.status === 403
+      || (resp.redirected && /\/login(\?|$)/.test(resp.url))) {
+    window.location = '/login';
+    return true;
+  }
+  return false;
+}
+window.impAuthLost = impAuthLost;
+
+// Datei ist eingelesen: Label auf „geladen“, Projekt-Anlage freigeben, Namen vorbelegen.
+function impFileReady(name) {
+  _setImpUploadLabel(name, 'loaded');
+  const btn = document.getElementById('imp-create-btn');
+  if (btn) btn.disabled = false;
+  const pnInput = document.getElementById('imp-proj-name');
+  if (pnInput && !pnInput.value) {
+    const stem = name.replace(/\.[^.]+$/, '');
+    pnInput.value = stem;
+    impSyncJobName(stem);
+  }
+}
+
+// Aufgerufen vom Mapping-Dialog, nachdem /api/import/excel/apply durchgelaufen ist.
+function impExcelApplied() {
+  impFileReady(window._impLastFile || 'Excel-Datei');
 }
 
 async function uploadImport(input) {
@@ -837,20 +881,19 @@ async function uploadImport(input) {
   fd.append('file', file);
   try {
     const resp = await fetch('/api/import/upload', {method: 'POST', body: fd});
+    if (impAuthLost(resp)) return;
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const html = await resp.text();
     const el = document.getElementById('import-groups');
     el.innerHTML = html;
     if (typeof htmx !== 'undefined') htmx.process(el);
-    _setImpUploadLabel(file.name, 'loaded');
-    const btn = document.getElementById('imp-create-btn');
-    if (btn) btn.disabled = false;
-    const pnInput = document.getElementById('imp-proj-name');
-    if (pnInput && !pnInput.value) {
-      const stem = file.name.replace(/\.[^.]+$/, '');
-      pnInput.value = stem;
-      impSyncJobName(stem);
+    window._impLastFile = file.name;
+    // Excel liefert erst den Mapping-Dialog — geladen ist die Datei erst nach dem Apply.
+    if (html.indexOf('id="xl-mapping"') >= 0) {
+      _setImpUploadLabel(file.name, 'mapping');
+      return;
     }
+    impFileReady(file.name);
   } catch(e) {
     document.getElementById('import-groups').innerHTML =
       '<p style="color:#c00;padding:8px">Fehler: ' + e.message + '</p>';

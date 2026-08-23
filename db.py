@@ -165,6 +165,18 @@ CREATE TABLE IF NOT EXISTS project_bookings (
     qty              REAL    DEFAULT 1,           -- Artikel: Stückzahl · Ressource: Tage
     unit_price       REAL    DEFAULT 0            -- Artikel: EP · Ressource: Tagessatz
 );
+
+-- Erkannte Spalten-/Zeilen-Zuordnung je Excel-Ausschreibungsvorlage. Der Fingerprint
+-- ist ein Hash aus Sheet-Namen + Kopfzeilentexten: dieselbe Vorlage mit anderen Mengen
+-- trifft wieder, sodass der Mapping-Dialog beim zweiten Mal schon richtig gefüllt ist.
+CREATE TABLE IF NOT EXISTS excel_layouts (
+    fingerprint TEXT PRIMARY KEY,
+    label       TEXT,
+    layout_json TEXT NOT NULL,
+    hit_count   INTEGER DEFAULT 0,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMP
+);
 """
 
 
@@ -190,6 +202,7 @@ def init_db() -> None:
             "ALTER TABLE projects ADD COLUMN created_by TEXT",
             "ALTER TABLE projects ADD COLUMN updated_by TEXT",
             "ALTER TABLE projects ADD COLUMN updated_at TIMESTAMP",
+            "ALTER TABLE projects ADD COLUMN source_kind TEXT DEFAULT 'gaeb'",
         ]:
             try:
                 conn.execute(sql)
@@ -387,6 +400,45 @@ def load_gui_resource_mappings() -> dict[str, int]:
             r["description"]: r["resource_id"]
             for r in conn.execute("SELECT description, resource_id FROM mappings_gui_resources")
         }
+
+
+# ── Excel-Layout-Profile ──────────────────────────────────────────────────────
+
+def save_excel_layout(fingerprint: str, label: str, layout: dict) -> None:
+    """Speichert bzw. aktualisiert die Spalten-/Zeilen-Zuordnung einer Excel-Vorlage.
+    Zählt bei jedem Speichern die Verwendung mit, damit der Dialog zeigen kann, wie
+    verlässlich das Profil ist."""
+    if not fingerprint:
+        return
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO excel_layouts (fingerprint, label, layout_json, hit_count, updated_at)
+               VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
+               ON CONFLICT(fingerprint) DO UPDATE SET
+                   label       = excluded.label,
+                   layout_json = excluded.layout_json,
+                   hit_count   = excel_layouts.hit_count + 1,
+                   updated_at  = CURRENT_TIMESTAMP""",
+            (fingerprint, label, json.dumps(layout, ensure_ascii=False)),
+        )
+
+
+def get_excel_layout(fingerprint: str) -> dict | None:
+    """Gibt {label, layout, hit_count} zurück oder None, wenn die Vorlage neu ist."""
+    if not fingerprint:
+        return None
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT label, layout_json, hit_count FROM excel_layouts WHERE fingerprint=?",
+            (fingerprint,),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        layout = json.loads(row["layout_json"])
+    except (ValueError, TypeError):
+        return None
+    return {"label": row["label"] or "", "layout": layout, "hit_count": row["hit_count"] or 0}
 
 
 # ── Train-Mappings (selten geändert) ─────────────────────────────────────────
@@ -628,6 +680,7 @@ def save_project(
     gaeb_bytes: bytes | None = None,
     ej_job_ids: str = "",
     ej_project_number: str = "",
+    source_kind: str = "gaeb",
 ) -> int:
     """Speichert ein angelegtes Projekt. Gibt die neue lokale ID zurück.
 
@@ -642,11 +695,11 @@ def save_project(
             """
             INSERT INTO projects
                 (name, ej_project_id, ej_project_number, ej_job_ids,
-                 gaeb_name, item_count, booking_count, gaeb_bytes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 gaeb_name, item_count, booking_count, gaeb_bytes, source_kind)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (name, ej_project_id, ej_project_number, ej_job_ids,
-             gaeb_name, item_count, booking_count, gaeb_bytes),
+             gaeb_name, item_count, booking_count, gaeb_bytes, source_kind or "gaeb"),
         )
         return cur.lastrowid
 
@@ -700,6 +753,7 @@ def list_projects(limit: int = 100) -> list[dict]:
                    item_count, booking_count, created_at,
                    COALESCE(status, 'uploaded') AS status,
                    locked_by, locked_by_name, locked_at, created_by, updated_by, updated_at,
+                   COALESCE(source_kind, 'gaeb') AS source_kind,
                    CASE WHEN gaeb_bytes IS NOT NULL THEN 1 ELSE 0 END AS has_gaeb
             FROM projects ORDER BY id DESC LIMIT ?
             """,
@@ -725,7 +779,7 @@ def get_project(project_id: int) -> dict | None:
     with get_conn() as conn:
         row = conn.execute(
             "SELECT id, name, ej_project_id, ej_project_number, ej_job_ids, gaeb_name, "
-            "item_count, booking_count, created_at "
+            "item_count, booking_count, created_at, source_kind "
             "FROM projects WHERE id = ?",
             (project_id,),
         ).fetchone()
@@ -758,17 +812,18 @@ def delete_project(project_id: int) -> None:
 
 def save_draft(name: str, gaeb_name: str, gaeb_bytes: bytes | None,
                state_json: str, user_name: str, item_count: int = 0,
-               draft_id: int | None = None) -> int:
+               draft_id: int | None = None, source_kind: str = "gaeb") -> int:
     """Legt einen neuen Entwurf an oder aktualisiert einen bestehenden und frischt die
     (benutzerbezogene) Bearbeitungs-Sperre auf. Gibt die Entwurf-ID zurück."""
     with get_conn() as conn:
         if draft_id:
             cur = conn.execute(
                 "UPDATE projects SET name=?, gaeb_name=?, state_json=?, item_count=?, "
-                "updated_by=?, updated_at=CURRENT_TIMESTAMP, "
+                "source_kind=?, updated_by=?, updated_at=CURRENT_TIMESTAMP, "
                 "locked_by=?, locked_by_name=?, locked_at=CURRENT_TIMESTAMP "
                 "WHERE id=? AND status='draft'",
-                (name, gaeb_name, state_json, item_count, user_name, user_name, user_name, draft_id),
+                (name, gaeb_name, state_json, item_count, source_kind or "gaeb",
+                 user_name, user_name, user_name, draft_id),
             )
             if cur.rowcount == 0:
                 return 0   # Zeile existiert nicht (mehr) als Entwurf → Aufrufer meldet Fehler
@@ -778,9 +833,11 @@ def save_draft(name: str, gaeb_name: str, gaeb_bytes: bytes | None,
         cur = conn.execute(
             "INSERT INTO projects "
             "(name, ej_project_id, gaeb_name, item_count, booking_count, gaeb_bytes, "
-            " status, state_json, created_by, updated_by, updated_at, locked_by, locked_by_name, locked_at) "
-            "VALUES (?, 0, ?, ?, 0, ?, 'draft', ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, CURRENT_TIMESTAMP)",
-            (name, gaeb_name, item_count, gaeb_bytes, state_json, user_name, user_name, user_name, user_name),
+            " status, state_json, source_kind, created_by, updated_by, updated_at, "
+            " locked_by, locked_by_name, locked_at) "
+            "VALUES (?, 0, ?, ?, 0, ?, 'draft', ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, CURRENT_TIMESTAMP)",
+            (name, gaeb_name, item_count, gaeb_bytes, state_json, source_kind or "gaeb",
+             user_name, user_name, user_name, user_name),
         )
         return cur.lastrowid
 
@@ -791,7 +848,8 @@ def get_draft(draft_id: int) -> dict | None:
         row = conn.execute(
             "SELECT id, name, gaeb_name, state_json, "
             "COALESCE(status,'uploaded') AS status, locked_by, locked_by_name, locked_at, "
-            "created_by, updated_by, updated_at, gaeb_bytes "
+            "created_by, updated_by, updated_at, gaeb_bytes, "
+            "COALESCE(source_kind,'gaeb') AS source_kind "
             "FROM projects WHERE id = ?",
             (draft_id,),
         ).fetchone()

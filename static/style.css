@@ -239,3 +239,196 @@ progress::-webkit-progress-value { background: #1565c0; border-radius: 4px; }
 .inactive-pos { background: #f5f5f5; border-left: 3px solid #ccc; border-radius: 4px; padding: 4px 8px; font-size: 0.75rem; color: #999; margin-bottom: 4px; }
 body.hide-matched .pos-row-done { display: none !important; }
 body.hide-matched .alt-block-done { display: none !important; }
+
+/* ─── Excel-Mapping-Dialog (Farb-Pinsel) ─────────────────────────────────── */
+#xl-mapping { font-size:.82rem; }
+.xl-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px;
+           flex-wrap:wrap; padding:6px 2px 10px; }
+.xl-file { font-weight:600; color:#283593; }
+.xl-sub  { font-size:.74rem; color:#888; }
+.xl-profile { font-size:.76rem; color:#2e7d32; background:#e8f5e9; border:1px solid #a5d6a7;
+              border-radius:4px; padding:2px 8px; }
+.xl-profile-new { color:#795548; background:#efebe9; border-color:#d7ccc8; }
+
+.xl-tabs { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:8px; }
+.xl-tab  { display:flex; align-items:center; gap:6px; font-size:.76rem; cursor:pointer;
+           border:1px solid #cfd8dc; border-radius:5px; padding:3px 8px; background:#fafafa;
+           color:#78909c; }
+.xl-tab-on   { background:#e8eaf6; border-color:#9fa8da; color:#283593; font-weight:600; }
+.xl-tab-dead { opacity:.55; }
+.xl-tab-cnt  { font-size:.7rem; color:#90a4ae; font-weight:400; }
+
+.xl-work { display:flex; gap:10px; align-items:flex-start; }
+
+/* Palette */
+.xl-palette { flex:0 0 168px; position:sticky; top:8px; background:#fafbff;
+              border:1px solid #c5cae9; border-radius:6px; padding:8px; }
+.xl-palette.xl-flash { animation:xl-shake .3s; border-color:#c62828; }
+@keyframes xl-shake {
+  0%,100% { transform:translateX(0); }
+  25%     { transform:translateX(-3px); }
+  75%     { transform:translateX(3px); }
+}
+.xl-pal-group { font-size:.68rem; text-transform:uppercase; letter-spacing:.06em;
+                color:#9fa8da; margin:6px 0 3px; font-weight:700; }
+.xl-swatch { display:flex; align-items:center; gap:7px; width:100%; text-align:left;
+             font-size:.76rem; padding:3px 6px; margin-bottom:2px; cursor:pointer;
+             border:1px solid transparent; border-radius:4px; background:none; color:#333; }
+.xl-swatch:hover  { background:#eef1ff; }
+.xl-swatch.xl-active { border-color:#3949ab; background:#e8eaf6; font-weight:600; }
+.xl-chip { flex:0 0 12px; height:12px; border-radius:3px; border:1px solid rgba(0,0,0,.25);
+           background:var(--xl-c, #eceff1); }
+.xl-hint { font-size:.68rem; color:#90a4ae; line-height:1.45; margin:8px 0 6px; }
+.xl-hint kbd { font-family:inherit; background:#eceff1; border:1px solid #cfd8dc;
+               border-radius:3px; padding:0 3px; font-size:.66rem; }
+body.xl-painting .xl-colhead,
+body.xl-painting .xl-rowhead { cursor:cell; }
+
+/* Rollen-Farben: --xl-c färbt den Palettenchip, der Rest den Spaltenton */
+.xl-role-desc   { --xl-c:#3f51b5; }
+.xl-role-qty    { --xl-c:#2e7d32; }
+.xl-role-unit   { --xl-c:#ef6c00; }
+.xl-role-oz     { --xl-c:#607d8b; }
+.xl-role-ref    { --xl-c:#7b1fa2; }
+.xl-role-price  { --xl-c:#00838f; }
+.xl-role-flag   { --xl-c:#c2185b; }
+.xl-role-ignore { --xl-c:#eceff1; }
+
+/* Tabelle */
+.xl-sheets { flex:1 1 auto; min-width:0; }
+.xl-sheet  { margin-bottom:14px; }
+.xl-sheet-off { opacity:.4; }
+.xl-sheet-bar { display:flex; gap:12px; align-items:baseline; flex-wrap:wrap;
+                padding:2px 0 4px; font-size:.78rem; color:#37474f; }
+.xl-counts { font-size:.75rem; color:#546e7a; }
+.xl-counts .c-pos  { color:#2e7d32; }
+.xl-counts .c-grp  { color:#5e35b1; }
+.xl-counts .c-note { color:#8d6e63; }
+
+.xl-scenarios { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+                background:#f1f8e9; border:1px solid #c5e1a5; border-radius:5px;
+                padding:5px 8px; margin-bottom:5px; }
+.xl-scen      { display:flex; align-items:center; gap:4px; }
+.xl-scen-col  { font-family:monospace; font-weight:700; color:#2e7d32; font-size:.75rem; }
+.xl-scen input { font-size:.75rem; padding:2px 5px; border:1px solid #c5e1a5;
+                 border-radius:3px; width:170px; }
+
+.xl-grid-wrap { overflow:auto; max-height:64vh; border:1px solid #cfd8dc; border-radius:5px;
+                background:#fff; }
+.xl-loading .xl-grid-wrap { opacity:.5; }
+.xl-grid { border-collapse:separate; border-spacing:0; font-size:.74rem;
+           user-select:none; table-layout:fixed; }
+.xl-grid th, .xl-grid td { border-right:1px solid #eceff1; border-bottom:1px solid #eceff1;
+                           padding:2px 5px; max-width:230px; overflow:hidden;
+                           text-overflow:ellipsis; white-space:nowrap; }
+.xl-corner  { position:sticky; left:0; top:0; z-index:3; background:#eceff1; width:44px; }
+.xl-colhead { position:sticky; top:0; z-index:2; background:#eceff1; text-align:center;
+              font-family:monospace; font-weight:700; color:#455a64; min-width:60px; }
+.xl-rowhead { position:sticky; left:0; z-index:1; background:#f5f5f5; text-align:right;
+              font-family:monospace; color:#90a4ae; font-weight:400; width:44px; }
+
+/* Spaltenton: kräftiger Rand oben + leichter Flächenton, Text bleibt lesbar */
+.xl-grid .xl-colhead:not(.xl-role-ignore) { box-shadow:inset 0 -3px 0 var(--xl-c);
+                                            color:var(--xl-c); }
+.xl-grid td:not(.xl-role-ignore) { background:color-mix(in srgb, var(--xl-c) 9%, #fff); }
+.xl-grid td.xl-role-ignore { color:#b0bec5; background:repeating-linear-gradient(
+    45deg, #fafafa, #fafafa 4px, #f0f0f0 4px, #f0f0f0 8px); }
+.xl-grid .xl-colhead.xl-role-ignore { color:#b0bec5; }
+
+/* Zeilentypen */
+.xl-row-header td, .xl-row-header .xl-rowhead { background:#3949ab !important; color:#fff;
+                                                font-weight:700; }
+.xl-row-grp td   { background:#ede7f6 !important; font-weight:700; color:#4527a0; }
+.xl-row-grp .xl-rowhead { background:#d1c4e9; color:#4527a0; }
+.xl-row-note td  { font-style:italic; color:#8d6e63; background:#fbf7f4 !important; }
+.xl-row-skip td  { color:#bdbdbd; text-decoration:line-through; background:#fafafa !important; }
+.xl-row-skip .xl-rowhead { color:#d0d0d0; }
+.xl-tr:hover .xl-rowhead { background:#c5cae9; color:#283593; }
+
+.xl-apply { display:flex; align-items:flex-end; gap:12px; flex-wrap:wrap;
+            margin-top:10px; padding-top:10px; border-top:1px solid #e0e0e0; }
+.xl-label { display:flex; flex-direction:column; gap:2px; font-size:.74rem; color:#666; }
+.xl-label input { font-size:.82rem; padding:4px 7px; border:1px solid #c5cae9;
+                  border-radius:4px; min-width:280px; }
+.xl-sheet > summary { cursor:pointer; list-style:none; padding:4px 6px; border-radius:4px;
+                      background:#f5f6fa; }
+.xl-sheet > summary::-webkit-details-marker { display:none; }
+.xl-sheet > summary::before { content:'▸ '; color:#9fa8da; }
+.xl-sheet[open] > summary::before { content:'▾ '; }
+.xl-sheet-off > summary { text-decoration:line-through; }
+.xl-sheet-off .xl-grid-wrap, .xl-sheet-off .xl-scenarios { display:none; }
+
+/* Zeilen-Pinsel brauchen ihren eigenen Chip-Farbwert — die xl-row-*-Regeln oben
+   färben nur Tabellenzellen, nicht die Palette. */
+.xl-swatch.xl-row-header { --xl-c:#3949ab; }
+.xl-swatch.xl-row-grp    { --xl-c:#7e57c2; }
+.xl-swatch.xl-row-pos    { --xl-c:#43a047; }
+.xl-swatch.xl-row-note   { --xl-c:#8d6e63; }
+.xl-swatch.xl-row-skip   { --xl-c:#cfd8dc; }
+
+/* Blatt-Modus: begrenzt die Anzahl der Easyjob-Jobs */
+.xl-sheetmode { display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+                background:#e8eaf6; border:1px solid #9fa8da; border-radius:5px;
+                padding:5px 10px; margin-bottom:8px; font-size:.78rem; color:#283593; }
+.xl-sheetmode label { display:flex; align-items:center; gap:4px; cursor:pointer; }
+
+/* Job- und Hauptgruppen-Zeilen */
+.xl-row-job td   { background:#e0f2f1 !important; font-weight:700; color:#00695c;
+                   text-transform:uppercase; letter-spacing:.03em; }
+.xl-row-job .xl-rowhead  { background:#b2dfdb; color:#00695c; }
+.xl-row-main td  { background:#ede7f6 !important; font-weight:700; color:#4527a0; }
+.xl-row-main .xl-rowhead { background:#d1c4e9; color:#4527a0; }
+.xl-row-grp td   { background:#f3f0fa !important; font-weight:600; color:#5e35b1; }
+.xl-row-grp .xl-rowhead  { background:#e4dcf5; color:#5e35b1; }
+
+.xl-swatch.xl-row-job  { --xl-c:#00897b; }
+.xl-swatch.xl-row-main { --xl-c:#5e35b1; }
+.xl-swatch.xl-row-grp  { --xl-c:#9575cd; }
+.xl-counts .c-job  { color:#00695c; }
+.xl-counts .c-main { color:#4527a0; }
+.xl-counts .c-grp  { color:#7e57c2; }
+
+/* Palettenzeilen dürfen die Tabellenregeln nicht erben */
+.xl-palette .xl-swatch td { background:none !important; }
+
+/* Explizite Spaltenbreiten: mit table-layout:fixed ist die Tabellenbreite dann
+   vorhersagbar und scrollt in .xl-grid-wrap, statt das Grid aufzuspannen. */
+.xl-grid { width:auto; }
+.xl-grid .xl-colhead { width:120px; }
+.xl-grid .xl-colhead.xl-role-desc { width:340px; }
+.xl-grid .xl-colhead.xl-role-ref  { width:190px; }
+.xl-grid .xl-colhead.xl-role-oz,
+.xl-grid .xl-colhead.xl-role-unit,
+.xl-grid .xl-colhead.xl-role-qty,
+.xl-grid .xl-colhead.xl-role-flag { width:78px; }
+.xl-grid .xl-colhead.xl-role-ignore { width:88px; }
+/* Beschreibungszellen dürfen umbrechen — sonst ist der Kurztext unlesbar */
+.xl-grid td.xl-role-desc { white-space:normal; line-height:1.25; }
+
+.xl-swatch-off { opacity:.4; cursor:not-allowed; text-decoration:line-through; }
+.xl-legend     { display:flex; align-items:center; gap:7px; font-size:.7rem; color:#90a4ae;
+                 margin:6px 0 2px; padding-left:6px; }
+.xl-legend .xl-chip { flex:0 0 12px; height:12px; }
+
+/* Positionszeilen: der Zeilenkopf trägt die Palettenfarbe (grün), damit Pinsel und
+   Tabelle zusammenpassen. Die Zellen selbst bleiben nach Spaltenrolle getönt. */
+.xl-row-pos .xl-rowhead { background:#e8f5e9; color:#2e7d32; font-weight:700; }
+.xl-row-note .xl-rowhead { background:#efebe9; color:#8d6e63; }
+
+/* Angehaktes Blatt, aus dem nichts herauskommt — muss auffallen */
+.xl-warn      { font-size:.75rem; color:#c62828; background:#ffebee;
+                border:1px solid #ef9a9a; border-radius:4px; padding:1px 7px; }
+.xl-tab-warn  { border-color:#ef9a9a !important; background:#ffebee !important;
+                color:#c62828 !important; }
+.xl-tab-warn .xl-tab-cnt { color:#c62828; font-weight:700; }
+
+/* Herkunft einer Quelldatei in der Projektliste */
+.src-tag  { display:inline-block; font-size:.66rem; font-weight:700; padding:1px 5px;
+            border-radius:3px; margin-left:5px; vertical-align:1px; }
+.src-xlsx { background:#e8f5e9; color:#2e7d32; border:1px solid #a5d6a7; }
+.src-gaeb { background:#e8eaf6; color:#3949ab; border:1px solid #9fa8da; }
+
+.xl-showall, .xl-showless { font-size:.72rem; color:#3949ab; background:none;
+                            border:none; text-decoration:underline; cursor:pointer;
+                            padding:0; }
+.xl-showall:hover, .xl-showless:hover { color:#1a237e; }

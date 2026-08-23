@@ -1,21 +1,36 @@
 <div class="export-dialog-inner">
-  <h3 style="margin:0 0 4px;color:#1a237e;font-size:1rem">D84-Export — Bieter-Angaben</h3>
+  <h3 style="margin:0 0 4px;color:#1a237e;font-size:1rem">{{ title }}</h3>
 
   {% if not ht_labels and not single_fields %}
     <p style="font-size:.85rem;color:#555;margin:8px 0">
-      Diese Ausschreibung hat keine Bieter-Antwortfelder. Der Export enthält nur die Preise.
+      {{ empty_note }}
     </p>
-    <form hx-post="/api/projects/{{ project_id }}/export-d84"
+    <form hx-post="{{ post_url }}"
           hx-target="#export-modal-body" hx-swap="innerHTML">
       <input type="hidden" name="field_count" value="0">
       <input type="hidden" name="single_count" value="0">
+      {# Mehrere Szenarien treffen dieselben Zellen — je Export eines schreiben. #}
+      {% if scenarios %}
+      <div class="export-section-title">Szenario</div>
+      <p style="font-size:.76rem;color:#777;margin:0 0 6px">
+        Alle Szenarien schreiben in dieselbe Preisspalte. Für jedes Szenario einmal
+        exportieren — die Datei bekommt den Szenario-Namen angehängt.
+      </p>
+      {% for sc in scenarios %}
+      <label style="display:flex;align-items:center;gap:6px;font-size:.82rem;padding:2px 0">
+        <input type="radio" name="scenario" value="{{ sc }}"
+               {% if loop.first %}checked{% endif %}>
+        {{ sc }}
+      </label>
+      {% endfor %}
+      {% endif %}
       <div style="display:flex;gap:8px;margin-top:8px">
         <button type="submit" class="btn-export">⬇ Exportieren</button>
         <button type="button" class="btn-del" onclick="document.getElementById('export-modal').close()">Abbrechen</button>
       </div>
     </form>
   {% else %}
-    <form hx-post="/api/projects/{{ project_id }}/export-d84"
+    <form hx-post="{{ post_url }}"
           hx-target="#export-modal-body" hx-swap="innerHTML">
       <input type="hidden" name="field_count"  value="{{ ht_labels|length }}">
       <input type="hidden" name="single_count" value="{{ single_fields|length }}">

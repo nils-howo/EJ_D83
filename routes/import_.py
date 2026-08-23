@@ -11,6 +11,8 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 
 import db as _db
+import excel_parser as _xl
+import json as _json
 from easyjob_api import EjLiveClient
 from gaeb_parser import GaebProject, parse_gaeb
 import math as _math
@@ -174,6 +176,18 @@ def _bqty(raw_qty) -> float:
     except (TypeError, ValueError):
         q = 0.0
     return q if q > 0 else 1.0
+
+
+# EJ-Spalte StockType2JobGroup(.Parent).Caption ist nvarchar(250). Lange GAEB-
+# Positionstexte sprengen das → Insert-Fehler. Identisch bei Insert UND Lookup
+# kürzen, sonst findet die Buchung die Gruppe über den Caption-Key nicht mehr.
+_GROUP_CAPTION_MAX = 250
+
+
+def _gcap(caption: str) -> str:
+    """Gruppen-Caption auf die EJ-Spaltenlänge (250 Zeichen) kürzen."""
+    caption = caption or ""
+    return caption[:_GROUP_CAPTION_MAX]
 
 
 def _active_item_ids(ss) -> set[str]:
@@ -386,6 +400,10 @@ def serialize_import_state(ss) -> dict:
         "standard_job_name": ss.d83_standard_job_name or "",
         "import_mode": ss.d83_import_mode or "positions",
         "einsatztage": ss.einsatztage,
+        # Herkunft + Excel-Layout: ohne das Layout ließe sich eine Excel-Quelle beim
+        # Laden des Entwurfs nicht erneut in Positionen zerlegen.
+        "source_kind": ss.source_kind or "gaeb",
+        "excel_layout": ss.excel_layout or {},
     }
 
 
@@ -485,6 +503,8 @@ def apply_import_state(ss, state: dict) -> list[str]:
     ss.d83_standard_job_name = state.get("standard_job_name") or ""
     ss.d83_import_mode       = state.get("import_mode") or "positions"
     ss.einsatztage           = float(state.get("einsatztage") or 2.0)
+    ss.source_kind           = state.get("source_kind") or "gaeb"
+    ss.excel_layout          = state.get("excel_layout") or {}
     return warnings
 
 
@@ -533,6 +553,7 @@ async def import_draft_save(
         gaeb_bytes=gb, state_json=_json.dumps(state, ensure_ascii=False),
         user_name=ss.ej_user or "?",
         item_count=len(ss.d83_project.items), draft_id=ss.draft_id,
+        source_kind=ss.source_kind or "gaeb",
     )
     if not saved_id:
         # Entwurf existiert nicht mehr als Entwurf (z.B. zwischenzeitlich hochgeladen)
@@ -555,12 +576,21 @@ async def import_draft_load(draft_id: int, request: Request):
     gb = d.get("gaeb_bytes")
     if not gb:
         _db.release_draft_lock(draft_id, _usr)
-        return HTMLResponse('<span class="error-msg">Entwurf ohne GAEB-Datei.</span>', status_code=400)
+        return HTMLResponse('<span class="error-msg">Entwurf ohne Quelldatei.</span>', status_code=400)
 
     loop = asyncio.get_event_loop()
 
+    # Herkunft steht in der Projektzeile; das Excel-Layout im Entwurf-State.
+    _state_pre  = _json.loads(d.get("state_json") or "{}")
+    _kind       = (d.get("source_kind") or _state_pre.get("source_kind") or "gaeb")
+    _xl_layout  = _state_pre.get("excel_layout") or {}
+
     def _setup():
-        project = parse_gaeb(gb)   # parse_gaeb akzeptiert Bytes direkt — keine Temp-Datei nötig
+        if _kind == "excel":
+            project = _xl.parse_excel(gb, _xl.layout_from_dict(_xl_layout),
+                                      name=d.get("gaeb_name") or "Excel-LV")
+        else:
+            project = parse_gaeb(gb)   # akzeptiert Bytes direkt — keine Temp-Datei nötig
         matcher = UnifiedMatcher(load_articles_db(), load_resources_db())
         return project, matcher
 
@@ -570,6 +600,10 @@ async def import_draft_load(draft_id: int, request: Request):
         ss.d83_name        = d.get("gaeb_name") or "X83"
         ss.import_filename = d.get("gaeb_name") or "X83"
         ss.x83_bytes       = gb
+        ss.source_kind     = _kind
+        if _kind == "excel":
+            ss.excel_bytes = gb
+            ss.excel_name  = d.get("gaeb_name") or ""
         ss.matcher         = matcher
         ss.matcher.apply_mapping_filter(ss.use_train_mappings, ss.use_gui_mappings)
 
@@ -626,6 +660,132 @@ async def import_draft_delete(draft_id: int, request: Request):
     return resp
 
 
+# ─── Auto-Matching ───────────────────────────────────────────────────────────
+
+def run_auto_match(ss, project: GaebProject) -> tuple[dict, dict, dict]:
+    """Matcht alle Positionen eines Projekts gegen den Artikelstamm.
+
+    Läuft blockierend (Aufrufer schiebt es in einen Executor) und schreibt den
+    Fortschritt nach ss.progress. Gibt (matches, bundles, booking_qtys) zurück.
+    Von GAEB- und Excel-Upload gemeinsam genutzt.
+    """
+    results:      dict = {}
+    bundles:      dict = {}
+    booking_qtys: dict = {}
+    hp_art = None
+    hp_idx = ss.matcher._num_to_idx.get(HAENGEPUNKT_NR)
+    if hp_idx is not None:
+        hp_art = ss.matcher._pool[hp_idx]
+    for item in project.items:
+        if is_kalkulations_position(item.description):
+            results[item.item_id] = MatchResult(None, 0, "kalkpos", False)
+            ss.progress.done += 1
+            continue
+        try:
+            top = ss.matcher.match(
+                item.description,
+                # match_path trägt beim Excel-Import die volle Gruppenkette; bei GAEB
+                # ist es leer und category_path IST schon die volle Kette.
+                category_path=item.match_path or item.category_path,
+                qty=item.qty,
+                unit=item.unit,
+                long_text=item.long_text,
+                limit=1,
+            )
+            if top:
+                mr, matched_art = top[0]
+                results[item.item_id] = mr
+
+                # Traverse-Berechnung: Stücklänge aus Beschreibung oder Standard 3 m
+                ti        = parse_traverse_info(item.description)
+                piece_len = (ti.length_m if ti and ti.length_m else None) or TRAVERSE_STANDARD_LENGTH_M
+                pieces    = traverse_piece_count(float(item.qty), item.unit or "", piece_len)
+                if pieces is not None:
+                    booking_qtys[item.item_id] = {"qty": float(pieces), "lfm_converted": True, "piece_len": piece_len}
+                else:
+                    booking_qtys[item.item_id] = {"qty": _bqty(item.qty), "lfm_converted": False, "piece_len": None}
+
+                # Hängepunkt-Pauschale bei Motor-Positionen
+                if is_motor_position(item.description) and hp_art:
+                    bundles.setdefault(item.item_id, []).append(
+                        {"article": hp_art, "qty": item.qty}
+                    )
+
+                for extra_num in ss.matcher.get_bundle_extras(item.description):
+                    idx = ss.matcher._num_to_idx.get(extra_num)
+                    if idx is not None:
+                        extra_art = ss.matcher._pool[idx]
+                        bundles.setdefault(item.item_id, []).append(
+                            {"article": extra_art, "qty": item.qty}
+                        )
+        except Exception:
+            pass
+        ss.progress.done += 1
+    return results, bundles, booking_qtys
+
+
+async def rebuild_matcher(ss) -> None:
+    """Matcher neu aufbauen, damit die Mapping-Quellen-Toggles (Training-Mappings /
+    GUI-Korrekturen) auf das Matching wirken."""
+    loop      = asyncio.get_event_loop()
+    articles  = await loop.run_in_executor(None, load_articles_db)
+    resources = await loop.run_in_executor(None, load_resources_db)
+    ss.matcher = UnifiedMatcher(articles, resources)
+    ss.matcher.apply_mapping_filter(ss.use_train_mappings, ss.use_gui_mappings)
+
+
+def reset_import_state(ss) -> None:
+    """Job-/Auswahl-State für einen frischen Import zurücksetzen."""
+    ss.d83_local_jobs        = []
+    ss.d83_group_jobs        = {}
+    ss.d83_next_lid          = 2
+    ss.d83_standard_job_name = ""
+    ss.d83_alt_active        = {}
+    ss.d83_booking_qtys      = {}
+
+
+def start_match_bg(ss, project: GaebProject, notice: str = "") -> HTMLResponse:
+    """Matching im Hintergrund starten und die Fortschritts-Antwort liefern.
+    Identisch für GAEB und Excel.
+
+    notice: HTML, das über dem Fortschritt stehen bleibt. Beim Polling tauscht htmx
+    nur #imp-progress (outerHTML) — die Meldung überlebt das und ist noch da, wenn
+    die Gruppenansicht erscheint.
+    """
+    n_items = len(project.items)
+    ss.progress.running = True
+    ss.progress.done    = 0
+    ss.progress.total   = n_items
+    loop = asyncio.get_event_loop()
+
+    async def _run_bg():
+        try:
+            new_matches, new_bundles, new_bqtys = await loop.run_in_executor(
+                None, run_auto_match, ss, project)
+            ss.matches          = new_matches
+            ss.bundles          = new_bundles
+            ss.d83_booking_qtys = new_bqtys
+            level = 1 if ss.d83_import_mode == "groups" else 0
+            ss.d83_groups = _import_gaeb_groups(project, level, ss.d83_alt_active)
+            logging.info("import: %d items, %d matches", n_items, len(ss.matches))
+        except Exception:
+            traceback.print_exc()
+        finally:
+            ss.progress.running = False
+
+    asyncio.ensure_future(_run_bg())
+    return HTMLResponse(
+        notice +
+        '<div id="imp-progress"'
+        ' hx-get="/api/import/match-progress"'
+        ' hx-trigger="every 600ms"'
+        ' hx-swap="outerHTML">'
+        f'<p style="font-size:.85rem;color:#555;margin-bottom:6px">Analysiere {n_items} Positionen…</p>'
+        '<div class="imp-spinner" style="margin:0 auto"></div>'
+        '</div>'
+    )
+
+
 # ─── Upload + Auto-Matching ───────────────────────────────────────────────────
 
 @router.post("/api/import/upload", response_class=HTMLResponse)
@@ -639,9 +799,20 @@ async def import_upload(request: Request, file: UploadFile = File(...)):
             pass
         ss.draft_id = None
     try:
-        data = await file.read()
-        suf  = pathlib.Path(file.filename or "upload").suffix or ".xml"
-        with tempfile.NamedTemporaryFile(suffix=suf, delete=False) as tf:
+        data  = await file.read()
+        fname = file.filename or "upload"
+        suf   = pathlib.Path(fname).suffix.lower()
+
+        # ── Excel: erst Layout erkennen, Mapping-Dialog zeigen, Matching folgt beim Apply
+        if suf in (".xlsx", ".xlsm"):
+            return _excel_probe_response(request, ss, data, fname)
+        if suf == ".xls":
+            return HTMLResponse(
+                '<div class="error-msg">Das alte Excel-Format (.xls) kann nicht gelesen '
+                'werden — bitte die Datei in Excel als <b>.xlsx</b> speichern.</div>')
+
+        # ── GAEB (X83/X84/XML)
+        with tempfile.NamedTemporaryFile(suffix=suf or ".xml", delete=False) as tf:
             tf.write(data)
             tmp = tf.name
         try:
@@ -650,110 +821,192 @@ async def import_upload(request: Request, file: UploadFile = File(...)):
             pathlib.Path(tmp).unlink(missing_ok=True)
 
         ss.d83_project     = project
-        ss.d83_name        = file.filename or "X83"
-        ss.import_filename = file.filename or "X83"
+        ss.d83_name        = fname
+        ss.import_filename = fname
         ss.x83_bytes       = data
+        ss.source_kind     = "gaeb"
+        ss.excel_bytes     = None
+        ss.excel_name      = ""
+        ss.excel_probe     = None
+        ss.excel_layout    = {}
+        reset_import_state(ss)
+        await rebuild_matcher(ss)
+        return start_match_bg(ss, project)
+    except Exception as e:
+        traceback.print_exc()
+        return HTMLResponse(f'<div class="error-msg">Fehler beim Einlesen: {e}</div>')
 
-        # Job-State zurücksetzen
-        ss.d83_local_jobs        = []
-        ss.d83_group_jobs        = {}
-        ss.d83_next_lid          = 2
-        ss.d83_standard_job_name = ""
-        ss.d83_alt_active        = {}
-        ss.d83_booking_qtys      = {}
 
-        loop = asyncio.get_event_loop()
+# ─── Excel-Import: Mapping-Dialog ────────────────────────────────────────────
 
-        # Matcher bei jedem Upload neu aufbauen, damit die Mapping-Quellen-Toggles
-        # (Training-Mappings / GUI-Korrekturen) auf das Matching wirken.
-        articles  = await loop.run_in_executor(None, load_articles_db)
-        resources = await loop.run_in_executor(None, load_resources_db)
-        ss.matcher = UnifiedMatcher(articles, resources)
-        ss.matcher.apply_mapping_filter(ss.use_train_mappings, ss.use_gui_mappings)
+def _excel_ctx(ss, probe, profile: dict | None, show_all: set | None = None) -> dict:
+    """Template-Kontext für den Mapping-Dialog."""
+    return {
+        "S":        ss,
+        "show_all": sorted(show_all or ()),
+        "probe":    probe,
+        "fname":    ss.excel_name,
+        "profile":  profile,
+        "layout":   _xl.layout_to_dict(probe.layout),
+        "col_letter": _xl.get_column_letter,
+        # Vorlagenname = Dateiname ohne Endung; der aus dem Blatt gelesene Projektname
+        # ist oft die Veranstaltung, nicht die Vorlage.
+        "default_label": pathlib.Path(ss.excel_name or "").stem,
+    }
 
-        n_items = len(project.items)
-        ss.progress.running = True
-        ss.progress.done    = 0
-        ss.progress.total   = n_items
 
-        def _do_match():
-            results:      dict = {}
-            bundles:      dict = {}
-            booking_qtys: dict = {}
-            hp_art = None
-            hp_idx = ss.matcher._num_to_idx.get(HAENGEPUNKT_NR)
-            if hp_idx is not None:
-                hp_art = ss.matcher._pool[hp_idx]
-            for item in project.items:
-                if is_kalkulations_position(item.description):
-                    results[item.item_id] = MatchResult(None, 0, "kalkpos", False)
-                    ss.progress.done += 1
-                    continue
-                try:
-                    top = ss.matcher.match(
-                        item.description,
-                        category_path=item.category_path,
-                        qty=item.qty,
-                        unit=item.unit,
-                        long_text=item.long_text,
-                        limit=1,
-                    )
-                    if top:
-                        mr, matched_art = top[0]
-                        results[item.item_id] = mr
+def _excel_probe_response(request: Request, ss, data: bytes, fname: str) -> HTMLResponse:
+    """Excel einlesen, Layout erkennen (ggf. gespeichertes Profil anwenden) und den
+    Mapping-Dialog rendern. Gematcht wird erst beim Apply."""
+    # Formelzellen einmal je Upload erfassen (eigener read_only-Ladevorgang) — daraus
+    # warnt der Dialog, wenn die Preisspalte von der Datei selbst berechnet wird.
+    fmls    = _xl.formula_rows(data)
+    probe   = _xl.probe_workbook(data, fmls)
+    profile = _db.get_excel_layout(probe.fingerprint)
+    if profile:
+        merged = _xl.merge_profile(probe, profile["layout"])
+        probe  = _xl.preview_workbook(data, merged, fmls)
 
-                        # Traverse-Berechnung: Stücklänge aus Beschreibung oder Standard 3 m
-                        ti        = parse_traverse_info(item.description)
-                        piece_len = (ti.length_m if ti and ti.length_m else None) or TRAVERSE_STANDARD_LENGTH_M
-                        pieces    = traverse_piece_count(float(item.qty), item.unit or "", piece_len)
-                        if pieces is not None:
-                            booking_qtys[item.item_id] = {"qty": float(pieces), "lfm_converted": True, "piece_len": piece_len}
-                        else:
-                            booking_qtys[item.item_id] = {"qty": _bqty(item.qty), "lfm_converted": False, "piece_len": None}
+    ss.excel_bytes     = data
+    ss.excel_name      = fname
+    ss.excel_probe     = probe
+    ss.excel_formulas  = fmls
+    ss.excel_layout    = _xl.layout_to_dict(probe.layout)
+    ss.source_kind     = "excel"
+    ss.import_filename = ""          # erst nach dem Apply gilt die Datei als geladen
+    # Vorherigen Import verwerfen: sonst zeigt ein Seiten-Reload während des Mappings
+    # noch die Positionen der alten Datei, obwohl die Datei-Anzeige schon leer ist.
+    ss.d83_project = None
+    ss.d83_groups  = []
+    ss.matches     = {}
+    ss.bundles     = {}
+    ss.x83_bytes   = None
+    reset_import_state(ss)
+    logging.info("import/excel: %s — %d Sheets, fp=%s, Profil=%s",
+                 fname, len(probe.sheets), probe.fingerprint, bool(profile))
+    return templates.TemplateResponse(request, "partials/excel_mapping.html",
+                                      _excel_ctx(ss, probe, profile))
 
-                        # Hängepunkt-Pauschale bei Motor-Positionen
-                        if is_motor_position(item.description) and hp_art:
-                            bundles.setdefault(item.item_id, []).append(
-                                {"article": hp_art, "qty": item.qty}
-                            )
 
-                        for extra_num in ss.matcher.get_bundle_extras(item.description):
-                            idx = ss.matcher._num_to_idx.get(extra_num)
-                            if idx is not None:
-                                extra_art = ss.matcher._pool[idx]
-                                bundles.setdefault(item.item_id, []).append(
-                                    {"article": extra_art, "qty": item.qty}
-                                )
-                except Exception:
-                    pass
-                ss.progress.done += 1
-            return results, bundles, booking_qtys
+@router.post("/api/import/excel/repreview", response_class=HTMLResponse)
+async def import_excel_repreview(request: Request, layout_json: str = Form(...),
+                                 show_all: str = Form("")):
+    """Kopfzeile/Spaltenrollen geändert → Klassifikation und Vorschau neu berechnen."""
+    ss = get_session(request.session)
+    if not ss.excel_bytes:
+        return HTMLResponse('<div class="error-msg">Keine Excel-Datei geladen — '
+                            'bitte erneut hochladen.</div>')
+    try:
+        layout = _xl.layout_from_dict(_json.loads(layout_json))
+        # „alle Zeilen" ist reine Anzeigesache und gehört nicht ins Layout-Profil —
+        # deshalb ein eigenes Feld statt eines Eintrags im Layout.
+        wide   = {n for n in show_all.split("|") if n}
+        probe  = _xl.preview_workbook(ss.excel_bytes, layout,
+                                      getattr(ss, "excel_formulas", None), wide)
+        ss.excel_probe  = probe
+        ss.excel_layout = _xl.layout_to_dict(probe.layout)
+        return templates.TemplateResponse(request, "partials/excel_mapping.html",
+                                          _excel_ctx(ss, probe, None, wide))
+    except Exception as e:
+        traceback.print_exc()
+        return HTMLResponse(f'<div class="error-msg">Vorschau fehlgeschlagen: {e}</div>')
 
-        async def _run_bg():
-            try:
-                new_matches, new_bundles, new_bqtys = await loop.run_in_executor(None, _do_match)
-                ss.matches         = new_matches
-                ss.bundles         = new_bundles
-                ss.d83_booking_qtys = new_bqtys
-                level = 1 if ss.d83_import_mode == "groups" else 0
-                ss.d83_groups = _import_gaeb_groups(project, level, ss.d83_alt_active)
-                logging.info("import/upload: %d items, %d matches", n_items, len(ss.matches))
-            except Exception:
-                traceback.print_exc()
-            finally:
-                ss.progress.running = False
 
-        asyncio.ensure_future(_run_bg())
+def _assign_jobs(ss, project: GaebProject) -> None:
+    """Easyjob-Jobs aus der Excel-Struktur vorbelegen.
 
-        return HTMLResponse(
-            '<div id="imp-progress"'
-            ' hx-get="/api/import/match-progress"'
-            ' hx-trigger="every 600ms"'
-            ' hx-swap="outerHTML">'
-            f'<p style="font-size:.85rem;color:#555;margin-bottom:6px">Analysiere {n_items} Positionen…</p>'
-            '<div class="imp-spinner" style="margin:0 auto"></div>'
-            '</div>'
-        )
+    Welche Jobs es gibt, entscheidet der Parser (Szenario · Blatt · als „Job" gemalte
+    Zeilen) und legt es in ``project.job_by_item`` ab. Hier wird daraus der
+    Session-State: der erste Job ist der Standard-Job, alle weiteren kommen als
+    lokale Jobs dazu. ``d83_group_jobs`` schlüsselt auf das Gruppenlabel — genau wie
+    die manuelle Zuordnung in /api/import/local-add-job. Weil alle Gruppenlabels ihre
+    Herkunftskoordinate tragen, gehört jedes Label zu genau einem Job.
+    """
+    jobs: list[str] = []
+    for item in project.items:
+        name = (project.job_by_item.get(item.item_id) or "").strip()
+        if name and name not in jobs:
+            jobs.append(name)
+    if len(jobs) < 2:
+        # Ein Job (oder keiner) → alles in den Standard-Job, nichts zu verteilen.
+        if jobs:
+            ss.d83_standard_job_name = jobs[0]
+        return
+
+    ss.d83_standard_job_name = jobs[0]
+    lid_by_job = {jobs[0]: 1}
+    for name in jobs[1:]:
+        lid = ss.d83_next_lid
+        ss.d83_local_jobs.append({"lid": lid, "name": name})
+        ss.d83_next_lid += 1
+        lid_by_job[name] = lid
+
+    for item in project.items:
+        lid = lid_by_job.get((project.job_by_item.get(item.item_id) or "").strip(), 1)
+        if lid == 1:
+            continue
+        for label in item.category_path:
+            ss.d83_group_jobs[label] = lid
+    logging.info("import/excel: %d Jobs -> %s", len(jobs), lid_by_job)
+
+
+@router.post("/api/import/excel/apply", response_class=HTMLResponse)
+async def import_excel_apply(request: Request,
+                             layout_json: str = Form(...),
+                             label: str = Form("")):
+    """Bestätigtes Mapping anwenden: Positionen bauen, Layout-Profil merken,
+    Auto-Matching starten."""
+    ss = get_session(request.session)
+    if not ss.excel_bytes:
+        return HTMLResponse('<div class="error-msg">Keine Excel-Datei geladen — '
+                            'bitte erneut hochladen.</div>')
+    try:
+        layout  = _xl.layout_from_dict(_json.loads(layout_json))
+        project = _xl.parse_excel(ss.excel_bytes, layout,
+                                  name=label or pathlib.Path(ss.excel_name).stem)
+        if not project.items:
+            return HTMLResponse(
+                '<div class="error-msg">Keine Positionen erkannt. Bitte prüfen, ob '
+                'Kopfzeile, Beschreibung und Menge/Einheit richtig eingefärbt sind.</div>')
+
+        ss.d83_project     = project
+        ss.d83_name        = ss.excel_name
+        ss.import_filename = ss.excel_name
+        ss.x83_bytes       = ss.excel_bytes      # Quelldatei für die Preis-Rückschreibung
+        ss.excel_layout    = _xl.layout_to_dict(layout)
+        ss.source_kind     = "excel"
+        ss.excel_probe     = None                # Vorschau nicht länger im RAM halten
+        ss.excel_formulas  = None
+
+        reset_import_state(ss)
+        _assign_jobs(ss, project)
+        _xl.release(ss.excel_bytes)   # Mappen-Cache freigeben, Matching braucht den RAM
+
+        # Layout-Profil merken → beim nächsten Upload derselben Vorlage schon richtig
+        try:
+            _db.save_excel_layout(layout.fingerprint or "",
+                                  label or pathlib.Path(ss.excel_name).stem,
+                                  ss.excel_layout)
+        except Exception:
+            traceback.print_exc()      # Profil ist Komfort, kein Grund den Import zu stoppen
+
+        # Angehaktes Blatt, aus dem keine einzige Position kam: benennen statt
+        # stillschweigend weniger zu importieren.
+        got    = {i.src_ref.rsplit("!", 1)[0] for i in project.items if i.src_ref}
+        empty  = [sl.name for sl in layout.sheets if sl.enabled and sl.name not in got]
+        notice = ""
+        if empty:
+            names = ", ".join(empty)
+            notice = (
+                '<div class="error-msg" style="margin-bottom:10px">'
+                f'Aus {len(empty)} angehakten Blättern kam keine Position: {names}. '
+                'Dort fehlt die Zuordnung von <b>Beschreibung</b> und '
+                '<b>Menge</b> bzw. <b>Einheit</b> — evtl. auch die Kopfzeile. '
+                'Alles andere wurde eingelesen.</div>')
+            logging.warning("import/excel: Blätter ohne Positionen: %s", empty)
+
+        await rebuild_matcher(ss)
+        return start_match_bg(ss, project, notice)
     except Exception as e:
         traceback.print_exc()
         return HTMLResponse(f'<div class="error-msg">Fehler beim Einlesen: {e}</div>')
@@ -1686,6 +1939,7 @@ async def _do_create_bg(
                 cur.execute("DELETE FROM StockType2JobGroupParent WHERE IdJob=?", job_id)
 
             def _insert_hg(job_id: int, caption: str, sort: int) -> int:
+                caption = _gcap(caption)
                 cur.execute(
                     "INSERT INTO StockType2JobGroupParent "
                     "(IdJob, Caption, SortOrder, UseGroupPrice, Price, Discount, "
@@ -1697,6 +1951,7 @@ async def _do_create_bg(
                 return int(cur.fetchone()[0])
 
             def _insert_g(job_id: int, caption: str, sort: int, id_parent: int):
+                caption = _gcap(caption)
                 cur.execute(
                     "INSERT INTO StockType2JobGroup "
                     "(IdJob, Caption, SortOrder, IdStockType2JobGroupParent, "
@@ -1803,7 +2058,7 @@ async def _do_create_bg(
                     _cap = f'[{_it.oz}] {_it.description}' if _it.oz else _it.description
                 else:
                     _cap = oz_to_sub_cap.get(_it.oz or "")
-                _gid = cap_to_gid.get((_job, _cap), 0) if _cap else 0
+                _gid = cap_to_gid.get((_job, _gcap(_cap)), 0) if _cap else 0
                 if _gid:
                     alt_gids.add(_gid)
             if alt_gids:
@@ -1840,7 +2095,7 @@ async def _do_create_bg(
                     g_cap = f'[{item.oz}] {item.description}' if item.oz else item.description
                 else:
                     g_cap = oz_to_sub_cap.get(item.oz or "")
-                grp_i = cap_to_gid.get((job_i, g_cap), 0) if g_cap else 0
+                grp_i = cap_to_gid.get((job_i, _gcap(g_cap)), 0) if g_cap else 0
 
                 bq_i  = ss.d83_booking_qtys.get(item.item_id, {})
                 qty_i = _bqty(bq_i.get("qty", item.qty))   # nie 0 → EJ verbietet Menge 0
@@ -1862,7 +2117,7 @@ async def _do_create_bg(
                     g_cap = f'[{item.oz}] {item.description}' if item.oz else item.description
                 else:
                     g_cap = oz_to_sub_cap.get(item.oz or "")
-                grp_i = cap_to_gid.get((job_i, g_cap), 0) if g_cap else 0
+                grp_i = cap_to_gid.get((job_i, _gcap(g_cap)), 0) if g_cap else 0
                 for b in item_bundles:
                     bart = b.get("article")
                     if not bart:
@@ -1965,7 +2220,7 @@ async def _do_create_bg(
                 g_cap_r   = (f'[{item_obj.oz}] {item_obj.description}'
                              if import_mode == "positions" and item_obj.oz
                              else oz_to_sub_cap.get(item_obj.oz or ""))
-                grp_id_r  = cap_to_gid.get((job_id_r, g_cap_r), 0) if g_cap_r else 0
+                grp_id_r  = cap_to_gid.get((job_id_r, _gcap(g_cap_r)), 0) if g_cap_r else 0
                 return job_id_r, grp_id_r
 
             for item_id, mr in ss.matches.items():
@@ -2074,6 +2329,7 @@ async def _do_create_bg(
                         gaeb_bytes=ss.x83_bytes,
                         ej_job_ids=job_ids_csv,
                         ej_project_number=ej_project_number,
+                        source_kind=ss.source_kind or "gaeb",
                     ),
                 )
             from matcher import resolve_time_factor as _resolve_tf

@@ -8,7 +8,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -90,13 +90,32 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 # ─── Auth-Middleware ─────────────────────────────────────────────────────────
 
+def _to_login(request: Request):
+    """Zur Anmeldung schicken — je nach Art der Anfrage unterschiedlich.
+
+    Bei htmx- oder fetch-Aufrufen darf es KEINE 303 auf /login sein: Browser folgen
+    ihr transparent, und die Login-Seite würde als HTML in das Ziel-Element gerendert
+    (nach einem Server-Neustart landete das Anmeldeformular so mitten in der
+    Gruppenansicht). Stattdessen 401 + HX-Redirect, das löst einen echten
+    Seitenwechsel aus.
+    """
+    hx   = request.headers.get("hx-request")
+    mode = request.headers.get("sec-fetch-mode", "")
+    xhr  = request.headers.get("x-requested-with", "").lower() == "xmlhttprequest"
+    if hx or xhr or (mode and mode != "navigate"):
+        resp = Response(status_code=401)
+        resp.headers["HX-Redirect"] = "/login"
+        return resp
+    return RedirectResponse("/login", status_code=303)
+
+
 @app.middleware("http")
 async def _require_auth(request: Request, call_next):
     path = request.url.path
     if path.startswith("/static") or path in ("/login", "/favicon.ico"):
         return await call_next(request)
     if not request.session.get("authenticated"):
-        return RedirectResponse("/login", status_code=303)
+        return _to_login(request)
     # Serverseitige Session (Matcher/Projekt/EJ-Client) lebt im RAM (TTL 15 h) und
     # trägt am Folgetag weiter, solange der Server läuft. Ist sie weg (Neustart /
     # TTL abgelaufen), lässt sich der EJ-Client mangels Passwort NICHT rekonstruieren
@@ -105,7 +124,7 @@ async def _require_auth(request: Request, call_next):
     ss = get_session(request.session)
     if ss.ej_client is None:
         request.session.clear()
-        return RedirectResponse("/login", status_code=303)
+        return _to_login(request)
     return await call_next(request)
 
 

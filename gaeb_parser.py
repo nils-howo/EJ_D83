@@ -21,6 +21,12 @@ class GaebItem:
     is_alt: bool = False                         # Alternativposition (ALNSerNo≥1 / Type="A")
     is_eventual: bool = False                    # Eventual-/Bedarfsposition (<Provis>)
     long_text_images: list[str] = field(default_factory=list)  # data-URIs aus Langtext
+    src_ref: str = ""       # Excel-Herkunft "Los 1 Technik!18" — Ziel der Preis-Rückschreibung
+    ref_text: str = ""      # Referenz-/Typ-Spalte der Excel ("Prolyte H30V") — pur, ohne Langtext
+    # Vollständige Gruppenkette für das Matching. category_path trägt beim Excel-Import
+    # nur eine Gruppenebene (Easyjob-Struktur), der Matcher will aber alle Stichwörter
+    # des Pfads sehen ("Lichttechnik · Rigging · Traversen"). Leer = category_path nutzen.
+    match_path: list[str] = field(default_factory=list)
 
     @property
     def full_position(self) -> str:
@@ -53,6 +59,10 @@ class GaebProject:
     items: list[GaebItem] = field(default_factory=list)
     remarks: list[GaebRemark] = field(default_factory=list)
     preliminaries: list[GaebRemark] = field(default_factory=list)  # Award-Vorbemerkungen (projektweit)
+    # Nur beim Excel-Import gefüllt: item_id → Job-Bezeichnung bzw. Szenario-Name.
+    # Aus GAEB kommen keine Jobs/Szenarien, dort bleiben beide leer.
+    job_by_item:      dict[str, str] = field(default_factory=dict)
+    scenario_by_item: dict[str, str] = field(default_factory=dict)
 
 
 def _detect_ns(root: ET.Element) -> dict[str, str]:

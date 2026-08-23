@@ -1,0 +1,223 @@
+{# Mapping-Dialog für Excel-LVs: Farbe links wählen, in der Tabelle draufklicken.
+   Alles ist von der Auto-Erkennung vorgefärbt — der Nutzer korrigiert nur Abweichungen.
+   Der komplette Färbezustand steckt in data-layout und geht als layout_json zurück. #}
+<div id="xl-mapping" data-layout='{{ layout | tojson }}'
+     data-showall="{{ show_all | join('|') }}">
+
+  <div class="xl-head">
+    <div>
+      <span class="xl-file">{{ fname }}</span>
+      <span class="xl-sub">{{ probe.sheets | length }} Blätter · Zuordnung prüfen</span>
+    </div>
+    {% if profile %}
+    <span class="xl-profile" title="Gespeichertes Layout für diese Ausschreibungs-Vorlage">
+      ✓ Layout erkannt: <b>{{ profile.label or 'ohne Namen' }}</b>
+      {% if profile.hit_count %}({{ profile.hit_count }}× verwendet){% endif %}
+    </span>
+    {% else %}
+    <span class="xl-profile xl-profile-new">Neue Vorlage — Zuordnung wird nach dem Einlesen gemerkt</span>
+    {% endif %}
+  </div>
+
+  {# ── Blätter ─────────────────────────────────────────────────────────────── #}
+  <div class="xl-tabs">
+    {% for sp in probe.sheets %}
+    {% set leer = sp.layout.enabled and not sp.counts.pos %}
+    <label class="xl-tab{% if sp.layout.enabled %} xl-tab-on{% endif %}{% if not sp.counts.pos and not sp.layout.enabled %} xl-tab-dead{% endif %}{% if leer %} xl-tab-warn{% endif %}"
+           data-sheet="{{ sp.layout.name }}">
+      <input type="checkbox" class="xl-sheet-toggle" data-sheet="{{ sp.layout.name }}"
+             {% if sp.layout.enabled %}checked{% endif %}>
+      <span class="xl-tab-name">{{ sp.layout.name }}</span>
+      <span class="xl-tab-cnt">{% if sp.counts.pos %}{{ sp.counts.pos }} Pos.{% elif leer %}⚠ 0 Pos.{% else %}keine Positionen{% endif %}</span>
+    </label>
+    {% endfor %}
+  </div>
+
+  {% if probe.active_sheets > 1 %}
+  <div class="xl-sheetmode">
+    <span>{{ probe.active_sheets }} Blätter aktiv — jedes Blatt wird zu:</span>
+    <label><input type="radio" name="xl-sheet-mode" value="job"
+                  {% if probe.sheet_mode == 'job' %}checked{% endif %}>
+      einem eigenen <b>Job</b></label>
+    <label><input type="radio" name="xl-sheet-mode" value="keep"
+                  {% if probe.sheet_mode == 'keep' %}checked{% endif %}>
+      <b>einem Job</b>, Struktur beibehalten
+      <span class="xl-sub">(Hauptgruppen des Blatts bleiben)</span></label>
+    <label><input type="radio" name="xl-sheet-mode" value="main"
+                  {% if probe.sheet_mode == 'main' %}checked{% endif %}>
+      <b>einem Job</b>, Blatt ist die <b>Hauptgruppe</b>
+      <span class="xl-sub">(Gruppen darin werden Hinweise)</span></label>
+  </div>
+  {% endif %}
+
+  <div class="xl-work">
+
+    {# ── Palette ───────────────────────────────────────────────────────────── #}
+    <div class="xl-palette">
+      <div class="xl-pal-group">Spalten</div>
+      {% for role, name in [('desc','Beschreibung'), ('qty','Menge'), ('unit','Einheit'),
+                            ('oz','Pos-Nr'), ('ref','Referenz/Typ'), ('price','Einzelpreis'),
+                            ('flag','AP/BP'), ('ignore','ignorieren')] %}
+      <button type="button" class="xl-swatch xl-role-{{ role }}" data-brush="col" data-value="{{ role }}">
+        <span class="xl-chip"></span>{{ name }}
+      </button>
+      {% endfor %}
+
+      {# Zeilen-Pinsel folgen der Easyjob-Struktur: Job → Hauptgruppe → Gruppe/Position.
+         Eine Gruppe IST in Easyjob eine Position (je Position eine StockType2JobGroup),
+         darum gibt es dafür nur einen Pinsel. #}
+      <div class="xl-pal-group">Zeilen</div>
+      {% set sheet_is_hg = probe.active_sheets > 1 and probe.sheet_mode == 'main' %}
+      {% for kind, name in [('header','Kopfzeile'), ('job','Job'), ('main','Hauptgruppe'),
+                            ('pos','Gruppe/Position'), ('note','Hinweis'),
+                            ('skip','Zeile ignorieren')] %}
+      {% if kind == 'main' and sheet_is_hg %}
+      <button type="button" class="xl-swatch xl-row-main xl-swatch-off" disabled
+              title="Das Blatt ist die Hauptgruppe — eine Zeile darin kann keine weitere sein.">
+        <span class="xl-chip"></span>{{ name }}
+      </button>
+      {% else %}
+      <button type="button" class="xl-swatch xl-row-{{ kind }}" data-brush="row" data-value="{{ kind }}">
+        <span class="xl-chip"></span>{{ name }}
+      </button>
+      {% endif %}
+      {% endfor %}
+      <p class="xl-hint">
+        Easyjob hat zwischen Job und Position genau eine Ebene. Die <b>äußerste</b>
+        Gruppe über einer Position wird ihre <b>Hauptgruppe</b> (z.B. „Rigging");
+        feinere Ebenen darunter („Traversen") werden <b>Hinweise</b> und stehen
+        innerhalb der Hauptgruppe an ihrer Stelle.
+      </p>
+
+      <p class="xl-hint">
+        Spaltenkopf anklicken = ganze Spalte.<br>
+        Zeilennummer anklicken = ganze Zeile (Ziehen für mehrere).<br>
+        <kbd>Alt</kbd>+Klick = zurück auf die Erkennung.
+      </p>
+      <button type="button" class="btn btn-grey xl-reset" style="font-size:.75rem;padding:3px 8px">
+        Erkennung wiederherstellen
+      </button>
+    </div>
+
+    {# ── Tabellen ──────────────────────────────────────────────────────────── #}
+    {# Blätter sind zusammenklappbar: LOS2 hat 10 Positions-Sheets, zehn Tabellen
+       übereinander wäre unbenutzbar. Das erste aktive Blatt ist offen. #}
+    {% set ns = namespace(opened=false) %}
+    <div class="xl-sheets">
+      {% for sp in probe.sheets %}
+      {% set sl = sp.layout %}
+      <details class="xl-sheet{% if not sl.enabled %} xl-sheet-off{% endif %}" data-sheet="{{ sl.name }}"
+               {% if sl.enabled and not ns.opened %}open{% set ns.opened = true %}{% endif %}>
+        <summary class="xl-sheet-bar">
+          <b>{{ sl.name }}</b>
+          {% if sl.enabled and not sp.counts.pos %}
+          {# Angehakt, aber es kommt nichts heraus — das darf nicht unbemerkt bleiben. #}
+          <span class="xl-warn">⚠ keine Positionen erkannt
+            {%- if not sl.header_row %} — Kopfzeile mit dem Pinsel „Kopfzeile" setzen
+              (oder Beschreibung und Menge/Einheit einfärben){% else %} —
+              Beschreibung und Menge/Einheit prüfen{% endif %}</span>
+          {% elif sp.counts.price_formulas %}
+          {# In dieser Spalte steht kein Preis, sondern eine Rechnung (LOS1 GOE: E=C+D).
+             Hineinschreiben würde die Datei kaputtmachen — jetzt sagen, nicht erst
+             beim Export. #}
+          <span class="xl-warn">⚠ In Spalte {{ col_letter(sl.roles.price) }}
+            (Einzelpreis) stehen in <b>{{ sp.counts.price_formulas }}</b> von
+            {{ sp.counts.pos }} Positionszeilen <b>Formeln</b> — die Spalte wird von der
+            Datei selbst berechnet. Beim Export wird dort nichts geschrieben. Sicher die
+            richtige Spalte? Sonst die Eingabespalte als Einzelpreis einfärben.</span>
+          {% elif sl.header_row %}
+          <span class="xl-counts"
+                data-pos="{{ sp.counts.pos }}" data-job="{{ sp.counts.job }}"
+                data-main="{{ sp.counts.main }}" data-note="{{ sp.counts.note }}">
+            <b class="c-pos">{{ sp.counts.pos }}</b> Positionen ·
+            <b class="c-job">{{ sp.counts.job }}</b> Jobs ·
+            <b class="c-main">{{ sp.counts.main }}</b> Hauptgruppen ·
+            <b class="c-note">{{ sp.counts.note }}</b> Hinweise
+            {% if sl.roles.qty | selectattr('active') | list | length > 1 %}
+            · <b>{{ sl.roles.qty | selectattr('active') | list | length }}</b> Szenarien
+            {% endif %}
+          </span>
+          {% if sp.counts.truncated %}
+          <span class="xl-sub">Vorschau: {{ sp.counts.shown }} von
+            {{ sp.counts.shown + sp.counts.truncated }} Zeilen</span>
+          <button type="button" class="xl-showall" data-sheet="{{ sl.name }}"
+                  title="Alle Zeilen laden — bei vielen Zeilen wird die Tabelle lang">
+            alle Zeilen anzeigen</button>
+          {% elif sl.name in show_all %}
+          <span class="xl-sub">alle Zeilen</span>
+          <button type="button" class="xl-showless" data-sheet="{{ sl.name }}">
+            nur die ersten anzeigen</button>
+          {% endif %}
+          {% else %}
+          <span class="xl-sub">Keine Kopfzeile erkannt — Zeilennummer mit dem Pinsel
+            „Kopfzeile" anklicken.</span>
+          {% endif %}
+        </summary>
+
+        {# Jobnamen je aktiver Mengenspalte (mehrere Mengenspalten = mehrere Szenarien) #}
+        {% set aqty = sl.roles.qty | selectattr('active') | list %}
+        {% if aqty | length > 1 %}
+        <div class="xl-scenarios">
+          <span class="xl-sub">Je Mengenspalte ein Easyjob-Job:</span>
+          {% for q in aqty %}
+          <label class="xl-scen">
+            <span class="xl-scen-col">{{ col_letter(q.col) }}</span>
+            <input type="text" class="xl-job-name" data-sheet="{{ sl.name }}" data-col="{{ q.col }}"
+                   value="{{ q.job_name or q.label }}" placeholder="Jobname">
+          </label>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        <div class="xl-grid-wrap">
+          <table class="xl-grid">
+            <thead>
+              <tr>
+                <th class="xl-corner"></th>
+                {% for c in range(1, sp.max_col + 1) %}
+                {% set role = sl.roles.role_of(c) %}
+                <th class="xl-colhead xl-role-{{ role }}" data-col="{{ c }}"
+                    title="Spalte {{ col_letter(c) }}{% if sp.header_texts and sp.header_texts[c-1] %} — {{ sp.header_texts[c-1] }}{% endif %}">
+                  {{ col_letter(c) }}
+                </th>
+                {% endfor %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for pr in sp.preview %}
+              <tr class="xl-tr xl-row-{{ pr.kind }}" data-row="{{ pr.row }}"
+                  {% if pr.kind == 'grp' %}data-level="{{ pr.level }}"{% endif %}>
+                <th class="xl-rowhead" data-row="{{ pr.row }}"
+                    title="Excel-Zeile {{ pr.row }}{% if pr.kind == 'job' %} — Job{% elif pr.kind == 'main' %} — Hauptgruppe{% endif %}">
+                  {{ pr.row }}
+                </th>
+                {% for cell in pr.cells %}
+                {% set role = sl.roles.role_of(loop.index) %}
+                <td class="xl-role-{{ role }}" data-col="{{ loop.index }}"
+                    {% if cell %}title="{{ cell }}"{% endif %}>{{ cell }}</td>
+                {% endfor %}
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </details>
+      {% endfor %}
+    </div>
+  </div>
+
+  {# ── Übernehmen ────────────────────────────────────────────────────────────── #}
+  <form class="xl-apply">
+    <input type="hidden" name="layout_json" id="xl-layout-json">
+    <label class="xl-label">
+      Name der Vorlage
+      <input type="text" name="label" value="{{ default_label }}"
+             placeholder="z.B. Porsche GOE Rahmenvertrag Technik">
+    </label>
+    <button type="submit" class="btn btn-primary" id="xl-apply-btn">
+      Einlesen &amp; Matching starten
+    </button>
+    <span id="xl-apply-msg"></span>
+    <span class="xl-sub">Die Zuordnung wird für diese Vorlage gespeichert.</span>
+  </form>
+</div>

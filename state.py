@@ -110,6 +110,14 @@ class UserSession:
         self.d83_proj_types: list                  = []
         self.d83_events:     list                  = []
         self.d83_import_mode: str                  = "positions"
+        # Excel-Import (.xlsx): Rohdatei + erkanntes/korrigiertes Layout. source_kind
+        # entscheidet später, ob als GAEB X84 oder als Excel zurückgeschrieben wird.
+        self.source_kind:  str            = "gaeb"   # "gaeb" | "excel"
+        self.excel_bytes:  bytes | None   = None
+        self.excel_name:   str            = ""
+        self.excel_probe:  object | None  = None     # WorkbookProbe (nur bis zum Apply)
+        self.excel_layout: dict           = {}       # ExcelLayout als dict (serialisierbar)
+        self.excel_formulas: object | None = None    # {Blatt: {Spalte: {Zeilen}}} mit Formeln
         # D83 EJ Projekt-State (gesetzt nach Projekt-Anlage)
         # Lokale Job-Definitionen (vor EJ-Anlage)
         self.d83_local_jobs:       list = []   # extra jobs: [{"lid": 2, "name": "Licht"}, ...]

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Projekte — D84 Export</title>
+  <title>Projekte — Angebots-Export</title>
   <link rel="stylesheet" href="/static/style.css">
   <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
   <style>
@@ -91,11 +91,11 @@
       <tr>
         <th>Projektnr.</th>
         <th>Projektname</th>
-        <th>GAEB-Datei</th>
+        <th>Quelldatei</th>
         <th style="text-align:right">Pos.</th>
         <th style="text-align:right">Gebucht</th>
         <th>Angelegt</th>
-        <th>D84 Export</th>
+        <th>Angebot</th>
         <th></th>
       </tr>
     </thead>
@@ -109,7 +109,7 @@
         {% if p.status == 'draft' and p.locked_by %} <span style="font-size:.72rem;color:#c62828;white-space:nowrap">🔒 {{ p.locked_by_name or 'in Bearbeitung' }}</span>{% endif %}
         {% if p.status == 'draft' and p.updated_by %}<span style="display:block;font-size:.72rem;color:#999">zuletzt: {{ p.updated_by }}{% if p.updated_at %} · {{ p.updated_at[:16] }}{% endif %}</span>{% endif %}
       </td>
-      <td style="font-size:.8rem;color:#555">{{ p.gaeb_name or '—' }}</td>
+      <td style="font-size:.8rem;color:#555">{{ p.gaeb_name or '—' }}{% if p.source_kind == 'excel' %}<span class="src-tag src-xlsx">Excel</span>{% else %}<span class="src-tag src-gaeb">GAEB</span>{% endif %}</td>
       <td style="text-align:right">{{ p.item_count }}</td>
       <td style="text-align:right">{% if p.status == 'draft' %}—{% else %}{{ p.booking_count }}{% endif %}</td>
       <td style="font-size:.78rem;color:#888">{{ p.created_at[:16] if p.created_at else '—' }}</td>
@@ -125,8 +125,8 @@
         </a>{% if p.has_gaeb %}<button class="btn-export"
                 hx-get="/api/projects/{{ p.id }}/export-dialog"
                 hx-target="#export-modal-body" hx-swap="innerHTML">
-          ⬇ D84 Export
-        </button>{% else %}<span class="no-gaeb">kein GAEB</span>{% endif %}
+          ⬇ {% if p.source_kind == 'excel' %}Excel-Export{% else %}D84-Export{% endif %}
+        </button>{% else %}<span class="no-gaeb">keine Quelldatei</span>{% endif %}
         {% endif %}
       </td>
       <td>
