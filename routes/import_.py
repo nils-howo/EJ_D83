@@ -1348,15 +1348,48 @@ async def import_set_qty(item_id: str, request: Request, qty: float = Form(...))
 
 @router.get("/api/import/project-search")
 async def import_project_search(request: Request, q: str = "", limit: int = 15):
-    """Sucht bestehende EJ-Projekte für den Modus 'Jobs zu bestehendem Projekt'."""
+    """Sucht bestehende EJ-Projekte (Modus „Jobs zu bestehendem Projekt").
+
+    Direkt über die EJ-DB, damit NUR echte Vermiet-Projekte erscheinen:
+    IdProjectState IN (1 = Bestätigt/Auftrag, 2 = Angebot). Damit fallen Werkstatt-/
+    Service-Aufträge (State 4), Lagerumbuchungen (5), Inventuren (6),
+    Fertigungsplanung (11) und abgesagte (3) raus — die die Liste vorher zumüllten
+    (z.B. lieferte „26-" 5555 Service- vs. ~840 echte Treffer). Bereits „durch"-
+    gelaufene Projekte (Enddatum in der Vergangenheit) werden ausgeblendet; nur
+    laufende/zukünftige (oder noch ohne Enddatum) erscheinen. Nächste zuerst.
+    """
     ss = get_session(request.session)
-    if not ss.ej_client or len(q) < 2:
+    q = (q or "").strip()
+    if not ss.ej_db_conn or len(q) < 2:
         return JSONResponse([])
+
+    def _search():
+        import pyodbc
+        like = f"%{q}%"
+        cn = pyodbc.connect(ss.ej_db_conn, timeout=8)
+        try:
+            rows = cn.cursor().execute(
+                "SELECT TOP (?) IdProject, Number, Caption, StartDate, EndDate "
+                "FROM Project "
+                "WHERE IdProjectState IN (1, 2) "
+                "  AND (EndDate IS NULL OR EndDate >= CAST(GETDATE() AS DATE)) "
+                "  AND (Number LIKE ? OR Caption LIKE ? OR RefNumber LIKE ?) "
+                "ORDER BY StartDate ASC",
+                int(limit), like, like, like,
+            ).fetchall()
+            return [{
+                "id":    int(r.IdProject),
+                "num":   (r.Number or "").strip(),
+                "name":  (r.Caption or "").strip(),
+                "start": str(r.StartDate)[:10] if r.StartDate else "",
+                "end":   str(r.EndDate)[:10] if r.EndDate else "",
+            } for r in rows]
+        finally:
+            cn.close()
+
     try:
         loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(
-            None, lambda: ss.ej_client.projects_search(q, limit)
-        )
+        results = await loop.run_in_executor(None, _search)
         return JSONResponse(results or [])
     except Exception as _e:
         logging.error("import/project-search failed: %s", _e)
