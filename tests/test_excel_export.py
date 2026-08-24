@@ -5,6 +5,12 @@ bleiben und Formatierung/Struktur der Datei erhalten sind.
 
     .venv/Scripts/python.exe tests/test_excel_export.py
 """
+import sys
+
+# Konsole auf UTF-8: sonst stirbt schon ein "→" im print an cp1252 und der Test
+# bricht mitten drin ab, ohne dass eine Prüfung fehlgeschlagen wäre.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 import io
 import os
 import sys

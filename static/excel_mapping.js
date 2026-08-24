@@ -12,7 +12,7 @@
 (function () {
   'use strict';
 
-  var SINGLE    = ['desc', 'oz', 'unit', 'price', 'flag'];   // Rollen mit genau einer Spalte
+  var SINGLE    = ['desc', 'oz', 'unit', 'price', 'total', 'flag'];  // Rollen mit einer Spalte
   var ROW_KINDS = ['header', 'job', 'main', 'grp', 'pos', 'note', 'skip'];
   var COUNTED   = ['pos', 'job', 'main', 'note'];   // Zeilentypen mit Zähler
 
@@ -188,6 +188,15 @@
 
   document.addEventListener('mouseup', function () { dragging = false; });
 
+  // Aufklappen: die Tabelle wird serverseitig nur für offene Blätter aufgebaut,
+  // also beim Öffnen einmal nachladen.
+  document.addEventListener('toggle', function (e) {
+    var d = e.target;
+    if (!d.classList || !d.classList.contains('xl-sheet') || !d.open) { return; }
+    if (d.querySelector('.xl-grid-wrap')) { return; }      // schon geladen
+    repreview();
+  }, true);
+
   // ── Blätter, Jobnamen, Zurücksetzen ──────────────────────────────────────
   document.addEventListener('change', function (e) {
     var cb = e.target.closest('.xl-sheet-toggle');
@@ -231,7 +240,13 @@
     e.preventDefault();
     var name = b.dataset.sheet;
     var list = showAll().filter(function (n) { return n !== name; });
-    if (b.classList.contains('xl-showall')) { list.push(name); }
+    if (b.classList.contains('xl-showall')) {
+      list.push(name);
+      // Zellen baut der Server nur für aufgeklappte Blätter — also erst öffnen,
+      // sonst lädt man „alle Zeilen" und sieht weiter nichts.
+      var sheet = b.closest('.xl-sheet');
+      if (sheet) { sheet.open = true; }
+    }
     setShowAll(list);
     repreview();
   });
@@ -334,6 +349,7 @@
     var ui     = captureUi();
     body.append('layout_json', JSON.stringify(layout()));
     body.append('show_all', showAll().join('|'));
+    body.append('opened', ui.open.join('|'));
     if (target) { target.classList.add('xl-loading'); }
 
     fetch('/api/import/excel/repreview', { method: 'POST', body: body })

@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import pathlib
+import re
 import tempfile
 import traceback
 from datetime import datetime
@@ -83,6 +84,26 @@ def _to_blocks(positions: list[dict], alt_active: dict) -> list[dict]:
     return blocks
 
 
+def _oz_key(num: str) -> tuple:
+    """Sortierschlüssel einer Ordnungszahl — zahlenweise, nicht als Text.
+
+    Als Text sortiert kommt "4.202" vor "4.13" und "1.10" vor "1.2": bei Excel-LVs,
+    deren Positionsnummern nicht auf feste Breite aufgefüllt sind, stand die
+    Gruppenliste damit in willkürlicher Reihenfolge.
+
+    Ein kürzerer Präfix bleibt vor seinen Untergruppen ("01.02" vor "01.02.01"), weil
+    Tupelvergleich beim kürzeren endet — das hält die Hierarchie auch dann richtig,
+    wenn die Elterngruppe im Dokument erst nach ihren Kindern auftaucht (kommt in
+    GAEB-Dateien vor).
+    """
+    teile = []
+    for t in re.split(r'[.\-]', (num or "").strip()):
+        if not t:
+            continue
+        teile.append((0, int(t), "") if t.isdigit() else (1, 0, t.lower()))
+    return tuple(teile)
+
+
 def _import_gaeb_groups(project: GaebProject, level: int = 0, alt_active: dict | None = None) -> list[dict]:
     """Extrahiert Haupt-/Untergruppen aus dem GAEB-Projekt, mit item_id + Alt-Block-Paaren."""
     if alt_active is None:
@@ -103,6 +124,15 @@ def _import_gaeb_groups(project: GaebProject, level: int = 0, alt_active: dict |
         d = _pos_dict(it)
         d["remarks"] = remarks_by_item.get(it.item_id, [])
         return d
+
+    # Reihenfolge der obersten Ebene (Job bzw. Blatt) in Dokumentreihenfolge. Nötig,
+    # weil Excel-Ordnungszahlen pro Blatt wieder bei 1 anfangen: ein OZ-Vergleich über
+    # Blätter hinweg würde "02_Personal 1.1" vor "01_Material 2.1" einsortieren.
+    root_order: dict[str, int] = {}
+    for item in project.items:
+        root = item.category_path[0] if item.category_path else ""
+        if root not in root_order:
+            root_order[root] = len(root_order)
 
     hg_map: dict[str, dict] = {}
     for item in project.items:
@@ -132,12 +162,15 @@ def _import_gaeb_groups(project: GaebProject, level: int = 0, alt_active: dict |
             hg_map[hg_label] = {
                 "name": hg_label, "num": hg_num, "count": 0, "sub": {}, "_positions": [],
                 "parent_name": lb_label, "parent_num": lb_num, "remarks": [],
+                "_root": root_order.get(path[0] if path else "", 0),
+                "_seq": len(hg_map),          # Auftreten im Dokument
             }
         hg_map[hg_label]["count"] += 1
         if g_label:
             if g_label not in hg_map[hg_label]["sub"]:
                 hg_map[hg_label]["sub"][g_label] = {
                     "name": g_label, "num": g_num, "count": 0, "_positions": [], "remarks": [],
+                    "_seq": len(hg_map[hg_label]["sub"]),
                 }
             hg_map[hg_label]["sub"][g_label]["count"] += 1
             hg_map[hg_label]["sub"][g_label]["_positions"].append(_pd(item))
@@ -157,8 +190,19 @@ def _import_gaeb_groups(project: GaebProject, level: int = 0, alt_active: dict |
                 break
 
     result = []
-    for hg in sorted(hg_map.values(), key=lambda x: (x["num"], x["name"])):
-        subs = sorted(hg["sub"].values(), key=lambda x: (x["num"], x["name"]))
+    # Erst die oberste Ebene in Dokumentreihenfolge, dann die Ordnungszahl zahlenweise.
+    # So bleibt die Reihenfolge der Datei erhalten und eine Elterngruppe steht trotzdem
+    # vor ihren Untergruppen, auch wenn sie im Dokument später auftaucht.
+    # Reihenfolge: oberste Ebene (Blatt/Job) wie im Dokument, dann die Ordnungszahl
+    # zahlenweise, und bei gleicher Ordnungszahl wieder das Dokument. Der Name als
+    # Tiebreaker hätte alphabetisch sortiert — in LOS2 tragen alle Gruppen eines Blatts
+    # dieselbe OZ-Wurzel ("B"), da stand dann Personal vor Rigging.
+    for hg in sorted(hg_map.values(),
+                     key=lambda x: (x["_root"], _oz_key(x["num"]), x["_seq"])):
+        hg.pop("_root", None), hg.pop("_seq", None)
+        subs = sorted(hg["sub"].values(), key=lambda x: (_oz_key(x["num"]), x["_seq"]))
+        for sub in subs:
+            sub.pop("_seq", None)
         for sub in subs:
             sub["blocks"] = _to_blocks(sub.pop("_positions"), alt_active)
         hg["sub"]    = subs
@@ -805,7 +849,7 @@ async def import_upload(request: Request, file: UploadFile = File(...)):
 
         # ── Excel: erst Layout erkennen, Mapping-Dialog zeigen, Matching folgt beim Apply
         if suf in (".xlsx", ".xlsm"):
-            return _excel_probe_response(request, ss, data, fname)
+            return await _excel_probe_response(request, ss, data, fname)
         if suf == ".xls":
             return HTMLResponse(
                 '<div class="error-msg">Das alte Excel-Format (.xls) kann nicht gelesen '
@@ -844,6 +888,9 @@ def _excel_ctx(ss, probe, profile: dict | None, show_all: set | None = None) -> 
     return {
         "S":        ss,
         "show_all": sorted(show_all or ()),
+        # Ab wie vielen Zeilen die Vorschau kürzt — das Template soll die Zahl nicht
+        # noch einmal kennen.
+        "preview_rows": _xl._PREVIEW_ROWS,
         "probe":    probe,
         "fname":    ss.excel_name,
         "profile":  profile,
@@ -855,17 +902,26 @@ def _excel_ctx(ss, probe, profile: dict | None, show_all: set | None = None) -> 
     }
 
 
-def _excel_probe_response(request: Request, ss, data: bytes, fname: str) -> HTMLResponse:
+async def _excel_probe_response(request: Request, ss, data: bytes, fname: str) -> HTMLResponse:
     """Excel einlesen, Layout erkennen (ggf. gespeichertes Profil anwenden) und den
-    Mapping-Dialog rendern. Gematcht wird erst beim Apply."""
-    # Formelzellen einmal je Upload erfassen (eigener read_only-Ladevorgang) — daraus
-    # warnt der Dialog, wenn die Preisspalte von der Datei selbst berechnet wird.
-    fmls    = _xl.formula_rows(data)
-    probe   = _xl.probe_workbook(data, fmls)
-    profile = _db.get_excel_layout(probe.fingerprint)
-    if profile:
-        merged = _xl.merge_profile(probe, profile["layout"])
-        probe  = _xl.preview_workbook(data, merged, fmls)
+    Mapping-Dialog rendern. Gematcht wird erst beim Apply.
+
+    openpyxl ist blockierend (0,2–1 s je Mappe) und läuft deshalb im Executor — im
+    Event-Loop würde es alle anderen Sessions anhalten, auch deren Fortschritts-Polls.
+    """
+    loop = asyncio.get_event_loop()
+
+    def _probe():
+        # Formelzellen einmal je Upload erfassen (eigener read_only-Ladevorgang) —
+        # daraus warnt der Dialog, wenn die Preisspalte selbst berechnet wird.
+        fmls    = _xl.formula_rows(data)
+        pb      = _xl.probe_workbook(data, fmls)
+        prof    = _db.get_excel_layout(pb.fingerprint)
+        if prof:
+            pb = _xl.preview_workbook(data, _xl.merge_profile(pb, prof["layout"]), fmls)
+        return fmls, pb, prof
+
+    fmls, probe, profile = await loop.run_in_executor(None, _probe)
 
     ss.excel_bytes     = data
     ss.excel_name      = fname
@@ -890,7 +946,7 @@ def _excel_probe_response(request: Request, ss, data: bytes, fname: str) -> HTML
 
 @router.post("/api/import/excel/repreview", response_class=HTMLResponse)
 async def import_excel_repreview(request: Request, layout_json: str = Form(...),
-                                 show_all: str = Form("")):
+                                 show_all: str = Form(""), opened: str = Form("")):
     """Kopfzeile/Spaltenrollen geändert → Klassifikation und Vorschau neu berechnen."""
     ss = get_session(request.session)
     if not ss.excel_bytes:
@@ -901,8 +957,14 @@ async def import_excel_repreview(request: Request, layout_json: str = Form(...),
         # „alle Zeilen" ist reine Anzeigesache und gehört nicht ins Layout-Profil —
         # deshalb ein eigenes Feld statt eines Eintrags im Layout.
         wide   = {n for n in show_all.split("|") if n}
-        probe  = _xl.preview_workbook(ss.excel_bytes, layout,
-                                      getattr(ss, "excel_formulas", None), wide)
+        # Nur die aufgeklappten Blätter brauchen Zellen — der Browser weiß, welche
+        # das sind, und schickt sie mit. Beim ersten Aufbau (Upload) ist es leer,
+        # dann baut der Server alle auf.
+        offen  = {n for n in opened.split("|") if n} or None
+        loop   = asyncio.get_event_loop()
+        probe  = await loop.run_in_executor(
+            None, _xl.preview_workbook, ss.excel_bytes, layout,
+            getattr(ss, "excel_formulas", None), wide, offen)
         ss.excel_probe  = probe
         ss.excel_layout = _xl.layout_to_dict(probe.layout)
         return templates.TemplateResponse(request, "partials/excel_mapping.html",
@@ -962,8 +1024,10 @@ async def import_excel_apply(request: Request,
                             'bitte erneut hochladen.</div>')
     try:
         layout  = _xl.layout_from_dict(_json.loads(layout_json))
-        project = _xl.parse_excel(ss.excel_bytes, layout,
-                                  name=label or pathlib.Path(ss.excel_name).stem)
+        loop    = asyncio.get_event_loop()
+        project = await loop.run_in_executor(
+            None, _xl.parse_excel, ss.excel_bytes, layout,
+            label or pathlib.Path(ss.excel_name).stem)
         if not project.items:
             return HTMLResponse(
                 '<div class="error-msg">Keine Positionen erkannt. Bitte prüfen, ob '
@@ -2313,6 +2377,11 @@ async def _do_create_bg(
                         ej_job_ids=job_ids_csv, item_count=len(ss.d83_project.items),
                         booking_count=_bcount, ej_project_number=ej_project_number,
                         user=ss.ej_user or "",
+                        # Zuordnung am Projekt festschreiben — das globale Profil
+                        # überschreibt der nächste Import derselben Vorlage.
+                        source_layout_json=_json.dumps(ss.excel_layout or {},
+                                                       ensure_ascii=False)
+                        if ss.source_kind == "excel" else "",
                     ),
                 )
                 project_db_id = _draft_id
@@ -2330,6 +2399,9 @@ async def _do_create_bg(
                         ej_job_ids=job_ids_csv,
                         ej_project_number=ej_project_number,
                         source_kind=ss.source_kind or "gaeb",
+                        source_layout_json=_json.dumps(ss.excel_layout or {},
+                                                       ensure_ascii=False)
+                        if ss.source_kind == "excel" else "",
                     ),
                 )
             from matcher import resolve_time_factor as _resolve_tf

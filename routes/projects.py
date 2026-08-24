@@ -38,27 +38,18 @@ _OVERVIEW_CACHE_LOCK = threading.Lock()
 
 
 def _excel_scenarios(project_id: int) -> list[str]:
-    """Szenario-Namen eines Excel-Projekts (eine je aktiver Mengenspalte).
+    """Auswählbare Szenarien eines Excel-Projekts.
 
-    Mehrere Szenarien treffen beim Zurückschreiben dieselben Zellen — deshalb wird je
-    Export genau eines geschrieben. Leere Liste = nur ein Szenario, keine Auswahl nötig.
+    Fragt bewusst ``excel_parser.scenario_names`` — dieselbe Aufzählung, die
+    ``parse_excel`` für ``scenario_by_item`` benutzt. Eine eigene Regel hier führte
+    dazu, dass Blätter mit nur einer Mengenspalte nie auswählbar waren und beim
+    Export komplett ohne Preise blieben.
+
+    Wirft weiter, wenn das Layout fehlt — der Aufrufer muss das sehen, denn eine
+    leere Liste bedeutet „nur ein Szenario, keine Auswahl nötig".
     """
-    try:
-        layout = _project_excel_layout(project_id)
-    except Exception:
-        return []
-    names: list[str] = []
-    for sl in layout.sheets:
-        if not (sl.enabled and sl.header_row):
-            continue
-        act = sl.roles.active_qty()
-        if len(act) < 2:
-            continue
-        for q in act:
-            name = _xl.scenario_name(q)
-            if name not in names:
-                names.append(name)
-    return names
+    layout = _project_excel_layout(project_id)
+    return _xl.scenario_names(layout) if layout else []
 
 
 def _source_kind(project_id: int) -> str:
@@ -69,22 +60,34 @@ def _source_kind(project_id: int) -> str:
 
 
 def _project_excel_layout(project_id: int):
-    """Excel-Layout eines Projekts. Beim Hochladen wird state_json geleert, deshalb
-    kommt das Layout dann über den Fingerprint aus den gespeicherten Layout-Profilen."""
+    """Die Spalten-Zuordnung, mit der DIESES Projekt eingelesen wurde — oder None.
+
+    Bewusst kein Rückgriff auf das globale ``excel_layouts``-Profil: das ist nach
+    Fingerprint geschlüsselt und wird vom nächsten Import derselben Vorlage
+    überschrieben. Ein Export würde dann mit der Zuordnung eines fremden Imports
+    rechnen, Preise in die falsche Spalte schreiben oder — weil die item_id von der
+    Mengenspalte abhängt — überhaupt keine Buchung mehr finden.
+
+    Reihenfolge: Projektspalte (hochgeladene Projekte), dann state_json (Entwürfe).
+    """
     with _db.get_conn() as conn:
-        row = conn.execute("SELECT state_json FROM projects WHERE id=?", (project_id,)).fetchone()
-    if row and row["state_json"]:
+        row = conn.execute(
+            "SELECT source_layout_json, state_json FROM projects WHERE id=?",
+            (project_id,),
+        ).fetchone()
+    if not row:
+        return None
+    for raw, key in ((row["source_layout_json"], None), (row["state_json"], "excel_layout")):
+        if not raw:
+            continue
         try:
-            lay = (json.loads(row["state_json"]) or {}).get("excel_layout")
+            data = json.loads(raw)
+            lay  = data.get(key) if key else data
             if lay:
                 return _xl.layout_from_dict(lay)
-        except (ValueError, TypeError):
-            pass
-    # Fallback: aus der Quelldatei neu erkennen und mit dem gemerkten Profil überlagern
-    gaeb_bytes, _ = _db.get_project_gaeb(project_id)
-    probe = _xl.probe_workbook(gaeb_bytes or b"")
-    saved = _db.get_excel_layout(probe.fingerprint)
-    return _xl.merge_profile(probe, saved["layout"]) if saved else probe.layout
+        except (ValueError, TypeError, AttributeError):
+            continue
+    return None
 
 
 def _overview_data(project_id: int) -> dict:
@@ -101,7 +104,10 @@ def _overview_data(project_id: int) -> dict:
         try:
             from gaeb_parser import parse_gaeb
             if _source_kind(project_id) == "excel":
-                gaeb_proj = _xl.parse_excel(gaeb_bytes, _project_excel_layout(project_id))
+                _lay = _project_excel_layout(project_id)
+                if _lay is None:
+                    raise ValueError("keine Spalten-Zuordnung am Projekt gespeichert")
+                gaeb_proj = _xl.parse_excel(gaeb_bytes, _lay)
             else:
                 import tempfile
                 with tempfile.NamedTemporaryFile(suffix=".x83", delete=False) as tf:
@@ -459,10 +465,11 @@ def _export_costs(ss, project_id: int, proj: dict) -> dict:
         # Aggregiert wird über alle Jobs des EJ-Projekts, nicht über die beim Import
         # angelegte Job-Liste. Grund: Gruppen dürfen in Easyjob nachträglich in einen
         # anderen Job verschoben werden — mit einem Job-Filter wären ihre Kosten dann
-        # verloren und der Einheitspreis 0. Fremde Gruppen desselben Projekts werden
-        # zwar mitsummiert, aber niemals abgefragt: nachgesehen wird ausschließlich
-        # unter den IdStockType2JobGroup aus project_bookings (Gruppen-IDs sind
-        # EJ-weit eindeutig, Verwechslung ausgeschlossen).
+        # verloren und der Einheitspreis 0. Fremde Gruppen desselben Projekts landen
+        # dabei mit in den Summen; das ist harmlos, solange nur unter den
+        # IdStockType2JobGroup aus project_bookings nachgesehen wird (Gruppen-IDs sind
+        # EJ-weit eindeutig). ACHTUNG: der Caption-Fallback weiter unten sucht NICHT
+        # über IDs, sondern über die Bezeichnung — der braucht eine eigene Eingrenzung.
         cur.execute(
             """
             SELECT s2j.IdStockType2JobGroup,
@@ -499,9 +506,28 @@ def _export_costs(ss, project_id: int, proj: dict) -> dict:
         # Notnagel für Positionen ohne Buchung in project_bookings. Bricht, sobald
         # jemand die Gruppe in Easyjob umbenennt — der Hauptweg über die gespeicherte
         # Gruppen-ID ist davon unabhängig.
+        #
+        # Eingegrenzt auf die Jobs DIESES Imports plus die Jobs, in denen unsere
+        # eigenen Gruppen inzwischen liegen (falls jemand sie verschoben hat). Ohne
+        # das gewinnt bei gleicher Bezeichnung — etwa nach einem zweiten Import in
+        # dasselbe EJ-Projekt — irgendeine fremde Gruppe, und zwar in unbestimmter
+        # Reihenfolge: der Einheitspreis wäre plausibel, aber falsch, und zwischen
+        # zwei Exporten desselben Projekts unterschiedlich.
+        eigene_gids = {int(b["ej_group_id"]) for b in bookings if b.get("ej_group_id")}
+        erlaubte_jobs = set(job_ids)
+        if eigene_gids:
+            gid_list = sorted(eigene_gids)
+            for i in range(0, len(gid_list), 900):     # SQL Server: max. 2100 Parameter
+                teil = gid_list[i:i + 900]
+                ph   = ",".join("?" for _ in teil)
+                cur.execute(
+                    f"SELECT DISTINCT IdJob FROM StockType2JobGroup "
+                    f"WHERE IdStockType2JobGroup IN ({ph})", *teil)
+                erlaubte_jobs |= {int(r[0]) for r in cur.fetchall() if r[0]}
+
         cur.execute(
             """
-            SELECT g.Caption, g.IdStockType2JobGroup
+            SELECT g.Caption, g.IdStockType2JobGroup, g.IdJob
             FROM StockType2JobGroup g
             JOIN Job j ON j.IdJob = g.IdJob
             WHERE j.IdProject = ?
@@ -510,6 +536,8 @@ def _export_costs(ss, project_id: int, proj: dict) -> dict:
         )
         oz_to_group: dict[str, int] = {}
         for r in cur.fetchall():
+            if erlaubte_jobs and int(r[2] or 0) not in erlaubte_jobs:
+                continue                              # fremder Job desselben Projekts
             cap = r[0] or ""
             if cap.startswith('[') and ']' in cap:
                 oz = cap[1:cap.index(']')].strip()
@@ -571,6 +599,9 @@ def _export_costs(ss, project_id: int, proj: dict) -> dict:
         "oz_to_group": oz_to_group, "learned": learned,
         "items_per_group": items_per_group, "item_cost": item_cost,
         "shared_groups": shared,
+        # Der Artikelstamm ist hier schon geladen (11.507 Zeilen, ~95 ms und ~12 MB).
+        # Weiterreichen, damit der D84-Export ihn nicht ein zweites Mal holt.
+        "articles": _articles,
     }
 
 
@@ -637,6 +668,12 @@ async def project_export_d84(project_id: int, request: Request):
     proj = _db.get_project(project_id)
     if not proj:
         raise HTTPException(404, "Projekt nicht gefunden")
+
+    if (proj.get("source_kind") or "gaeb") != "gaeb":
+        # Sonst landen die xlsx-ZIP-Bytes in ET.fromstring und die Route stirbt mit
+        # einem ParseError-500 — nachdem _export_costs schon Mappings gelernt hat.
+        raise HTTPException(400, "Dieses Projekt stammt aus einer Excel-Datei — "
+                                 "bitte den Excel-Export benutzen.")
 
     gaeb_bytes, gaeb_name = _db.get_project_gaeb(project_id)
     if not gaeb_bytes:
@@ -803,7 +840,7 @@ async def project_export_d84(project_id: int, request: Request):
 
     # Befüllung je Feld-Typ gemäß Dialog-Konfiguration:
     #   auto → Hersteller · Detail aus gebuchtem Artikel · text → fester Text · leer → nichts
-    art_by_num  = {a["nummer"]: a for a in _db.load_articles_db()}
+    art_by_num  = {a["nummer"]: a for a in costs["articles"]}
 
     def _art_price(art: dict) -> float:
         try:
@@ -943,8 +980,19 @@ async def project_export_excel(project_id: int, request: Request,
     if not src_bytes:
         raise HTTPException(404, "Keine Excel-Quelldatei für dieses Projekt gespeichert")
 
+    layout = _project_excel_layout(project_id)
+    if layout is None:
+        raise HTTPException(400, "Für dieses Projekt ist keine Spalten-Zuordnung "
+                                 "gespeichert — bitte neu importieren.")
+    # Mehrere Szenarien treffen dieselben Zellen. Ohne Auswahl würden sie sich
+    # gegenseitig überschreiben, also hier abbrechen statt zu raten.
+    moeglich = _xl.scenario_names(layout)
+    if moeglich and scenario not in moeglich:
+        raise HTTPException(
+            400, "Dieses Projekt hat mehrere Szenarien — bitte eines auswählen: "
+                 + ", ".join(moeglich))
+
     costs   = _export_costs(ss, project_id, proj)
-    layout  = _project_excel_layout(project_id)
     project = _xl.parse_excel(src_bytes, layout, name=proj.get("name") or "")
 
     # EP je Position — offene Positionen (Menge 0) mit der gebuchten Menge rechnen,
@@ -963,11 +1011,20 @@ async def project_export_excel(project_id: int, request: Request,
 
     res = _xlout.write_prices(src_bytes, layout, project, prices)
 
+    # Ohne einen einzigen geschriebenen Preis darf kein Download angeboten werden —
+    # sonst verschickt man ein Angebot mit leeren Preisspalten und merkt es nicht.
+    if not res.written:
+        grund = " ".join(res.notes) or (
+            "Für die gebuchten Positionen ließ sich kein Einheitspreis ermitteln.")
+        return HTMLResponse(
+            '<div class="error-msg">Es wurde <b>kein einziger Preis</b> geschrieben — '
+            f'Export abgebrochen.<br>{grund}</div>', status_code=422)
+
     stem = pathlib.Path(src_name or proj.get("name") or "Angebot").stem
     # Szenario in den Dateinamen, damit mehrere Exporte derselben Datei
     # unterscheidbar bleiben. Nur dateinamentaugliche Zeichen behalten.
     suffix = "_" + re.sub(r"[^\w.-]+", "-", scenario).strip("-") if scenario else ""
-    filename = f"{stem}_Angebot{suffix}.xlsx"
+    filename = f"{stem}_Angebot{suffix}{res.suffix}"
     notes = list(res.notes) + _shared_group_note(costs)
     if scenario:
         notes.insert(0, "Szenario " + scenario + " — nur dessen Preise wurden geschrieben")

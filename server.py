@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from easyjob_api import EjLiveClient
@@ -138,6 +139,13 @@ if len(_SESSION_SECRET) < 16 or _SESSION_SECRET == "dev-secret-change-me":
     )
 # Hinter TLS-Proxy → Secure-Cookie. Für lokalen HTTP-Test: COOKIE_SECURE=false.
 _cookie_secure = os.environ.get("COOKIE_SECURE", "true").strip().lower() != "false"
+# Antworten komprimieren. Der Mapping-Dialog ist bei 13 Blättern über 700 KB HTML,
+# davon über die Hälfte Einrückung — gzip drückt das auf ~43 KB. Bewusst hier statt
+# über Jinjas trim_blocks/lstrip_blocks: die würden die Whitespace-Semantik ALLER
+# Templates ändern und können Textknoten zusammenziehen, die durch einen Umbruch
+# getrennt waren. add_middleware fügt außen an, gzip liegt also über allem.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
 app.add_middleware(
     SessionMiddleware,
     secret_key=_SESSION_SECRET,

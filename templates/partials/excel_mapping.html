@@ -57,7 +57,7 @@
       <div class="xl-pal-group">Spalten</div>
       {% for role, name in [('desc','Beschreibung'), ('qty','Menge'), ('unit','Einheit'),
                             ('oz','Pos-Nr'), ('ref','Referenz/Typ'), ('price','Einzelpreis'),
-                            ('flag','AP/BP'), ('ignore','ignorieren')] %}
+                            ('total','Gesamtpreis'), ('flag','AP/BP'), ('ignore','ignorieren')] %}
       <button type="button" class="xl-swatch xl-role-{{ role }}" data-brush="col" data-value="{{ role }}">
         <span class="xl-chip"></span>{{ name }}
       </button>
@@ -137,16 +137,25 @@
             · <b>{{ sl.roles.qty | selectattr('active') | list | length }}</b> Szenarien
             {% endif %}
           </span>
-          {% if sp.counts.truncated %}
+          {# Zeilenzahl steht immer da — auch zugeklappt, sonst weiß man nicht,
+             wie groß das Blatt ist. Der Umschalter erscheint, sobald es mehr Zeilen
+             hat als die Vorschau zeigt. #}
+          {% if sp.counts.collapsed %}
+          <span class="xl-sub">{{ sp.counts.rows }} Zeilen</span>
+          {% elif sp.counts.truncated %}
           <span class="xl-sub">Vorschau: {{ sp.counts.shown }} von
-            {{ sp.counts.shown + sp.counts.truncated }} Zeilen</span>
-          <button type="button" class="xl-showall" data-sheet="{{ sl.name }}"
-                  title="Alle Zeilen laden — bei vielen Zeilen wird die Tabelle lang">
-            alle Zeilen anzeigen</button>
-          {% elif sl.name in show_all %}
-          <span class="xl-sub">alle Zeilen</span>
+            {{ sp.counts.rows }} Zeilen</span>
+          {% else %}
+          <span class="xl-sub">{{ sp.counts.rows }} Zeilen{% if sl.name in show_all
+            and sp.counts.rows > preview_rows %}, alle gezeigt{% endif %}</span>
+          {% endif %}
+          {% if sl.name in show_all %}
           <button type="button" class="xl-showless" data-sheet="{{ sl.name }}">
             nur die ersten anzeigen</button>
+          {% elif sp.counts.rows > preview_rows %}
+          <button type="button" class="xl-showall" data-sheet="{{ sl.name }}"
+                  title="Alle {{ sp.counts.rows }} Zeilen laden — die Tabelle wird lang">
+            alle Zeilen anzeigen</button>
           {% endif %}
           {% else %}
           <span class="xl-sub">Keine Kopfzeile erkannt — Zeilennummer mit dem Pinsel
@@ -169,6 +178,12 @@
         </div>
         {% endif %}
 
+        {% if sp.counts.collapsed %}
+        {# Zugeklappt: die Zellen holt das JS beim Aufklappen nach. Sie alle
+           mitzuschicken hieß bei 13 Blättern, 92 % unsichtbarer Zellen zu übertragen
+           und den Browser sie bei jedem Pinselstrich neu aufbauen zu lassen. #}
+        <div class="xl-collapsed">Tabelle wird beim Aufklappen geladen</div>
+        {% else %}
         <div class="xl-grid-wrap">
           <table class="xl-grid">
             <thead>
@@ -201,6 +216,7 @@
             </tbody>
           </table>
         </div>
+        {% endif %}
       </details>
       {% endfor %}
     </div>

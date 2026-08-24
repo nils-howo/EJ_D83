@@ -432,3 +432,9 @@ body.xl-painting .xl-rowhead { cursor:cell; }
                             border:none; text-decoration:underline; cursor:pointer;
                             padding:0; }
 .xl-showall:hover, .xl-showless:hover { color:#1a237e; }
+
+/* Gesamtpreis-Spalte — wird nur befüllt, wenn sie ausdrücklich zugeordnet ist */
+.xl-role-total { --xl-c:#00695c; }
+.xl-grid .xl-colhead.xl-role-total { width:110px; }
+
+.xl-collapsed { font-size:.74rem; color:#9fa8da; padding:6px 8px; font-style:italic; }

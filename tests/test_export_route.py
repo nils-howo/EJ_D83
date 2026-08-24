@@ -10,9 +10,16 @@ aber nirgends gebunden werden — genau die Fehlerklasse von oben.
 
     .venv/Scripts/python.exe tests/test_export_route.py
 """
+import sys
+
+# Konsole auf UTF-8: sonst stirbt schon ein "→" im print an cp1252 und der Test
+# bricht mitten drin ab, ohne dass eine Prüfung fehlgeschlagen wäre.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 import ast
 import builtins
 import io
+import json
 import os
 import sys
 
@@ -208,11 +215,21 @@ def _run_case(fname, sheet_name, qty_cols, expect_written):
     gid_by_item = {it.item_id: 1000 + n for n, it in enumerate(project.items)}
     cost_per_group = {g: 200.0 for g in gid_by_item.values()}
 
+    # Die Zuordnung hängt am Projekt — genau wie der echte Import sie schreibt.
     pid = _db.save_project(name="Export-Test", ej_project_id=4711, gaeb_name=fname,
                            item_count=0, booking_count=0, gaeb_bytes=src,
                            ej_job_ids="900,901", ej_project_number="26-TEST",
-                           source_kind="excel")
-    _db.save_excel_layout(layout.fingerprint, "Export-Test", _xl.layout_to_dict(layout))
+                           source_kind="excel",
+                           source_layout_json=json.dumps(_xl.layout_to_dict(layout)))
+
+    # Sabotiertes globales Profil unter demselben Fingerprint: der Export DARF es
+    # nicht anfassen, sonst schreibt ein späterer Import fremde Spalten in dieses
+    # Angebot. Preisspalte hier absichtlich verschoben.
+    fremd = _xl.layout_to_dict(layout)
+    for sh in fremd["sheets"]:
+        if sh["roles"]["price"]:
+            sh["roles"]["price"] = 1          # Spalte A — würde die Pos-Nr überschreiben
+    _db.save_excel_layout(layout.fingerprint, "FREMD", fremd)
 
     ss = _StubSession()
     orig_costs, orig_sess = pj._export_costs, pj.get_session
@@ -222,11 +239,19 @@ def _run_case(fname, sheet_name, qty_cols, expect_written):
         with TestClient(_app()) as c:
             r = c.get(f"/api/projects/{pid}/export-dialog")
             check(r.status_code == 200, f"Dialog HTTP {r.status_code}")
+            # Erwartung aus derselben Quelle, die auch der Parser benutzt — eine
+            # feste Zahl hier hatte genau den Fehler zementiert, den Fix 4 behebt
+            # (Blätter mit einer Mengenspalte waren nie auswählbar).
+            erwartet = _xl.scenario_names(layout)
             n_radios = r.text.count('name="scenario"')
-            check(n_radios == 2, f"zwei Szenario-Radios erwartet, sind {n_radios}")
+            check(n_radios == len(erwartet),
+                  f"{len(erwartet)} Szenario-Radios erwartet ({erwartet}), sind {n_radios}")
+            check(len(erwartet) == len(set(erwartet)),
+                  f"Szenario-Namen müssen eindeutig sein: {erwartet}")
             check("export-excel" in r.text, "Dialog muss auf export-excel zeigen")
 
             scen = f"Szenario {qty_cols[1]}"
+            check(scen in erwartet, f"{scen!r} muss anwählbar sein, sind {erwartet}")
             r = c.post(f"/api/projects/{pid}/export-excel", data={"scenario": scen})
             check(r.status_code == 200, f"Export HTTP {r.status_code}: {r.text[:200]}")
             if r.status_code != 200:
@@ -266,11 +291,17 @@ def _run_case(fname, sheet_name, qty_cols, expect_written):
                       "Export muss die berechnete Spalte melden")
                 print("  -> berechnete Spalte gemeldet statt überschrieben")
 
-            # Ohne Szenario läuft es auch, nur ohne Namenszusatz
+            # Das fremde Profil darf nicht durchgeschlagen haben: Spalte A (Pos-Nr)
+            # muss unverändert sein.
+            check(ws_neu.cell(row, 1).value == ws_alt.cell(row, 1).value,
+                  "fremdes Layout-Profil hat die Pos-Nr-Spalte überschrieben")
+
+            # Mehrere Szenarien -> ohne Auswahl muss der Export ablehnen, statt sie
+            # gegenseitig in dieselben Zellen schreiben zu lassen.
             r2 = c.post(f"/api/projects/{pid}/export-excel", data={})
-            check(r2.status_code == 200, f"ohne Szenario HTTP {r2.status_code}")
-            check("Szenario" not in ss.pending_export["name"],
-                  f"kein Szenario im Namen: {ss.pending_export['name']}")
+            print(f"  ohne Szenario-Auswahl -> HTTP {r2.status_code}")
+            check(r2.status_code == 400,
+                  f"400 erwartet (Szenario-Pflicht), ist {r2.status_code}")
     finally:
         pj._export_costs, pj.get_session = orig_costs, orig_sess
         with _db.get_conn() as cn:
@@ -282,6 +313,26 @@ def _run_case(fname, sheet_name, qty_cols, expect_written):
 def test_route():
     for case in CASES:
         _run_case(*case)
+
+
+def test_layout_fehlt():
+    print(f"\n=== Excel-Projekt ohne gespeicherte Spalten-Zuordnung")
+    src = open(os.path.join("infos", CASES[0][0]), "rb").read()
+    pid = _db.save_project(name="Export-Test", ej_project_id=1, gaeb_name="x.xlsx",
+                           item_count=0, booking_count=0, gaeb_bytes=src,
+                           ej_job_ids="1", source_kind="excel")   # kein Layout!
+    orig = pj.get_session
+    pj.get_session = lambda _s: _StubSession()
+    try:
+        with TestClient(_app()) as c:
+            r = c.post(f"/api/projects/{pid}/export-excel", data={})
+            print(f"  HTTP {r.status_code}")
+            check(r.status_code == 400, f"400 erwartet, ist {r.status_code}")
+            check("Zuordnung" in r.text, f"Meldung soll die Ursache nennen: {r.text[:120]}")
+    finally:
+        pj.get_session = orig
+        with _db.get_conn() as cn:
+            cn.execute("DELETE FROM projects WHERE id=?", (pid,))
 
 
 def test_wrong_source():
@@ -302,9 +353,17 @@ def test_wrong_source():
             cn.execute("DELETE FROM projects WHERE id=?", (pid,))
 
 
+# Von pytest gesehen: check() sammelt nur, damit ein Lauf ALLE Fehlschläge zeigt.
+# Ohne diesen Abschluss meldet pytest jede Testfunktion als PASSED, auch wenn jede
+# einzelne Prüfung fehlgeschlagen ist.
+def test_zz_alle_pruefungen_ok():
+    assert not _fails, f"{len(_fails)} Prüfung(en) fehlgeschlagen: " + "; ".join(_fails)
+
+
 if __name__ == "__main__":
     test_static()
     test_route()
+    test_layout_fehlt()
     test_wrong_source()
     print("\n" + "=" * 60)
     print(f"{_oks} Prüfungen ok, {len(_fails)} fehlgeschlagen")

@@ -5,6 +5,12 @@ gebauten GaebProject. Bewusst ohne pytest — wie die übrigen Tests hier direkt
 
     .venv/Scripts/python.exe tests/test_excel_parser.py
 """
+import sys
+
+# Konsole auf UTF-8: sonst stirbt schon ein "→" im print an cp1252 und der Test
+# bricht mitten drin ab, ohne dass eine Prüfung fehlgeschlagen wäre.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 import os
 import sys
 
@@ -416,6 +422,13 @@ def test_invariants():
               f"({len(proj.items)} → {len(p2.items)})")
         check(pb.fingerprint and len(pb.fingerprint) == 16, f"{short}: Fingerprint fehlt")
         print(f"  {short:36s} {len(proj.items):4d} Pos · fp={pb.fingerprint}")
+
+
+# Von pytest gesehen: check() sammelt nur, damit ein Lauf ALLE Fehlschläge zeigt.
+# Ohne diesen Abschluss meldet pytest jede Testfunktion als PASSED, auch wenn jede
+# einzelne Prüfung fehlgeschlagen ist.
+def test_zz_alle_pruefungen_ok():
+    assert not _fails, f"{len(_fails)} Prüfung(en) fehlgeschlagen: " + "; ".join(_fails)
 
 
 if __name__ == "__main__":

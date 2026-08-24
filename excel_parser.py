@@ -11,6 +11,8 @@ Das korrigierte ``ExcelLayout`` geht dann an ``parse_excel``.
 import hashlib
 import io
 import re
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
 
@@ -28,10 +30,11 @@ ROLE_REF    = "ref"      # Referenz / Typ / Hersteller / Bemerkung
 ROLE_UNIT   = "unit"     # Einheit
 ROLE_QTY    = "qty"      # Menge / Anzahl / Stückzahl
 ROLE_PRICE  = "price"    # Einzelpreis (Ziel der Rückschreibung)
+ROLE_TOTAL  = "total"    # Gesamtpreis (Menge x Einzelpreis) — nur wenn zugeordnet
 ROLE_FLAG   = "flag"     # AP/BP — Alternativ-/Bedarfsposition
 
 COLUMN_ROLES = (ROLE_OZ, ROLE_DESC, ROLE_REF, ROLE_UNIT, ROLE_QTY, ROLE_PRICE,
-                ROLE_FLAG, ROLE_IGNORE)
+                ROLE_TOTAL, ROLE_FLAG, ROLE_IGNORE)
 
 ROW_HEADER = "header"
 ROW_JOB    = "job"       # eigener Easyjob-Job
@@ -68,6 +71,8 @@ _HEADER_WORDS: dict[str, tuple[str, ...]] = {
     ROLE_QTY:   ("menge", "anzahl", "anz", "stückzahl", "stueckzahl", "stk", "stck",
                  "qty", "quantity"),
     ROLE_PRICE: ("einzelpreis", "ep", "preis", "einheitspreis", "unit price"),
+    ROLE_TOTAL: ("gesamtpreis", "gesamtbetrag", "gesamt", "total", "summe",
+                 "total netto", "total price"),
     ROLE_FLAG:  ("ap/bp", "positionsart", "art der position", "positionstyp"),
 }
 
@@ -96,6 +101,19 @@ def _rows_cap(sheet: str, show_all) -> int:
     return _ALL_ROWS if sheet in (show_all or ()) else _PREVIEW_ROWS
 
 
+def _preview_cap(sheet: str, show_all, opened) -> int:
+    """Zeilen, die für dieses Blatt in die Vorschau gehen.
+
+    ``opened=None`` heißt „alle Blätter aufbauen" (erster Aufruf, da weiß der Server
+    noch nicht, was der Browser offen hat). Sonst bekommen nur die aufgeklappten
+    Blätter Zeilen: bei LOS2 gehören 92 % der Tabellenzellen zu zugeklappten Blättern,
+    die der Nutzer nicht sieht und die der Browser bei jedem Pinselstrich neu aufbaut.
+    """
+    if opened is not None and sheet not in opened:
+        return 0
+    return _rows_cap(sheet, show_all)
+
+
 # ─── Layout-Datenmodell (komplett JSON-serialisierbar) ───────────────────────
 
 @dataclass
@@ -115,6 +133,7 @@ class ColumnRoles:
     desc:  int = 0
     unit:  int = 0
     price: int = 0
+    total: int = 0
     flag:  int = 0
     ref:   list[int]    = field(default_factory=list)
     qty:   list[QtyCol] = field(default_factory=list)
@@ -124,6 +143,7 @@ class ColumnRoles:
         if col == self.oz:    return ROLE_OZ
         if col == self.unit:  return ROLE_UNIT
         if col == self.price: return ROLE_PRICE
+        if col == self.total: return ROLE_TOTAL
         if col == self.flag:  return ROLE_FLAG
         if col in self.ref:   return ROLE_REF
         if any(q.col == col for q in self.qty): return ROLE_QTY
@@ -210,7 +230,7 @@ def layout_from_dict(data: dict) -> ExcelLayout:
         roles = ColumnRoles(
             oz=int(r.get("oz") or 0), desc=int(r.get("desc") or 0),
             unit=int(r.get("unit") or 0), price=int(r.get("price") or 0),
-            flag=int(r.get("flag") or 0),
+            total=int(r.get("total") or 0), flag=int(r.get("flag") or 0),
             ref=[int(c) for c in (r.get("ref") or [])],
             qty=[QtyCol(col=int(q.get("col") or 0), label=q.get("label") or "",
                         job_name=q.get("job_name") or "",
@@ -249,7 +269,19 @@ def _txt(v: Any) -> str:
 
 
 def _num(v: Any) -> Optional[float]:
-    """Zahl aus einer Zelle — akzeptiert auch '1.234,50' und '12 Stk'."""
+    """Zahl aus einer Zelle — auch wenn sie als Text formatiert ist.
+
+    Trennzeichen sind mehrdeutig, deshalb eine feste Regel:
+      * Kommt ein **Komma** vor, ist es das Dezimalzeichen und Punkte sind
+        Tausenderpunkte:            "1.234,50" -> 1234.5
+      * Sonst ist ein **einzelner Punkt mit genau drei Ziffern dahinter** ein
+        Tausenderpunkt (deutsche Schreibweise):  "1.234" -> 1234.0
+      * Jeder andere Punkt ist ein Dezimalpunkt: "1.5" -> 1.5, "12.75" -> 12.75
+
+    Ohne diese Unterscheidung fiel früher jede als Text formatierte Dezimalmenge auf
+    ihren ganzzahligen Teil zurück ("0,5" -> 0), weil die Tausender-Alternative im
+    Regex zuerst griff.
+    """
     if isinstance(v, bool) or v is None:
         return None
     if isinstance(v, (int, float)):
@@ -257,14 +289,16 @@ def _num(v: Any) -> Optional[float]:
     s = str(v).strip()
     if not s:
         return None
-    m = re.search(r'-?\d+(?:[.\s]\d{3})*(?:,\d+)?|-?\d+(?:\.\d+)?', s)
+    m = re.search(r'-?\d+(?:[.,\s ]\d+)*', s)
     if not m:
         return None
-    raw = m.group(0)
+    raw = m.group(0).replace(" ", "").replace(" ", "")
     if "," in raw:
-        raw = raw.replace(".", "").replace(" ", "").replace(",", ".")
+        raw = raw.replace(".", "").replace(",", ".")
     else:
-        raw = raw.replace(" ", "")
+        parts = raw.split(".")
+        if len(parts) > 2 or (len(parts) == 2 and len(parts[1]) == 3):
+            raw = raw.replace(".", "")      # Tausenderpunkte
     try:
         return float(raw)
     except ValueError:
@@ -414,7 +448,7 @@ def _detect_ref_columns(ws, header_row: int, max_col: int,
     """Referenz-/Typspalten. Neben den Kopfzeilen-Treffern auch die header-lose
     Spalte direkt neben der Beschreibung (Vector: Spalte D mit 'FD34, H30V')."""
     refs = list(hits.get(ROLE_REF, []))
-    taken = {roles.desc, roles.oz, roles.unit, roles.price, roles.flag}
+    taken = {roles.desc, roles.oz, roles.unit, roles.price, roles.total, roles.flag}
     taken |= {q.col for q in roles.qty}
     refs = [c for c in refs if c not in taken]
 
@@ -450,6 +484,7 @@ def detect_sheet_layout(ws, sheet_no: int) -> tuple[SheetLayout, int]:
     roles.oz    = (hits.get(ROLE_OZ)    or [0])[0]
     roles.unit  = (hits.get(ROLE_UNIT)  or [0])[0]
     roles.price = (hits.get(ROLE_PRICE) or [0])[0]
+    roles.total = (hits.get(ROLE_TOTAL) or [0])[0]
     roles.flag  = (hits.get(ROLE_FLAG)  or [0])[0]
 
     # Alle Mengenspalten, nicht nur die erste (GOE: H/J/L/N je Event)
@@ -674,7 +709,11 @@ def formula_rows(data: bytes) -> dict[str, dict[int, set[int]]]:
     try:
         for ws in wb.worksheets:
             cols: dict[int, set[int]] = {}
-            for r, row in enumerate(ws.iter_rows(values_only=True), start=1):
+            # Nur bis _MAX_COL_SCAN: weiter rechts kann das Layout keine Spalte
+            # adressieren. PAGs 01_Material meldet max_column=16384 (eine
+            # durchformatierte Zeile) — ungekappt sind das 3,9 Mio. Zellen statt 17.000.
+            for r, row in enumerate(ws.iter_rows(values_only=True, max_col=_MAX_COL_SCAN),
+                                    start=1):
                 for idx, v in enumerate(row, start=1):
                     if isinstance(v, str) and v.startswith("="):
                         cols.setdefault(idx, set()).add(r)
@@ -692,8 +731,18 @@ def formula_rows(data: bytes) -> dict[str, dict[int, set[int]]]:
 # zuletzt benutzte Mappe gehalten. Bewusst klein: eine Mappe kostet je nach Datei
 # 5–45 MB (PAG meldet max_column=16384). Nur lesende Nutzung — der Excel-Writer lädt
 # seine eigene Kopie mit data_only=False.
-_WB_CACHE: dict[str, Any] = {}
-_WB_CACHE_MAX = 2
+_WB_CACHE: "OrderedDict[str, Any]" = OrderedDict()
+_WB_CACHE_MAX  = 2
+# Der Cache wird aus dem Event-Loop UND aus Executor-Threads angefasst. Ohne Lock
+# kann ein Thread mitten in der Verdrängung stehen, während ein anderer einträgt →
+# "RuntimeError: dictionary changed size during iteration". Die Schwestertabelle in
+# routes/projects.py nimmt aus demselben Grund _OVERVIEW_CACHE_LOCK.
+_WB_CACHE_LOCK = threading.Lock()
+# Der Fingerprint hängt nur an den Bytes, wird aber bei jedem Pinselstrich neu
+# gerechnet (3779 _match_role-Aufrufe je Request bei LOS2, 55 % der Repreview-Zeit)
+# — und im Repreview überhaupt nicht gelesen. Also einmal je Datei merken.
+_FP_CACHE: "OrderedDict[str, str]" = OrderedDict()
+_FP_CACHE_MAX = 8      # nur Strings, darf großzügiger sein als der Mappen-Cache
 
 
 def _wb_key(data: bytes) -> str:
@@ -701,21 +750,40 @@ def _wb_key(data: bytes) -> str:
 
 
 def _load(data: bytes):
+    """Arbeitsmappe lesen, zuletzt benutzte gecacht.
+
+    Verdrängt wird die am längsten unbenutzte (LRU). Mit reinem FIFO flog beim
+    Wechsel zwischen zwei Dateien genau die heraus, die gerade gebraucht wurde.
+
+    Die Grenze ist bewusst niedrig: eine Mappe kostet je nach Datei 2–47 MB. Bei mehr
+    als zwei gleichzeitigen Mapping-Sitzungen wird also wieder geladen — bekannt und
+    in Kauf genommen, eine speicherbasierte Grenze wäre die nächste Stufe.
+    """
     key = _wb_key(data)
-    wb  = _WB_CACHE.get(key)
-    if wb is not None:
-        return wb
+    with _WB_CACHE_LOCK:
+        wb = _WB_CACHE.get(key)
+        if wb is not None:
+            _WB_CACHE.move_to_end(key)      # frisch benutzt → nicht als nächstes raus
+            return wb
+
+    # Laden außerhalb des Locks: es dauert 0,2–1 s und würde sonst alles blockieren.
     wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
-    while len(_WB_CACHE) >= _WB_CACHE_MAX:
-        _WB_CACHE.pop(next(iter(_WB_CACHE)), None)
-    _WB_CACHE[key] = wb
+
+    with _WB_CACHE_LOCK:
+        if key in _WB_CACHE:                # ein anderer Thread war schneller
+            _WB_CACHE.move_to_end(key)
+            return _WB_CACHE[key]
+        while len(_WB_CACHE) >= _WB_CACHE_MAX:
+            _WB_CACHE.popitem(last=False)   # ältester Zugriff zuerst
+        _WB_CACHE[key] = wb
     return wb
 
 
 def release(data: bytes) -> None:
     """Mappe aus dem Cache werfen — nach dem Einlesen wird sie nicht mehr gebraucht,
     und das Matching danach hat den Speicher lieber selbst."""
-    _WB_CACHE.pop(_wb_key(data), None)
+    with _WB_CACHE_LOCK:
+        _WB_CACHE.pop(_wb_key(data), None)
 
 
 def _project_name(wb) -> str:
@@ -730,6 +798,45 @@ def _project_name(wb) -> str:
         if best:
             break
     return re.sub(r'\s+', ' ', best)
+
+
+def iter_scenarios(layout: ExcelLayout) -> list[tuple["SheetLayout", QtyCol, str]]:
+    """(Blatt, Mengenspalte, Szenario-Name) für jeden Positionssatz, den parse_excel
+    erzeugt. Einzige Quelle dieser Aufzählung.
+
+    Der Export-Dialog hatte vorher seine eigene Regel („Blätter mit >= 2 Mengenspalten")
+    und bot damit Szenarien nicht an, die der Parser trotzdem vergibt — die Positionen
+    solcher Blätter waren nie auswählbar und bekamen beim Export nie einen Preis.
+    """
+    active = [sl for sl in layout.sheets if sl.enabled]
+    multi  = any(len(sl.roles.active_qty()) > 1 for sl in active)
+    out: list[tuple[SheetLayout, QtyCol, str]] = []
+    for sl in active:
+        for qc in (sl.roles.active_qty() or [QtyCol(col=0)]):
+            if not multi:
+                out.append((sl, qc, ""))
+                continue
+            named = (qc.job_name or qc.label or "").strip()
+            if named:
+                # Ein aus der Datei benannter Wert darf blattübergreifend derselbe
+                # sein — dann gehören beide Blätter bewusst zum gleichen Szenario.
+                scen = named
+            else:
+                # Ohne Namen wäre "Menge C" in zwei Blättern derselbe Szenario-Name,
+                # und die Auswahl im Export würde beide zusammenwerfen.
+                col  = get_column_letter(qc.col) if qc.col else "?"
+                scen = f"{sl.name} · Menge {col}" if len(active) > 1 else f"Menge {col}"
+            out.append((sl, qc, scen))
+    return out
+
+
+def scenario_names(layout: ExcelLayout) -> list[str]:
+    """Auswählbare Szenarien in Dokumentreihenfolge. Leer = nur eines, keine Wahl."""
+    names: list[str] = []
+    for _, _, scen in iter_scenarios(layout):
+        if scen and scen not in names:
+            names.append(scen)
+    return names
 
 
 def scenario_name(qc: QtyCol) -> str:
@@ -750,6 +857,13 @@ def layout_fingerprint(data: bytes) -> str:
     Stichwörter und ändern den Fingerprint deshalb nicht. Dieselbe Vorlage mit anderen
     Zahlen trifft also wieder.
     """
+    key = _wb_key(data)
+    with _WB_CACHE_LOCK:
+        fp = _FP_CACHE.get(key)
+        if fp is not None:
+            _FP_CACHE.move_to_end(key)
+            return fp
+
     wb = _load(data)
     parts: list[str] = []
     for ws in wb.worksheets:
@@ -762,7 +876,12 @@ def layout_fingerprint(data: bytes) -> str:
                 if role:
                     found.add(f"{role}@{c}")     # Rolle + Spalte = Struktur der Vorlage
         parts.append(f"{ws.title}|{','.join(sorted(found))}")
-    return hashlib.sha1(chr(10).join(parts).encode("utf-8")).hexdigest()[:16]
+    fp = hashlib.sha1(chr(10).join(parts).encode("utf-8")).hexdigest()[:16]
+    with _WB_CACHE_LOCK:
+        while len(_FP_CACHE) >= _FP_CACHE_MAX:
+            _FP_CACHE.popitem(last=False)
+        _FP_CACHE[key] = fp
+    return fp
 
 
 def _build_probe(ws, layout: SheetLayout, max_col: int,
@@ -794,20 +913,26 @@ def _build_probe(ws, layout: SheetLayout, max_col: int,
         preview.append(PreviewRow(
             row=layout.header_row, kind=ROW_HEADER, level=0,
             cells=[_txt(ws.cell(layout.header_row, c).value) for c in range(1, max_col + 1)]))
-    shown, truncated = 0, 0
+    # max_rows == 0 heißt: Blatt ist zugeklappt. Gezählt wird trotzdem — sonst wüsste
+    # die Leiste nicht, wie viele Zeilen das Blatt hat, und der Umschalter „alle Zeilen"
+    # verschwände. Gespart werden nur die Vorschauobjekte (und damit das HTML): bei
+    # LOS2 sind das 3484 von 3814 Zellen, die niemand sieht.
+    shown, uebrig = 0, 0
     for r in range(layout.first_data_row, (ws.max_row or 0) + 1):
         cells = [_txt(ws.cell(r, c).value) for c in range(1, max_col + 1)]
         if not any(cells):
-            continue                      # leere Zeilen zählen nicht als „gezeigt"
+            continue                      # leere Zeilen zählen gar nicht
         if shown >= max_rows:
-            truncated += 1                # nur echte Datenzeilen zählen
+            uebrig += 1
             continue
         rr = by_row.get(r)
         preview.append(PreviewRow(row=r, kind=rr.kind if rr else ROW_SKIP,
                                   level=rr.level if rr else 0, cells=cells))
         shown += 1
-    counts["shown"]     = shown        # Datenzeilen in der Vorschau
-    counts["truncated"] = truncated    # weitere, die nicht gezeigt werden
+    counts["shown"]     = shown                  # Datenzeilen in der Vorschau
+    counts["truncated"] = uebrig                 # nicht gezeigte Datenzeilen
+    counts["rows"]      = shown + uebrig         # Datenzeilen insgesamt
+    counts["collapsed"] = 1 if max_rows <= 0 else 0
 
     ctx, heads = [], []
     if layout.header_row:
@@ -820,14 +945,15 @@ def _build_probe(ws, layout: SheetLayout, max_col: int,
 
 
 def probe_workbook(data: bytes, fmls: dict | None = None,
-                   show_all: set[str] | None = None) -> WorkbookProbe:
+                   show_all: set[str] | None = None,
+                   opened: set[str] | None = None) -> WorkbookProbe:
     """Erkennt Layout + Vorschau für alle Sheets. Rein lesend, keine Seiteneffekte."""
     wb = _load(data)
     probes: list[SheetProbe] = []
     for idx, ws in enumerate(wb.worksheets, start=1):
         layout, max_col = detect_sheet_layout(ws, idx)
         sp = _build_probe(ws, layout, max_col, False, (fmls or {}).get(ws.title),
-                          _ALL_ROWS if ws.title in (show_all or ()) else _PREVIEW_ROWS)
+                          _preview_cap(ws.title, show_all, opened))
         if not sp.counts["pos"]:
             sp.layout.enabled = False       # Deckblatt / Inhalt / Tagessätze
         probes.append(sp)
@@ -837,7 +963,8 @@ def probe_workbook(data: bytes, fmls: dict | None = None,
 
 def preview_workbook(data: bytes, layout: ExcelLayout,
                      fmls: dict | None = None,
-                     show_all: set[str] | None = None) -> WorkbookProbe:
+                     show_all: set[str] | None = None,
+                     opened: set[str] | None = None) -> WorkbookProbe:
     """Vorschau für ein *vorgegebenes* Layout — für den Repreview im Mapping-Dialog
     und für gespeicherte Layout-Profile. Sheets ohne Layout-Eintrag werden erkannt."""
     wb = _load(data)
@@ -849,7 +976,7 @@ def preview_workbook(data: bytes, layout: ExcelLayout,
         if sl is None:
             sl, max_col = detect_sheet_layout(ws, idx)
             sp = _build_probe(ws, sl, max_col, False, (fmls or {}).get(ws.title),
-                              _rows_cap(ws.title, show_all))
+                              _preview_cap(ws.title, show_all, opened))
             if not sp.counts["pos"]:
                 sp.layout.enabled = False
         else:
@@ -864,7 +991,7 @@ def preview_workbook(data: bytes, layout: ExcelLayout,
                     if not q.job_name:
                         q.job_name = q.label
             sp = _build_probe(ws, sl, max_col, sp_demote, (fmls or {}).get(ws.title),
-                              _rows_cap(ws.title, show_all))
+                              _preview_cap(ws.title, show_all, opened))
         probes.append(sp)
     return WorkbookProbe(sheets=probes, fingerprint=layout_fingerprint(data),
                          project_name=_project_name(wb), sheet_mode=layout.sheet_mode)
@@ -974,7 +1101,12 @@ def parse_excel(data: bytes, layout: ExcelLayout, name: str = "") -> GaebProject
 
     # Mehrere Szenarien = mindestens ein Blatt mit >1 aktiver Mengenspalte. Dann muss
     # die Mengenspalte in Gruppenlabel und item_id, sonst kollidieren die Szenarien.
-    multi_scenario = any(len(sl.roles.active_qty()) > 1 for sl in active_sheets)
+    # iter_scenarios liefert genau die Kombinationen, die auch der Export-Dialog anbietet.
+    scenarios      = iter_scenarios(layout)
+    multi_scenario = any(scen for _, _, scen in scenarios)
+    by_sheet: dict[str, list[tuple[QtyCol, str]]] = {}
+    for sl_, qc_, scen_ in scenarios:
+        by_sheet.setdefault(sl_.name, []).append((qc_, scen_))
 
     items:    list[GaebItem]   = []
     remarks:  list[GaebRemark] = []
@@ -985,11 +1117,8 @@ def parse_excel(data: bytes, layout: ExcelLayout, name: str = "") -> GaebProject
         ws = wb[sl.name]
         # Blatt = Hauptgruppe → Gruppen darin werden Hinweise (wie in der Vorschau)
         rows = _classify_sheet(ws, sl, demote_main=sheet_as_hg)
-        qcols = sl.roles.active_qty() or [QtyCol(col=0)]
-
-        for qc in qcols:
+        for qc, scen in by_sheet.get(sl.name, []):
             suffix = get_column_letter(qc.col) if (multi_scenario and qc.col) else ""
-            scen   = scenario_name(qc) if multi_scenario else ""
 
             # Job-Präfix aus Szenario und (optional) Blatt
             prefix_parts = [p for p in (scen, sl.name if sheet_as_job else "") if p]

@@ -203,6 +203,10 @@ def init_db() -> None:
             "ALTER TABLE projects ADD COLUMN updated_by TEXT",
             "ALTER TABLE projects ADD COLUMN updated_at TIMESTAMP",
             "ALTER TABLE projects ADD COLUMN source_kind TEXT DEFAULT 'gaeb'",
+            # Die Spalten-Zuordnung, mit der DIESES Projekt eingelesen wurde. Muss am
+            # Projekt hängen: state_json wird beim Hochladen geleert, und das globale
+            # excel_layouts-Profil überschreibt der nächste Import derselben Vorlage.
+            "ALTER TABLE projects ADD COLUMN source_layout_json TEXT",
         ]:
             try:
                 conn.execute(sql)
@@ -681,6 +685,7 @@ def save_project(
     ej_job_ids: str = "",
     ej_project_number: str = "",
     source_kind: str = "gaeb",
+    source_layout_json: str = "",
 ) -> int:
     """Speichert ein angelegtes Projekt. Gibt die neue lokale ID zurück.
 
@@ -695,11 +700,13 @@ def save_project(
             """
             INSERT INTO projects
                 (name, ej_project_id, ej_project_number, ej_job_ids,
-                 gaeb_name, item_count, booking_count, gaeb_bytes, source_kind)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 gaeb_name, item_count, booking_count, gaeb_bytes, source_kind,
+                 source_layout_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (name, ej_project_id, ej_project_number, ej_job_ids,
-             gaeb_name, item_count, booking_count, gaeb_bytes, source_kind or "gaeb"),
+             gaeb_name, item_count, booking_count, gaeb_bytes, source_kind or "gaeb",
+             source_layout_json or None),
         )
         return cur.lastrowid
 
@@ -779,7 +786,7 @@ def get_project(project_id: int) -> dict | None:
     with get_conn() as conn:
         row = conn.execute(
             "SELECT id, name, ej_project_id, ej_project_number, ej_job_ids, gaeb_name, "
-            "item_count, booking_count, created_at, source_kind "
+            "item_count, booking_count, created_at, source_kind, source_layout_json "
             "FROM projects WHERE id = ?",
             (project_id,),
         ).fetchone()
@@ -904,17 +911,19 @@ def release_draft_lock(draft_id: int, user_name: str = "", force: bool = False) 
 
 def promote_draft_to_project(draft_id: int, name: str, ej_project_id: int, ej_job_ids: str,
                              item_count: int, booking_count: int,
-                             ej_project_number: str, user: str) -> None:
+                             ej_project_number: str, user: str,
+                             source_layout_json: str = "") -> None:
     """Wandelt einen hochgeladenen Entwurf in ein normales Projekt um (gleiche Zeile):
     status='uploaded', EJ-Felder + Name gesetzt, Entwurf-State + Sperre entfernt."""
     with get_conn() as conn:
         conn.execute(
             "UPDATE projects SET status='uploaded', name=?, ej_project_id=?, ej_job_ids=?, "
             "item_count=?, booking_count=?, ej_project_number=?, updated_by=?, "
+            "source_layout_json=?, "
             "updated_at=CURRENT_TIMESTAMP, state_json=NULL, locked_by=NULL, locked_by_name=NULL, locked_at=NULL "
             "WHERE id=?",
             (name, ej_project_id, ej_job_ids, item_count, booking_count,
-             ej_project_number, user, draft_id),
+             ej_project_number, user, source_layout_json or None, draft_id),
         )
 
 

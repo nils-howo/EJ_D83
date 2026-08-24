@@ -6,6 +6,12 @@ Die Warnung soll erscheinen, bevor exportiert wird — eine berechnete Preisspal
 
     .venv/Scripts/python.exe tests/test_dialog_hints.py
 """
+import sys
+
+# Konsole auf UTF-8: sonst stirbt schon ein "→" im print an cp1252 und der Test
+# bricht mitten drin ab, ohne dass eine Prüfung fehlgeschlagen wäre.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 import html as _h
 import json
 import os

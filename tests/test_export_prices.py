@@ -6,6 +6,12 @@ Gruppensumme verteilt werden, sonst ist die Angebotssumme ein Vielfaches zu hoch
 
     .venv/Scripts/python.exe tests/test_export_prices.py
 """
+import sys
+
+# Konsole auf UTF-8: sonst stirbt schon ein "→" im print an cp1252 und der Test
+# bricht mitten drin ab, ohne dass eine Prüfung fehlgeschlagen wäre.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 import os
 import sys
 
