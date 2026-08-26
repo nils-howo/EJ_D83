@@ -386,6 +386,22 @@ body.xl-painting .xl-rowhead { cursor:cell; }
 .xl-swatch.xl-row-grp  { --xl-c:#9575cd; }
 .xl-counts .c-job  { color:#00695c; }
 .xl-counts .c-main { color:#4527a0; }
+.xl-counts .c-outline { color:#78909c; }
+
+/* Gliederung: Gruppe ohne eigene Positionen — wird in Easyjob nicht angelegt.
+   Bewusst neutral-grau statt im Violett der Hauptgruppen, damit auf einen Blick
+   klar ist, welche Ebenen am Ende entstehen. Liegt NEBEN .xl-row-main/.xl-row-grp
+   und übersteuert nur die Farben. */
+.xl-tr.xl-outline td          { background:#eceff1 !important; color:#546e7a;
+                                font-weight:600; font-style:italic; }
+.xl-tr.xl-outline .xl-rowhead { background:#cfd8dc; color:#455a64; }
+.xl-swatch.xl-outline,
+.xl-swatch.xl-row-outline     { --xl-c:#90a4ae; }
+/* Gemalte Gliederung: gleiche Farbe wie die abgeleitete, damit „nicht angelegt"
+   immer gleich aussieht — egal ob erkannt oder gewählt. */
+.xl-tr.xl-row-outline td          { background:#eceff1 !important; color:#546e7a;
+                                    font-weight:600; font-style:italic; }
+.xl-tr.xl-row-outline .xl-rowhead { background:#cfd8dc; color:#455a64; }
 .xl-counts .c-grp  { color:#7e57c2; }
 
 /* Palettenzeilen dürfen die Tabellenregeln nicht erben */

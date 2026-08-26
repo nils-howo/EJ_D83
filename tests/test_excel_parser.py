@@ -16,7 +16,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from excel_parser import (ROW_GROUP, ROW_JOB, ROW_MAIN, ROW_NOTE, ROW_POS,
+from excel_parser import (ROW_GROUP, ROW_JOB, ROW_MAIN, ROW_NOTE, ROW_OUTLINE,
+                          ROW_POS,
                           SHEET_AS_JOB, SHEET_AS_KEEP, SHEET_AS_MAIN,
                           layout_from_dict, layout_to_dict, parse_excel,
                           preview_workbook, probe_workbook)
@@ -72,12 +73,12 @@ def test_vector():
     check(4 in r.ref, f"ref soll die header-lose Spalte D(4) enthalten, ist {r.ref}")
     check(s1.layout.enabled, "Los 1 Technik muss aktiv sein")
 
-    # Easyjob hat genau eine Ebene über der Position: die äußerste Gruppe.
-    # 'Rigging' ist die große Kategorie → Hauptgruppe; 'Haupt-Rig' darunter → Hinweis.
+    # Die ganze Gruppenkette bleibt erhalten — wie beim D83-Import. 'Rigging' ist
+    # Ebene 1 (ROW_MAIN), 'Haupt-Rig' darunter eine Gruppe (ROW_GROUP), kein Hinweis.
     check(prow(s1, 13).kind == ROW_MAIN,
-          f"Z13 'Rigging' = Hauptgruppe (äußerste Ebene), ist {prow(s1,13).kind}")
-    check(prow(s1, 16).kind == ROW_NOTE,
-          f"Z16 'Haupt-Rig' = Hinweis (feinere Ebene), ist {prow(s1,16).kind}")
+          f"Z13 'Rigging' = Hauptgruppe (Ebene 1), ist {prow(s1,13).kind}")
+    check(prow(s1, 16).kind == ROW_GROUP,
+          f"Z16 'Haupt-Rig' = Gruppe (Ebene 2), ist {prow(s1,16).kind}")
     check(prow(s1, 14).kind == ROW_NOTE, f"Z14 = Hinweis, ist {prow(s1,14).kind}")
     check(prow(s1, 15).kind == ROW_NOTE, f"Z15 = Hinweis, ist {prow(s1,15).kind}")
     check(prow(s1, 18).kind == ROW_POS,  f"Z18 = Position, ist {prow(s1,18).kind}")
@@ -94,10 +95,12 @@ def test_vector():
         check(z18.unit == "lfm", f"Z18 unit='lfm' erwartet, ist {z18.unit!r}")
         check("FD34" in z18.ref_text, f"Z18 ref_text soll 'FD34' enthalten, ist {z18.ref_text!r}")
         check("FD34" in z18.long_text, "Referenztext muss im long_text landen (Matcher-Input)")
-        check("Rigging" in z18.category_path[-1],
-              f"Z18 unter Hauptgruppe 'Rigging' erwartet, ist {z18.category_path}")
-        check(len(z18.category_path) <= 2,
-              f"höchstens Job/Blatt + Hauptgruppe, ist {z18.category_path}")
+        # Volle Kette: Blatt/Job → Rigging → Haupt-Rig. Die tiefste Ebene ist die
+        # Hauptgruppe, 'Rigging' steht darüber als Elternebene.
+        check("Haupt-Rig" in z18.category_path[-1],
+              f"Z18 unter 'Haupt-Rig' erwartet, ist {z18.category_path}")
+        check(any("Rigging" in p_ for p_ in z18.category_path[:-1]),
+              f"'Rigging' muss als Elternebene im Pfad stehen, ist {z18.category_path}")
 
     l2 = [i for i in proj.items if i.src_ref.startswith("Los 2 Messebau!")]
     check(len(l2) > 0, "Los 2 Messebau liefert keine Positionen")
@@ -124,16 +127,24 @@ def test_goe():
     for q in r.qty:
         print(f"    Spalte {q.col}: {q.label!r}  ({q.values} Werte)")
 
+    # Dieses Blatt nummeriert seine Gruppen ("01 Videotechnik", "01.01 Displays",
+    # "01.01.01 LC-Displays") — damit IST die Nummer die Struktur. Die Strichzeilen
+    # darunter ("-- UHD Professional") tragen keine und sind Zwischenüberschriften,
+    # keine Ebene: sie erfanden sonst 69 von 133 Gruppen, die das LV nicht kennt.
     check(prow(sp, 13).kind == ROW_MAIN,
-          f"Z13 '01 Videotechnik' = Hauptgruppe (äußerste Ebene), ist {prow(sp,13).kind}")
-    check(prow(sp, 15).kind == ROW_NOTE,
-          f"Z15 '01.01.01 LC-Displays' = Hinweis, ist {prow(sp,15).kind}")
+          f"Z13 '01 Videotechnik' = Hauptgruppe (Ebene 1), ist {prow(sp,13).kind}")
+    check(prow(sp, 14).kind == ROW_GROUP,
+          f"Z14 '01.01 Displays' = Gruppe (nummeriert), ist {prow(sp,14).kind}")
+    check(prow(sp, 15).kind == ROW_GROUP,
+          f"Z15 '01.01.01 LC-Displays' = Gruppe (nummeriert), ist {prow(sp,15).kind}")
     check(prow(sp, 16).kind == ROW_NOTE,
-          f"Z16 '-- UHD Professional' = Hinweis, ist {prow(sp,16).kind}")
+          f"Z16 '-- UHD Professional' ohne Nummer = Hinweis, ist {prow(sp,16).kind}")
     check(prow(sp, 29).kind == ROW_NOTE,
-          f"Z29 '-- HD ULTRA NARROW' = Hinweis (keine Position, kein HG-Kandidat), "
-          f"ist {prow(sp,29).kind}")
+          f"Z29 '-- HD ULTRA NARROW' ohne Nummer = Hinweis, ist {prow(sp,29).kind}")
     check(prow(sp, 17).kind == ROW_POS, f"Z17 = Position, ist {prow(sp,17).kind}")
+    # Die nummerierten Ebenen bleiben streng geschachtelt
+    _lv = {r_: prow(sp, r_).level for r_ in (13, 14, 15)}
+    check(_lv[13] < _lv[14] < _lv[15], f"Ebenen müssen tiefer werden, sind {_lv}")
 
     # Ein Szenario aktiv
     lay = pb.layout
@@ -176,8 +187,13 @@ def test_los2():
           f"desc=E/unit=D/qty=C erwartet, ist {r.desc}/{r.unit}/{[q.col for q in r.qty]}")
     check(prow(jpk, 11).kind == ROW_MAIN,
           f"Z11 'Licht' (Label in Pos-Spalte) = Hauptgruppe, ist {prow(jpk,11).kind}")
-    check(all(len(i.category_path) <= 2 for i in parse_excel(load(LOS2), pb.layout).items),
-          "category_path darf höchstens Job/Blatt + eine Hauptgruppe enthalten")
+    # Die Kette darf beliebig tief sein (wie D83), aber jede Ebene muss ein Label
+    # tragen — leere Zwischenebenen wären Löcher im Pfad.
+    _pfade = [i.category_path for i in parse_excel(load(LOS2), pb.layout).items]
+    check(all(all(p_ for p_ in cp) for cp in _pfade),
+          "keine leere Ebene im category_path")
+    check(max(len(cp) for cp in _pfade) >= 3,
+          f"volle Gruppenkette erwartet, tiefster Pfad ist {max(len(cp) for cp in _pfade)}")
     check(prow(jpk, 12).kind == ROW_POS, f"Z12 'B.01' = Position, ist {prow(jpk,12).kind}")
 
     proj = parse_excel(load(LOS2), pb.layout)
@@ -204,15 +220,17 @@ def test_pag():
 
     check(prow(mat, 13).kind == ROW_MAIN,
           f"Z13 '1. Rigging' = Hauptgruppe, ist {prow(mat,13).kind}")
+    # 01_Material nummeriert seine Gruppen ("1. Rigging"), 'Traversen' hat keine
+    # Nummer → Zwischenüberschrift, keine Ebene.
     check(prow(mat, 15).kind == ROW_NOTE,
-          f"Z15 'Traversen' = Hinweis innerhalb von Rigging, ist {prow(mat,15).kind}")
+          f"Z15 'Traversen' ohne Nummer = Hinweis, ist {prow(mat,15).kind}")
     check(prow(mat, 16).kind == ROW_POS, f"Z16 = Position, ist {prow(mat,16).kind}")
 
     per = sheet(pb, "02_Personal")
     check(prow(per, 13).kind == ROW_MAIN,
           f"02_Personal Z13 '1. Personal' = Hauptgruppe, ist {prow(per,13).kind}")
-    check(prow(per, 17).kind == ROW_NOTE,
-          f"02_Personal Z17 '1.1 Personal Aufbau' = Hinweis, ist {prow(per,17).kind}")
+    check(prow(per, 17).kind == ROW_GROUP,
+          f"02_Personal Z17 '1.1 Personal Aufbau' = Gruppe, ist {prow(per,17).kind}")
     check(prow(per, 18).kind == ROW_POS,
           f"02_Personal Z18 '1.1.1 Technische Leitung' = Position trotz leerer Menge, "
           f"ist {prow(per,18).kind}")
@@ -244,25 +262,27 @@ def test_brush():
 
     def snap(probe):
         sp = sheet(probe, "Los 1 Technik")
-        return sp.counts, {p.row: (p.kind, p.level) for p in sp.preview}
+        return sp.counts, {p.row: (p.kind, p.level, p.outline) for p in sp.preview}
 
     c0, k0 = snap(pb)
-    check(k0[13][0] == ROW_MAIN, f"Z13 'Rigging' = Hauptgruppe, ist {k0[13]}")
-    check(k0[16][0] == ROW_NOTE, f"Z16 'Haupt-Rig' = Hinweis, ist {k0[16]}")
+    check(k0[13][0] == ROW_MAIN, f"Z13 'Rigging' = Ebene 1, ist {k0[13]}")
+    check(k0[16][0] == ROW_GROUP, f"Z16 'Haupt-Rig' = Ebene 2, ist {k0[16]}")
 
     # Position zur Gruppe machen — darf die Ebenen der übrigen Zeilen NICHT verschieben
     sl.row_overrides["18"] = ROW_MAIN
     c1, k1 = snap(preview_workbook(data, lay))
     check(k1[18][0] == ROW_MAIN, f"Z18 gemalte Hauptgruppe, ist {k1[18]}")
     check(c1["pos"] == c0["pos"] - 1, f"eine Position weniger: {c0['pos']} → {c1['pos']}")
-    # Z18 wird als Hauptgruppe die neue äußerste Ebene und übernimmt die Positionen
-    # darunter — 'Rigging' hat dann keine eigenen mehr und wird zum Hinweis.
-    check(k1[13][0] == ROW_NOTE,
-          f"Z13 'Rigging' verliert seine Positionen → Hinweis, ist {k1[13]}")
+    check(k1[13][0] == ROW_MAIN, f"Z13 'Rigging' behält seine Ebene, ist {k1[13]}")
+    # Gezählt wird das Endergebnis: Z18 wird angelegt, dafür verliert 'Haupt-Rig'
+    # (Z16) seine direkten Positionen und rutscht in die Gliederung. Die Zahl der
+    # angelegten Gruppen bleibt also gleich, eine Gliederungsebene kommt dazu.
     check(c1["main"] == c0["main"],
-          f"eine HG dazu, eine weg: {c0['main']} → {c1['main']}")
-    check(c1["note"] == c0["note"] + 1,
-          f"ein Hinweis mehr erwartet: {c0['note']} → {c1['note']}")
+          f"gleich viele angelegte Gruppen erwartet: {c0['main']} → {c1['main']}")
+    check(c1["outline"] == c0["outline"] + 1,
+          f"eine Gliederungsebene mehr erwartet: {c0['outline']} → {c1['outline']}")
+    check(c1["note"] == c0["note"],
+          f"Hinweise unverändert erwartet: {c0['note']} → {c1['note']}")
     check(k1[38][0] == k0[38][0],
           f"Z38 unverändert erwartet, war {k0[38]} ist {k1[38]}")
     # Die Position darunter hängt jetzt unter der neuen Gruppe
@@ -283,7 +303,8 @@ def test_brush():
     c2, k2 = snap(preview_workbook(data, lay))
     check(min(k2) == 13, f"Vorschau muss bei 13 beginnen, ist {min(k2)}")
     check(c2["pos"] == c0["pos"], f"Positionen unverändert: {c0['pos']} → {c2['pos']}")
-    check(c2["main"] < c0["main"] or c2["note"] < c0["note"],
+    check(c2["main"] < c0["main"] or c2["outline"] < c0["outline"]
+          or c2["note"] < c0["note"],
           f"Zeilen 7-13 fallen aus dem Datenbereich: {c0} → {c2}")
     sl.header_row = 6
     print(f"  {c0['pos']} Pos · {c0['main']} Hauptgruppen · {c0['note']} Hinweise")
@@ -338,10 +359,15 @@ def test_sheet_mode():
     # Positionszahl darf sich in keinem Modus ändern
     check(len(pr_j.items) == len(pr_k.items) == len(pr_m.items),
           f"Positionszahl je Modus: {len(pr_j.items)}/{len(pr_k.items)}/{len(pr_m.items)}")
-    # Nie mehr als Job/Blatt + eine Hauptgruppe
-    for name, pr in [("job", pr_j), ("keep", pr_k), ("main", pr_m)]:
-        deep = [i.category_path for i in pr.items if len(i.category_path) > 2]
-        check(not deep, f"{name}: Pfad tiefer als 2 Ebenen: {deep[:2]}")
+    # Die Tiefe ist frei (volle Kette wie D83), aber im Modus „Blatt IST Hauptgruppe"
+    # darf es unter dem Blatt keine Ebene mehr geben — genau das sagt der Modus.
+    deep_m = [i.category_path for i in pr_m.items if len(i.category_path) > 1]
+    check(not deep_m, f"main: unter dem Blatt darf keine Gruppe stehen: {deep_m[:2]}")
+    for name, pr in [("job", pr_j), ("keep", pr_k)]:
+        tiefe = max(len(i.category_path) for i in pr.items)
+        check(tiefe >= 3, f"{name}: volle Gruppenkette erwartet, tiefster Pfad {tiefe}")
+        check(all(all(p_ for p_ in i.category_path) for i in pr.items),
+              f"{name}: keine leere Ebene im category_path")
 
 
 # ── Vererbung: Positionen gehören zum letzten Job / zur letzten Hauptgruppe ──
@@ -421,7 +447,203 @@ def test_invariants():
               f"{short}: JSON-Roundtrip ändert Positionszahl "
               f"({len(proj.items)} → {len(p2.items)})")
         check(pb.fingerprint and len(pb.fingerprint) == 16, f"{short}: Fingerprint fehlt")
+
+        # Die Zähler der Mapping-Vorschau müssen das ENDERGEBNIS zeigen, nicht die
+        # Pinselebene: "main" sind die Gruppen, die in Easyjob entstehen, "outline"
+        # die Ebenen darüber. Vorher zählte "main" die Ebene-1-Zeilen — in LOS1 GOE
+        # 9 Stück, von denen keine einzige angelegt wird.
+        for sp in pb.sheets:
+            if not sp.layout.enabled:
+                continue
+            for schl in ("pos", "job", "main", "outline", "note"):
+                check(schl in sp.counts,
+                      f"{short}/{sp.layout.name[:16]}: Zähler {schl!r} fehlt")
+            gruppen = [r for r in sp.preview if r.kind in (ROW_MAIN, ROW_GROUP)]
+            check(sp.counts["main"] + sp.counts["outline"] >= len(gruppen),
+                  f"{short}/{sp.layout.name[:16]}: {len(gruppen)} Gruppenzeilen in der "
+                  f"Vorschau, aber nur {sp.counts['main'] + sp.counts['outline']} gezählt")
+            # Gezählt wird über das ganze Blatt, die Vorschau ist auf
+            # _PREVIEW_ROWS gekürzt — deckungsgleich also nur ohne Kürzung.
+            angelegt = sum(1 for r in gruppen if not r.outline)
+            gliedert = sum(1 for r in gruppen if r.outline)
+            if not sp.counts["truncated"]:
+                check(sp.counts["main"] == angelegt,
+                      f"{short}/{sp.layout.name[:16]}: 'main' {sp.counts['main']} != "
+                      f"{angelegt} Vorschauzeilen ohne Gliederung")
+                check(sp.counts["outline"] == gliedert,
+                      f"{short}/{sp.layout.name[:16]}: 'outline' "
+                      f"{sp.counts['outline']} != {gliedert} Gliederungszeilen")
+            else:
+                check(sp.counts["main"] >= angelegt and sp.counts["outline"] >= gliedert,
+                      f"{short}/{sp.layout.name[:16]}: Zähler kleiner als die "
+                      f"gezeigten Zeilen ({angelegt}/{gliedert})")
         print(f"  {short:36s} {len(proj.items):4d} Pos · fp={pb.fingerprint}")
+
+
+def test_nummerierung_entscheidet_pro_blatt():
+    """Nummeriert ein Blatt seine Gruppen, ist eine Gruppenzeile OHNE Nummer ein
+    Hinweis — aber nur dann.
+
+    In LOS1 GOE tragen "01 Videotechnik", "01.01 Displays" und "01.01.01 LC-Displays"
+    Nummern, die Strichzeilen darunter ("-- UHD Professional") nicht. Als Ebene gezählt
+    erfanden sie 69 von 133 Gruppen, die das LV so nicht kennt.
+
+    Vector NHX nummeriert dagegen gar nichts und baut seine Hierarchie allein über
+    Füllfarben — global angewandt bliebe dort keine einzige Gruppe übrig. Deshalb pro
+    Blatt entschieden.
+    """
+    print("\n=== Nummerierte Gruppen: Regel gilt pro Blatt")
+
+    # 1) Nummeriertes Blatt: nur die nummerierten Ebenen bleiben Gruppen
+    sp = sheet(probe_of(GOE), "Preisblatt Technik")
+    fuer = {13: ROW_MAIN, 14: ROW_GROUP, 15: ROW_GROUP, 16: ROW_NOTE, 29: ROW_NOTE}
+    for row, soll in fuer.items():
+        check(prow(sp, row).kind == soll,
+              f"GOE Z{row}: {soll} erwartet, ist {prow(sp,row).kind}")
+    print("  GOE Preisblatt Technik: 01/01.01/01.01.01 = Gruppen, Strichzeilen = Hinweise")
+
+    # 2) Unnummeriertes Blatt: Hierarchie über Füllfarben bleibt erhalten
+    v1 = sheet(probe_of(VECTOR), "Los 1 Technik")
+    hg = [r for r in v1.preview if r.kind in (ROW_MAIN, ROW_GROUP)]
+    check(len(hg) > 10,
+          f"Vector baut die Hierarchie über Füllfarben, >10 Gruppen erwartet, {len(hg)}")
+    check(prow(v1, 13).kind == ROW_MAIN, f"Z13 'Rigging' bleibt HG, ist {prow(v1,13).kind}")
+    check(prow(v1, 16).kind == ROW_GROUP,
+          f"Z16 'Haupt-Rig' bleibt Gruppe, ist {prow(v1,16).kind}")
+    print(f"  Vector Los 1 Technik: {len(hg)} Gruppen ohne jede Nummer — bleiben Gruppen")
+
+    # 3) Der Pinsel sticht die Regel: gemalte Ebenen gelten immer
+    lay = probe_of(GOE).layout
+    sl  = lay.sheet("Preisblatt Technik")
+    sl.row_overrides["16"] = ROW_MAIN            # "-- UHD Professional", ohne Nummer
+    sp2 = sheet(preview_workbook(load(GOE), lay), "Preisblatt Technik")
+    check(prow(sp2, 16).kind == ROW_MAIN,
+          f"gemalte Ebene muss die Nummern-Regel überstimmen, ist {prow(sp2,16).kind}")
+    del sl.row_overrides["16"]
+    print("  gemalte Ebene ohne Nummer bleibt Gruppe")
+
+    # 4) Wirkung auf die Gruppenliste: die Nummern der Ebenen müssen echt
+    #    geschachtelt sein. Die Phantom-Ebenen hatten keine eigene Nummer und
+    #    erbten die des Elters — vier Geschwister trugen dieselbe "01.01.01".
+    from routes.import_ import _import_gaeb_groups
+    for name in (VECTOR, GOE, LOS2, PAG):
+        data = load(name)
+        proj = parse_excel(data, probe_workbook(data).layout)
+        for level in (0, 1):
+            for g in _import_gaeb_groups(proj, level=level, alt_active={}):
+                nums = [x["num"] for x in g["parents"] if x["num"]]
+                for a, b in zip(nums, nums[1:]):
+                    check(b.startswith(a + "."),
+                          f"{name[:22]} level={level}: {b} ist kein Kind von {a}")
+                if nums and g.get("num"):
+                    check(g["num"].startswith(nums[-1] + "."),
+                          f"{name[:22]} level={level}: HG {g['num']} passt nicht "
+                          f"unter {nums[-1]}")
+        print(f"  {name[:34]:36} Nummern der Ebenen echt geschachtelt")
+
+
+def test_gliederung_pinsel():
+    """Gliederung ergibt sich normalerweise, lässt sich aber erzwingen.
+
+    Abgeleitet: eine Gruppe ohne eigene Positionen. In LOS1 GOE sind das genau
+    "01 Videotechnik" (Z13) und "01.01 Displays" (Z14) — "01.01.01 LC-Displays" (Z15)
+    hat die Positionen 01.01.01.01ff direkt darunter und wird angelegt.
+
+    Gemalt: die Ebene wird nie Hauptgruppe. Positionen direkt darunter hängen sich an
+    die nächste Ebene darüber, die angelegt werden darf.
+    """
+    print("\n=== Gliederung: abgeleitet und malbar")
+    lay = probe_of(GOE).layout
+    sl  = lay.sheet("Preisblatt Technik")
+
+    def rollen():
+        sp = sheet(preview_workbook(load(GOE), lay), "Preisblatt Technik")
+        return {p.row: (p.kind, p.outline) for p in sp.preview}, sp.counts
+
+    def pfad(zeile):
+        pr = parse_excel(load(GOE), lay)
+        it = next(i for i in pr.items if i.src_ref == f"Preisblatt Technik!{zeile}")
+        return it.category_path
+
+    k0, c0 = rollen()
+    check(k0[13][1] is True, f"Z13 '01 Videotechnik' = Gliederung, ist {k0[13]}")
+    check(k0[14][1] is True, f"Z14 '01.01 Displays' = Gliederung, ist {k0[14]}")
+    check(k0[15][1] is False, f"Z15 '01.01.01 LC-Displays' = Hauptgruppe, ist {k0[15]}")
+    p0 = pfad(17)
+    check("LC-Displays" in p0[-1],
+          f"Z17 muss unter 'LC-Displays' hängen, Pfad {p0}")
+    print(f"  abgeleitet: Z13/Z14 Gliederung, Z15 Hauptgruppe · "
+          f"{c0['main']} HG / {c0['outline']} Gliederung")
+
+    # Pinsel: Z15 erzwingen → Positionen wandern hoch zu 'Displays'
+    sl.row_overrides["15"] = ROW_OUTLINE
+    k1, c1 = rollen()
+    check(k1[15] == (ROW_OUTLINE, True),
+          f"Z15 gemalte Gliederung erwartet, ist {k1[15]}")
+    check(k1[14][1] is False,
+          f"Z14 'Displays' übernimmt die Positionen und wird angelegt, ist {k1[14]}")
+    p1 = pfad(17)
+    check("Displays" in p1[-1] and "LC-Displays" not in p1[-1],
+          f"Z17 muss jetzt unter 'Displays' hängen, Pfad {p1}")
+    check(len(p1) == len(p0) - 1,
+          f"eine Ebene weniger im Pfad erwartet: {p0} → {p1}")
+    # Eine Ebene wird Gliederung, eine wird Hauptgruppe — die Summe bleibt
+    check(c1["main"] + c1["outline"] == c0["main"] + c0["outline"],
+          f"Gesamtzahl der Ebenen darf sich nicht ändern: "
+          f"{c0['main']}+{c0['outline']} → {c1['main']}+{c1['outline']}")
+    print(f"  gemalt: Z15 Gliederung, Z14 Hauptgruppe · Pfad {len(p0)} → {len(p1)} Ebenen")
+
+    # Der Pinsel übersteht die Nummern-Regel (Z15 trägt eine Nummer, Z16 nicht)
+    del sl.row_overrides["15"]
+    sl.row_overrides["16"] = ROW_OUTLINE          # '-- UHD Professional', ohne Nummer
+    k2, _ = rollen()
+    check(k2[16] == (ROW_OUTLINE, True),
+          f"gemalte Gliederung ohne Nummer muss bestehen bleiben, ist {k2[16]}")
+    del sl.row_overrides["16"]
+    print("  gemalte Gliederung ohne Positionsnummer bleibt bestehen")
+
+
+def test_pinsel_kippt_nicht_die_nummern_regel():
+    """Ein Pinselstrich darf die Nummern-Regel eines Blatts nicht umdrehen.
+
+    Die Regel "nummeriert dieses Blatt seine Gruppen?" ist eine Frage an die DATEI.
+    Positionszeilen tragen eine Nummer — malte man eine davon zur Hauptgruppe, galt
+    das Blatt schlagartig als nummeriert und alle erkannten Gruppen (die dort keine
+    Nummer haben) wurden zu Hinweisen: aus 4 Gruppen in CMD_Video wurden 1 Gruppe
+    und 4 Hinweise.
+    """
+    print("\n=== Pinsel kippt die Nummern-Regel nicht")
+    data = load(LOS2)
+    for blatt, n_soll in (("CMD_Video", 4), ("JPK_Rigging_Licht", 3)):
+        lay = probe_of(LOS2).layout
+        sl  = lay.sheet(blatt)
+
+        def zaehl():
+            sp = sheet(preview_workbook(data, lay, opened={blatt}), blatt)
+            return sp.counts
+
+        c0 = zaehl()
+        check(c0["main"] == n_soll,
+              f"{blatt}: {n_soll} Gruppen erwartet, sind {c0['main']}")
+        check(c0["note"] == 0, f"{blatt}: keine Hinweise erwartet, sind {c0['note']}")
+
+        for zeile, wert in (("12", ROW_MAIN), ("11", ROW_OUTLINE)):
+            sl.row_overrides[zeile] = wert
+            c1 = zaehl()
+            check(c1["note"] == c0["note"],
+                  f"{blatt}: Pinsel ({wert} auf Z{zeile}) hat Gruppen zu Hinweisen "
+                  f"gemacht: {c0['note']} → {c1['note']}")
+            check(c1["main"] + c1["outline"] >= n_soll,
+                  f"{blatt}: Ebenen verloren nach Pinsel {wert} auf Z{zeile}: "
+                  f"{c1['main']}+{c1['outline']} < {n_soll}")
+            del sl.row_overrides[zeile]
+        print(f"  {blatt:20} {n_soll} Gruppen bleiben, auch nach Pinselstrich")
+
+    # Gegenprobe: auf einem nummerierten Blatt muss die Regel weiter greifen
+    sp = sheet(probe_of(GOE), "Preisblatt Technik")
+    check(prow(sp, 16).kind == ROW_NOTE,
+          f"GOE Z16 ohne Nummer muss Hinweis bleiben, ist {prow(sp,16).kind}")
+    print("  GOE Preisblatt Technik: Regel greift unverändert")
 
 
 # Von pytest gesehen: check() sammelt nur, damit ein Lauf ALLE Fehlschläge zeigt.
@@ -440,6 +662,9 @@ if __name__ == "__main__":
     test_sheet_mode()
     test_inheritance()
     test_invariants()
+    test_nummerierung_entscheidet_pro_blatt()
+    test_gliederung_pinsel()
+    test_pinsel_kippt_nicht_die_nummern_regel()
     print(f"\n{'='*60}\n{_oks} Prüfungen ok, {len(_fails)} fehlgeschlagen")
     if _fails:
         for f in _fails:

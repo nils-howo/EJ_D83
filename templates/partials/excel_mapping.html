@@ -46,7 +46,7 @@
     <label><input type="radio" name="xl-sheet-mode" value="main"
                   {% if probe.sheet_mode == 'main' %}checked{% endif %}>
       <b>einem Job</b>, Blatt ist die <b>Hauptgruppe</b>
-      <span class="xl-sub">(Gruppen darin werden Hinweise)</span></label>
+      <span class="xl-sub">(nur hier werden Gruppen darin zu Hinweisen)</span></label>
   </div>
   {% endif %}
 
@@ -68,12 +68,19 @@
          darum gibt es dafür nur einen Pinsel. #}
       <div class="xl-pal-group">Zeilen</div>
       {% set sheet_is_hg = probe.active_sheets > 1 and probe.sheet_mode == 'main' %}
-      {% for kind, name in [('header','Kopfzeile'), ('job','Job'), ('main','Hauptgruppe'),
+      {# Reihenfolge = Hierarchie von oben nach unten: Job › Gliederung › Hauptgruppe
+         › Position. Die Gliederung liegt über der Hauptgruppe, also steht sie auch
+         in der Palette darüber. #}
+      {% for kind, name in [('header','Kopfzeile'), ('job','Job'),
+                            ('outline','Gliederung'), ('main','Hauptgruppe'),
                             ('pos','Gruppe/Position'), ('note','Hinweis'),
                             ('skip','Zeile ignorieren')] %}
-      {% if kind == 'main' and sheet_is_hg %}
-      <button type="button" class="xl-swatch xl-row-main xl-swatch-off" disabled
-              title="Das Blatt ist die Hauptgruppe — eine Zeile darin kann keine weitere sein.">
+      {# Im Modus „Blatt IST Hauptgruppe" schreibt _classify_sheet JEDE Gruppenebene
+         zum Hinweis um — auch eine gemalte Gliederung. Beide Pinsel wären dort also
+         wirkungslos, darum abgeschaltet statt still ins Leere zu malen. #}
+      {% if kind in ('main', 'outline') and sheet_is_hg %}
+      <button type="button" class="xl-swatch xl-row-{{ kind }} xl-swatch-off" disabled
+              title="Das Blatt ist die Hauptgruppe — eine Zeile darin kann keine weitere Ebene sein.">
         <span class="xl-chip"></span>{{ name }}
       </button>
       {% else %}
@@ -83,10 +90,22 @@
       {% endif %}
       {% endfor %}
       <p class="xl-hint">
-        Easyjob hat zwischen Job und Position genau eine Ebene. Die <b>äußerste</b>
-        Gruppe über einer Position wird ihre <b>Hauptgruppe</b> (z.B. „Rigging");
-        feinere Ebenen darunter („Traversen") werden <b>Hinweise</b> und stehen
-        innerhalb der Hauptgruppe an ihrer Stelle.
+        Die <b>ganze Gruppenkette</b> bleibt erhalten — wie beim GAEB-Import. Ebene 1
+        ist die äußerste, tiefere Ebenen liegen darunter. <b>Angelegt</b> wird in
+        Easyjob die Ebene, unter der Positionen unmittelbar hängen — das ist die
+        <b>Hauptgruppe</b> („Traversen"). Die Ebenen darüber („Rigging") sind
+        <b>Gliederung</b>: sie ordnen ein, werden aber nicht angelegt.
+      </p>
+      <p class="xl-hint">
+        <b>Gliederung</b> ergibt sich normalerweise von selbst: eine Gruppe ohne
+        eigene Positionen wird grau und nicht angelegt. Der Pinsel erzwingt es —
+        Positionen direkt darunter hängen sich dann an die Ebene darüber.
+      </p>
+      <p class="xl-hint">
+        Nummeriert ein Blatt seine Gruppen („01 Videotechnik", „01.01 Displays"), dann
+        ist eine Gruppenzeile <b>ohne</b> Nummer dort ein <b>Hinweis</b> und keine
+        Ebene. Nummeriert das Blatt nichts, zählt die Farb-/Strich-Erkennung. Ein
+        Pinselstrich sticht das immer.
       </p>
 
       <p class="xl-hint">
@@ -128,10 +147,14 @@
           {% elif sl.header_row %}
           <span class="xl-counts"
                 data-pos="{{ sp.counts.pos }}" data-job="{{ sp.counts.job }}"
-                data-main="{{ sp.counts.main }}" data-note="{{ sp.counts.note }}">
+                data-main="{{ sp.counts.main }}" data-outline="{{ sp.counts.outline }}"
+                data-note="{{ sp.counts.note }}">
             <b class="c-pos">{{ sp.counts.pos }}</b> Positionen ·
             <b class="c-job">{{ sp.counts.job }}</b> Jobs ·
-            <b class="c-main">{{ sp.counts.main }}</b> Hauptgruppen ·
+            {# Gleiche Reihenfolge wie die Palette: Gliederung liegt über der
+               Hauptgruppe, also steht sie auch hier davor. #}
+            <b class="c-outline" title="Ebenen ohne eigene Positionen — ordnen nur ein, werden nicht angelegt.">{{ sp.counts.outline }}</b> Gliederung ·
+            <b class="c-main" title="Gruppen mit eigenen Positionen — genau diese werden in Easyjob angelegt.">{{ sp.counts.main }}</b> Hauptgruppen ·
             <b class="c-note">{{ sp.counts.note }}</b> Hinweise
             {% if sl.roles.qty | selectattr('active') | list | length > 1 %}
             · <b>{{ sl.roles.qty | selectattr('active') | list | length }}</b> Szenarien
@@ -200,10 +223,13 @@
             </thead>
             <tbody>
               {% for pr in sp.preview %}
-              <tr class="xl-tr xl-row-{{ pr.kind }}" data-row="{{ pr.row }}"
+              {# xl-outline ist abgeleitet (Gruppe ohne eigene Positionen) und liegt
+                 NEBEN xl-row-<kind>: die Pinsel-Logik in excel_mapping.js liest die
+                 xl-row-* Klasse, ein Ersetzen würde sie blind machen. #}
+              <tr class="xl-tr xl-row-{{ pr.kind }}{% if pr.outline %} xl-outline{% endif %}" data-row="{{ pr.row }}"
                   {% if pr.kind == 'grp' %}data-level="{{ pr.level }}"{% endif %}>
                 <th class="xl-rowhead" data-row="{{ pr.row }}"
-                    title="Excel-Zeile {{ pr.row }}{% if pr.kind == 'job' %} — Job{% elif pr.kind == 'main' %} — Hauptgruppe{% endif %}">
+                    title="Excel-Zeile {{ pr.row }}{% if pr.kind == 'job' %} — Job{% elif pr.kind in ('main', 'grp', 'outline') %}{% if pr.outline %} — Gliederung (Ebene {{ pr.level }}, wird nicht angelegt{% if pr.kind == 'outline' %}, gemalt{% endif %}){% else %} — Hauptgruppe (Ebene {{ pr.level }}){% endif %}{% endif %}">
                   {{ pr.row }}
                 </th>
                 {% for cell in pr.cells %}

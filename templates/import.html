@@ -4,11 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Import — GAEB Match + EJ Projekt</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="{{ asset('style.css') }}">
   <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
   <!-- Farb-Pinsel des Excel-Mapping-Dialogs. Einmalig hier, nicht im Partial: der
        Dialog wird per htmx getauscht und würde seine Listener sonst doppelt binden. -->
-  <script src="/static/excel_mapping.js" defer></script>
+  <script src="{{ asset('excel_mapping.js') }}" defer></script>
   <style>
     body { margin:0; font-family:system-ui,sans-serif; background:#f4f4f6; }
 
@@ -83,6 +83,20 @@
       font-weight:600; font-size:.88rem; cursor:pointer; user-select:none;
     }
     .category-header:hover { background:#d9ddf5; }
+    /* Ebenen über der Hauptgruppe (Abschnitt/Los/Gewerk) — nur Orientierung.
+       Nötig, seit gleichnamige Titel nicht mehr verschmolzen werden: "Lichttechnik"
+       steht mehrfach in der Liste, erst der Abschnitt darüber macht sie eindeutig.
+       Bewusst grau statt im Indigo der Kopfzeile: angelegt wird in Easyjob nur die
+       Hauptgruppe darunter, diese Ebenen nicht. Ohne Etikett — der Text selbst ist
+       eindeutig genug, und dieselbe Farbe markiert die Zeilen im Mapping-Dialog. */
+    .hg-parents {
+      display:block; font-weight:400; font-size:.7rem; color:#78909c;
+      letter-spacing:.01em; margin-bottom:2px;
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    }
+    .hg-parents .hg-oz { font-weight:600; color:#90a4ae; }
+    .hg-title { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .hg-oz    { font-family:monospace; font-weight:700; }
     .category-body { padding-left:0; display:block; margin-top:2px; }
 
     /* Hinweistexte (Infotexte aus der Ausschreibung) — nur Anzeige, nicht buchbar */

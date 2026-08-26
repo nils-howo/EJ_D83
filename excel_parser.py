@@ -40,17 +40,28 @@ ROW_HEADER = "header"
 ROW_JOB    = "job"       # eigener Easyjob-Job
 ROW_MAIN   = "main"      # Hauptgruppe (Ebene 1 im Job)
 ROW_GROUP  = "grp"       # Gruppe (Ebene 2 und tiefer)
+# Gliederung: eine Gruppenebene, die ausdrücklich NICHT angelegt werden soll. Sie
+# ordnet nur ein. Normalerweise ergibt sich das von selbst (Gruppe ohne eigene
+# Positionen → _mark_outline); dieser Pinsel erzwingt es, wenn die Erkennung daneben
+# liegt — etwa bei einer Ebene, unter der ein paar Positionen direkt hängen, die man
+# aber trotzdem nur als Überschrift will.
+ROW_OUTLINE = "outline"
 ROW_POS    = "pos"
 ROW_NOTE   = "note"
 ROW_SKIP   = "skip"
 
-ROW_KINDS = (ROW_HEADER, ROW_JOB, ROW_MAIN, ROW_GROUP, ROW_POS, ROW_NOTE, ROW_SKIP)
-ROW_GROUPISH = (ROW_JOB, ROW_MAIN, ROW_GROUP)
+ROW_KINDS = (ROW_HEADER, ROW_JOB, ROW_MAIN, ROW_GROUP, ROW_OUTLINE,
+             ROW_POS, ROW_NOTE, ROW_SKIP)
+ROW_GROUPISH = (ROW_JOB, ROW_MAIN, ROW_GROUP, ROW_OUTLINE)
+# Ebenen, die eine Gruppe aufmachen (Job zählt nicht dazu)
+ROW_LEVELISH = (ROW_MAIN, ROW_GROUP, ROW_OUTLINE)
 
 # Ebenen der gemalten Gruppen-Pinsel — bewusst fest, damit „Hauptgruppe" immer
 # dasselbe bedeutet und nicht von der Nachbarzeile abhängt. ROW_GROUP wird nicht
 # mehr angeboten (in Easyjob ist eine Gruppe dasselbe wie eine Position), bleibt
 # hier aber gültig, damit gespeicherte Layouts weiter funktionieren.
+# ROW_OUTLINE fehlt hier absichtlich: „Gliederung" sagt nichts über die Tiefe, nur
+# dass die Ebene nicht angelegt wird. Ihre Ebene kommt weiter aus der Erkennung.
 _PAINT_LEVEL = {ROW_JOB: 0, ROW_MAIN: 1, ROW_GROUP: 2}
 
 # Blätter werden zu … (nur relevant, wenn mehrere Blätter aktiv sind)
@@ -63,8 +74,10 @@ SHEET_MODES   = (SHEET_AS_JOB, SHEET_AS_KEEP, SHEET_AS_MAIN)
 # Synonyme für die Kopfzeilen-Erkennung (Präfix-Vergleich auf normalisiertem Text)
 _HEADER_WORDS: dict[str, tuple[str, ...]] = {
     ROLE_OZ:    ("pos", "nr", "positionsnummer", "positions-nr", "ordnungszahl", "oz", "lfd"),
+    # "kurztext" muss eigenständig drinstehen: der Vergleich ist ein Präfix-Vergleich,
+    # das vorhandene "text" trifft "Kurztext" also nicht.
     ROLE_DESC:  ("beschreibung", "bezeichnung", "leistungsbeschreibung", "leistung",
-                 "artikel", "text", "description"),
+                 "kurztext", "artikel", "text", "description"),
     ROLE_REF:   ("referenz", "bemerkung", "bemerkungen", "typ", "gerätetyp", "geraetetyp",
                  "hersteller", "kommentar", "fabrikat", "reference"),
     ROLE_UNIT:  ("einheit", "einh", "me", "mengeneinheit", "unit"),
@@ -186,6 +199,7 @@ class PreviewRow:
     kind:  str
     level: int
     cells: list[str]        # Index 0 = Spalte 1
+    outline: bool = False   # Gliederungsebene (Gruppe ohne eigene Positionen)
 
 
 @dataclass
@@ -193,7 +207,7 @@ class SheetProbe:
     layout:  SheetLayout
     max_col: int
     preview: list[PreviewRow]
-    counts:  dict[str, int]     # {"pos": n, "grp": n, "note": n}
+    counts:  dict[str, int]     # {"pos", "job", "main", "outline", "note", …}
     total_rows: int
     header_context: list[list[str]] = field(default_factory=list)  # bis zu 3 Zeilen über der Kopfzeile
     header_texts:   list[str]       = field(default_factory=list)  # Kopfzeile selbst (Fingerprint)
@@ -518,8 +532,9 @@ class _Row:
     qty:      dict[int, Optional[float]]   # Spalte → Menge
     style:    tuple
     painted:  bool = False   # Ebene kommt aus dem Pinsel, nicht aus der Erkennung
-    has_pos:  bool = False   # Gruppe enthält (äußerste Ebene) Positionen → Hauptgruppe
     was_group: bool = False  # als Hinweis herabgestuft, gehört aber in die Gruppenkette
+    outline:  bool = False   # Gliederung: Gruppe ohne eigene Positionen → wird in
+                             # Easyjob nicht angelegt, dient nur der Einordnung
 
 
 def _cell_for(layout: SheetLayout, row: int, role: str, default_col: int) -> int:
@@ -656,38 +671,100 @@ def _classify_sheet(ws, layout: SheetLayout, demote_main: bool = False) -> list[
         else:                                        # Stil-Untergruppe
             r.level = base + rank.get(r.style, 1)
 
-    # Erkannte Ebene 1 ist eine Hauptgruppe, alles darunter eine Gruppe — damit die
-    # Vorschaufarben denselben Begriffen folgen wie die Pinsel.
-    # Easyjob kennt genau eine Ebene zwischen Job und Position: die Hauptgruppe.
-    # Also wird die *äußerste* Gruppe über einer Position deren Hauptgruppe — das sind
-    # die großen Kategorien („Rigging", „Beleuchtung", „01 Videotechnik"), die auch in
-    # Easyjob als Überschrift Sinn ergeben. Die feineren Ebenen darunter („Haupt-Rig",
-    # „Traversen", „-- UHD Professional") werden Hinweise: sie bleiben an ihrer Stelle
-    # sichtbar, erfinden aber keine Ebene, die es in Easyjob nicht gibt.
-    stack: list[_Row] = []
-    for r in rows:
-        if r.kind in (ROW_JOB, ROW_MAIN, ROW_GROUP):
-            if r.kind == ROW_JOB:
-                stack = []          # neuer Job → neue äußerste Ebene
-                continue
-            while stack and stack[-1].level >= r.level:
-                stack.pop()
-            stack.append(r)
-        elif r.kind == ROW_POS and stack:
-            stack[0].has_pos = True
+    # Alle erkannten Ebenen bleiben Gruppen — gleiche Logik wie beim D83-Import.
+    #
+    # Vorher wurde die *äußerste* Gruppe über einer Position zur Hauptgruppe und alles
+    # darunter zum Hinweis herabgestuft, mit der Begründung, Easyjob kenne nur eine
+    # Ebene zwischen Job und Position. Der GAEB-Weg macht das nicht: dort trägt
+    # ``category_path`` die ganze BoQCtgy-Kette, die *tiefste* Ebene ist die
+    # Hauptgruppe und die Ebenen darüber stehen als Elternpfad in der Kopfzeile
+    # (``_parent_levels`` in routes/import_.py). Für die Easyjob-Buchung wählt
+    # ``_import_gaeb_groups`` daraus je Modus eine bzw. zwei Ebenen aus — die Tiefe des
+    # LVs schadet dort also nicht. Zwei Importwege mit zwei Hierarchie-Begriffen waren
+    # der eigentliche Fehler; feine Gruppen wie „LC-Displays" verschwanden in Excel-LVs
+    # in 496 Hinweisen, während dieselbe Struktur aus einer X83 sauber gegliedert ankam.
+    #
+    # ``demote_main`` bleibt: dort hat der Nutzer ausdrücklich „das Blatt IST die
+    # Hauptgruppe" gewählt, darunter soll es dann auch keine Ebene geben.
+    if demote_main:
+        for r in rows:
+            if r.kind in ROW_LEVELISH:
+                # was_group: der Text wird Hinweis, bleibt aber Teil der Gruppenkette
+                # für das Matching — sonst verliert der Matcher „Traversen", „Displays".
+                r.kind      = ROW_NOTE
+                r.was_group = True
+        return rows
 
+    # Nummeriert ein Blatt seine Gruppen überhaupt, dann IST die Nummer die Struktur:
+    # eine Gruppenzeile ohne eigene Positionsnummer ist dort keine Ebene, sondern eine
+    # Zwischenüberschrift. In LOS1 GOE tragen "01 Videotechnik", "01.01 Displays" und
+    # "01.01.01 LC-Displays" Nummern, die Strichzeilen darunter ("-- UHD Professional")
+    # nicht — die erfanden 69 von 133 Ebenen, die das LV so nicht kennt.
+    #
+    # Pro Blatt entschieden, nicht global: Vector NHX nummeriert nichts und baut seine
+    # Hierarchie allein über Füllfarben, ebenso die JPK_/CMD_-Blätter in LOS2. Global
+    # angewandt bliebe dort keine einzige Gruppe übrig.
+    #
+    # Gemalte Ebenen sind davon ausgenommen — wer eine Zeile als Gruppe anpinselt, hat
+    # die Frage schon beantwortet.
+    # ``not r.painted``: die Frage ist, ob die DATEI ihre Gruppen nummeriert. Ein
+    # Pinselstrich auf eine Positionszeile (die eine Nummer trägt) machte das Blatt
+    # sonst schlagartig „nummeriert" und degradierte alle erkannten Gruppen zu
+    # Hinweisen — in CMD_Video aus 4 Gruppen wurden so 1 Gruppe und 4 Hinweise.
+    if any((r.oz or "").strip() for r in rows
+           if r.kind in ROW_LEVELISH and not r.painted):
+        for r in rows:
+            # ROW_OUTLINE ist eine ausdrückliche Wahl und davon ausgenommen.
+            if (r.kind in (ROW_MAIN, ROW_GROUP) and not r.painted
+                    and not (r.oz or "").strip()):
+                # was_group: bleibt für das Matching Teil der Gruppenkette
+                r.kind      = ROW_NOTE
+                r.was_group = True
+
+    # Ebene 1 ist eine Hauptgruppe, alles darunter eine Gruppe. Rein eine Frage der
+    # Benennung: die Vorschaufarben und die Pinsel (``_PAINT_LEVEL``) folgen damit
+    # denselben Begriffen. Für die Struktur zählt nur ``level`` — beide Arten landen
+    # im Gruppenstapel und damit im ``category_path``.
     for r in rows:
-        if r.kind not in (ROW_MAIN, ROW_GROUP):
-            continue
-        if demote_main or not r.has_pos:
-            # demote_main: das Blatt ist die Hauptgruppe, darunter gibt es keine Ebene.
-            # was_group: der Text wird Hinweis, bleibt aber Teil der Gruppenkette für
-            # das Matching — sonst verliert der Matcher „Traversen", „Displays" usw.
-            r.kind      = ROW_NOTE
-            r.was_group = True
-        else:
-            r.kind = ROW_MAIN
+        if r.kind in (ROW_MAIN, ROW_GROUP):
+            r.kind = ROW_MAIN if r.level <= 1 else ROW_GROUP
+
+    _mark_outline(rows)
     return rows
+
+
+def _mark_outline(rows: list[_Row]) -> None:
+    """Gruppen ohne eigene Positionen als Gliederung markieren.
+
+    Angelegt wird in Easyjob die Gruppe, unter der eine Position unmittelbar hängt —
+    also die TIEFSTE Ebene ihres Zweigs. Die Ebenen darüber ("01 Videotechnik",
+    "01.01 Displays") ordnen nur ein; sie tauchen in der Gruppenliste als Gliederung
+    über der Hauptgruppe auf, werden aber nicht gebucht.
+
+    Genau diese Unterscheidung fehlte in der Mapping-Vorschau: dort hießen die 9
+    Ebene-1-Zeilen von LOS1 GOE "Hauptgruppen", obwohl keine davon angelegt wird —
+    die 48 echten Hauptgruppen liegen zwei Ebenen tiefer.
+
+    Hinweiszeilen öffnen keine Ebene: eine Position unter einer Zwischenüberschrift
+    gehört zur umschließenden echten Gruppe (dieselbe Regel wie ``_GroupStack.path``).
+    """
+    offen: list[_Row] = []
+    for r in rows:
+        if r.kind == ROW_JOB:
+            offen = []
+        elif r.kind in ROW_LEVELISH:
+            while offen and offen[-1].level >= r.level:
+                offen.pop()
+            offen.append(r)
+            r.outline = True              # bis eine eigene Position auftaucht
+        elif r.kind == ROW_POS and offen:
+            # Innerste offene Gruppe wird angelegt — außer sie ist ausdrücklich als
+            # Gliederung gemalt. Dann gehört die Position zur nächsten Ebene darüber,
+            # die angelegt werden darf.
+            for g in reversed(offen):
+                if g.kind != ROW_OUTLINE:
+                    g.outline = False
+                    break
 
 
 def formula_rows(data: bytes) -> dict[str, dict[int, set[int]]]:
@@ -902,7 +979,11 @@ def _build_probe(ws, layout: SheetLayout, max_col: int,
     counts = {
         "pos":  len(pos_rows),
         "job":  sum(1 for r in rows if r.kind == ROW_JOB),
-        "main": sum(1 for r in rows if r.kind == ROW_MAIN),
+        # Gezählt wird, was am Ende herauskommt, nicht die Pinselebene: "main" sind
+        # die Gruppen, die in Easyjob angelegt werden (mit eigenen Positionen),
+        # "outline" die Ebenen darüber, die nur einordnen.
+        "main": sum(1 for r in rows if r.kind in ROW_LEVELISH and not r.outline),
+        "outline": sum(1 for r in rows if r.kind in ROW_LEVELISH and r.outline),
         "note": sum(1 for r in rows if r.kind == ROW_NOTE),
         "price_formulas": price_fml,
     }
@@ -927,7 +1008,8 @@ def _build_probe(ws, layout: SheetLayout, max_col: int,
             continue
         rr = by_row.get(r)
         preview.append(PreviewRow(row=r, kind=rr.kind if rr else ROW_SKIP,
-                                  level=rr.level if rr else 0, cells=cells))
+                                  level=rr.level if rr else 0, cells=cells,
+                                  outline=bool(rr and rr.outline)))
         shown += 1
     counts["shown"]     = shown                  # Datenzeilen in der Vorschau
     counts["truncated"] = uebrig                 # nicht gezeigte Datenzeilen
@@ -1018,12 +1100,14 @@ def merge_profile(probe: WorkbookProbe, saved: dict) -> ExcelLayout:
 class _GroupStack:
     """Gruppenstapel mit zwei Sichten auf dieselbe Hierarchie.
 
-    ``path()``  – nur die äußerste Hauptgruppe. Das ist die Easyjob-Struktur:
-                  zwischen Job und Position gibt es genau eine Ebene.
-    ``chain()`` – die vollständige Kette der Rohnamen, auch der zu Hinweisen
-                  herabgestuften Ebenen. Nur fürs Matching: ``_category_adjustments``
-                  fügt den Pfad zu einem String zusammen und sucht Stichwörter darin,
-                  je mehr Ebenen also, desto besser („Lichttechnik Rigging Traversen").
+    ``path()``  – die vollständige Gruppenkette mit Herkunftskoordinate, für die
+                  Struktur. Wie ``category_path`` beim D83-Import: tiefste Ebene ist
+                  die Hauptgruppe, die Ebenen darüber sind ihr Elternpfad.
+    ``chain()`` – dieselbe Kette als Rohnamen, auch der zu Hinweisen herabgestuften
+                  Ebenen (Modus „Blatt IST Hauptgruppe"). Nur fürs Matching:
+                  ``_category_adjustments`` fügt den Pfad zu einem String zusammen und
+                  sucht Stichwörter darin, je mehr Ebenen also, desto besser
+                  („Lichttechnik Rigging Traversen").
 
     Die Ordnungszahl zählt über alle Ebenen, damit die Reihenfolge stimmt.
     """
@@ -1032,13 +1116,16 @@ class _GroupStack:
         self.labels:   list[str]  = []   # mit Herkunftskoordinate, für die Anzeige
         self.raw:      list[str]  = []   # ohne Koordinate, fürs Matching
         self.is_hg:    list[bool] = []
+        self.outline:  list[bool] = []   # ausdrücklich als Gliederung gemalt
         self.counters: list[int]  = []
         self.pos_no:   int        = 0
 
-    def push(self, level: int, label: str, raw: str, is_hg: bool) -> None:
+    def push(self, level: int, label: str, raw: str, is_hg: bool,
+             outline: bool = False) -> None:
         lvl = max(1, level)
         while len(self.labels) < lvl - 1:          # Ebenenlücke auffüllen
             self.labels.append(""); self.raw.append(""); self.is_hg.append(False)
+            self.outline.append(False)
             self.counters.append(1)
         if len(self.counters) >= lvl:
             self.counters[lvl - 1] += 1
@@ -1046,20 +1133,29 @@ class _GroupStack:
             del self.labels[lvl - 1:]
             del self.raw[lvl - 1:]
             del self.is_hg[lvl - 1:]
+            del self.outline[lvl - 1:]
         else:
             self.counters.append(1)
         self.labels.append(label); self.raw.append(raw); self.is_hg.append(is_hg)
+        self.outline.append(outline)
         self.pos_no = 0
 
     def reset(self) -> None:
         self.__init__()
 
     def path(self) -> list[str]:
-        """Die äußerste Hauptgruppe (höchstens eine) — Easyjob hat nur diese Ebene."""
-        for lbl, hg in zip(self.labels, self.is_hg):
-            if hg and lbl:
-                return [lbl]
-        return []
+        """Die ganze Gruppenkette — leere Ebenen (Lücken) fallen raus.
+
+        Ausdrücklich als Gliederung gemalte Ebenen dürfen nie die Hauptgruppe sein.
+        Hängt eine Position direkt darunter, wird die Kette hinten abgeschnitten,
+        bis eine Ebene übrig ist, die angelegt werden darf. Steht die Gliederung
+        weiter oben (der Normalfall), bleibt sie als Elternebene stehen.
+        """
+        kette = [(lbl, gl) for lbl, hg, gl in
+                 zip(self.labels, self.is_hg, self.outline) if hg and lbl]
+        while kette and kette[-1][1]:
+            kette.pop()
+        return [lbl for lbl, _ in kette]
 
     def chain(self) -> list[str]:
         """Alle Ebenen als Rohnamen — Matching-Kontext, nicht Struktur."""
@@ -1134,8 +1230,8 @@ def parse_excel(data: bytes, layout: ExcelLayout, name: str = "") -> GaebProject
 
             def _root(job: str) -> list[str]:
                 """Wurzel des category_path: Job (falls vorhanden) und/oder Blatt.
-                Das Blatt steht hier und nicht im Gruppenstapel — sonst würde es von
-                der Hauptgruppe verdrängt, die den Stapel auf eine Ebene reduziert."""
+                Das Blatt steht hier und nicht im Gruppenstapel, damit ein Pinselstrich
+                innerhalb des Blatts seine Ebene nicht verschiebt."""
                 return ([job] if job else []) + ([sheet_label] if sheet_label else [])
 
             # Matching-Wurzel ohne Koordinaten: Szenario/Blattname sind echte Stichwörter
@@ -1158,10 +1254,11 @@ def parse_excel(data: bytes, layout: ExcelLayout, name: str = "") -> GaebProject
 
                 # Hauptgruppen UND herabgestufte Gruppen gehören in den Stapel: die
                 # einen als Struktur, die anderen als Matching-Kontext.
-                if r.kind in (ROW_MAIN, ROW_GROUP) or r.was_group:
+                if r.kind in ROW_LEVELISH or r.was_group:
                     stack.push(r.level,
                                _group_label(r.label, sl.sheet_no, r.row, suffix),
-                               r.label, r.kind in (ROW_MAIN, ROW_GROUP))
+                               r.label, r.kind in ROW_LEVELISH,
+                               outline=(r.kind == ROW_OUTLINE))
                     if r.was_group:
                         # Zwischenüberschrift → Hinweis vor der nächsten Position
                         pending.append(GaebRemark(title=r.label, long_text=r.long,

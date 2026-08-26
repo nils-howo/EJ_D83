@@ -355,15 +355,35 @@
 </div>
 {% endif %}
 
+{# Elternpfade wiederholen sich über viele Hauptgruppen hinweg (in LOS1 GOE teilen
+   sechs aufeinanderfolgende HGs denselben). Nur zeigen, wenn er sich ändert — sonst
+   steht dieselbe Zeile zehnmal untereinander. #}
+{% set ns = namespace(prev_parents="") %}
 {% for hg in groups %}
 {% set hg_idx = loop.index0 %}
-{% set cur_lid = group_jobs.get(hg.name, 1) %}
+{# Job-Zuordnung über hg.key (Ordnungszahl|Label): gleichnamige Titel in
+   verschiedenen Abschnitten sind verschiedene Gruppen und einzeln zuweisbar. #}
+{% set cur_lid = group_jobs.get(hg.key, 1) %}
+{% set pkey = hg.parents | map(attribute='name') | join('|') %}
 <div class="category-group" data-lid="{{ cur_lid }}">
   <div class="category-header" onclick="toggleCat(this)" data-catkey="hg:{{ hg.num or hg.name }}">
     <span>▼</span>
-    <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-      {% if hg.num %}<span style="font-family:monospace;font-weight:700">[{{ hg.num }}]</span>  {% endif %}
-      {{ hg.name }}
+    {# Elternpfad bleibt INNERHALB dieses span — _impCatKey greift die Kopfzeile
+       über span:nth-child(2) ab, ein zusätzliches Geschwister-span würde die
+       Aufklapp-Zustände verschieben. #}
+    <span style="flex:1;min-width:0;overflow:hidden">
+      {% if hg.parents and pkey != ns.prev_parents %}
+      <span class="hg-parents"
+            title="Nur Gliederung des LVs — diese Ebenen werden in Easyjob nicht angelegt. Angelegt wird die Hauptgruppe darunter.">
+        {%- for lvl in hg.parents %}{% if not loop.first %} › {% endif %}
+        {%- if lvl.num %}<span class="hg-oz">[{{ lvl.num }}]</span> {% endif %}{{ lvl.name }}
+        {%- endfor %}
+      </span>
+      {% endif %}
+      {% set ns.prev_parents = pkey %}
+      <span class="hg-title">
+        {%- if hg.num %}<span class="hg-oz">[{{ hg.num }}]</span>  {% endif %}{{ hg.name }}
+      </span>
     </span>
 
     <div class="hg-job-wrap" onclick="event.stopPropagation()">
@@ -371,7 +391,7 @@
             hx-target="#import-groups"
             hx-swap="innerHTML focus-scroll:false"
             style="display:inline">
-        <input type="hidden" name="grp_name" value="{{ hg.name }}">
+        <input type="hidden" name="grp_key" value="{{ hg.key }}">
         <input type="hidden" name="lid" value="1">
         <button type="submit" class="job-btn {% if cur_lid == 1 %}job-btn-active{% endif %}">
           {{ standard_job_name or "Standard" }}
@@ -382,7 +402,7 @@
             hx-target="#import-groups"
             hx-swap="innerHTML focus-scroll:false"
             style="display:inline">
-        <input type="hidden" name="grp_name" value="{{ hg.name }}">
+        <input type="hidden" name="grp_key" value="{{ hg.key }}">
         <input type="hidden" name="lid" value="{{ job.lid }}">
         <button type="submit" class="job-btn {% if cur_lid == job.lid %}job-btn-active{% endif %}">
           {{ job.name }}
@@ -396,7 +416,7 @@
             hx-target="#import-groups"
             hx-swap="innerHTML focus-scroll:false"
             style="display:none;align-items:center;gap:3px">
-        <input type="hidden" name="grp_name" value="{{ hg.name }}">
+        <input type="hidden" name="grp_key" value="{{ hg.key }}">
         <input type="text" name="job_name" class="new-job-input"
                placeholder="z.B. Licht" autocomplete="off">
         <button type="submit" class="btn-confirm-job">Anlegen</button>

@@ -41,6 +41,26 @@ templates.env.filters["autolink"] = _autolink
 templates.env.globals["resolve_time_factor"] = resolve_time_factor
 
 
+def asset(name: str) -> str:
+    """URL einer statischen Datei mit Version aus der Änderungszeit.
+
+    Ohne das cachen Browser ``/static/style.css`` und ``excel_mapping.js`` unbegrenzt:
+    das HTML kommt frisch vom Server, CSS und JS bleiben alt. Eine geänderte Farbe
+    oder ein neuer Pinsel sind dann schlicht nicht da, ohne dass etwas kaputt wäre —
+    genau darauf ist beim Gliederungs-Grau eine Runde draufgegangen. Die mtime ändert
+    sich bei jedem Deploy und bricht den Cache genau dann, wenn es nötig ist.
+    """
+    pfad = BASE_DIR / "static" / name
+    try:
+        v = int(pfad.stat().st_mtime)
+    except OSError:
+        return f"/static/{name}"
+    return f"/static/{name}?v={v}"
+
+
+templates.env.globals["asset"] = asset
+
+
 # ─── Hilfsfunktion DB-Verbindungsstring ──────────────────────────────────────
 
 def _build_db_conn(server: str, db: str, uid: str, pwd: str) -> str:

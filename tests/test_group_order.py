@@ -38,15 +38,20 @@ def dokument_reihenfolge(project, level: int) -> list[str]:
     """Gruppennamen in der Reihenfolge, in der sie in der Datei zuerst auftauchen."""
     out, seen = [], set()
     for it in project.items:
-        p = it.category_path
+        p = list(it.category_path)
+        # Wie in _import_gaeb_groups über den Pfad geschlüsselt, nicht über das Label:
+        # gleichnamige Titel in verschiedenen Abschnitten ("Lichttechnik" in 02, 03,
+        # 05, 06) sind verschiedene Gruppen und tauchen mehrfach auf.
         if not p:
-            name = "(ohne Gruppe)"
+            key, name = ("",), "(ohne Gruppe)"
         elif level == 0:
-            name = p[-1]
+            key, name = tuple(p), p[-1]
+        elif len(p) >= 2:
+            key, name = tuple(p[:-1]), p[-2]
         else:
-            name = p[-2] if len(p) >= 2 else p[-1]
-        if name not in seen:
-            seen.add(name)
+            key, name = tuple(p), p[-1]
+        if key not in seen:
+            seen.add(key)
             out.append(name)
     return out
 
@@ -98,9 +103,11 @@ def test_excel_reihenfolge():
 
 def test_gaeb_unveraendert():
     """Bei GAEB darf sich nichts ändern — dort sind die Ordnungszahlen auf feste
-    Breite aufgefüllt und sortierten schon vorher richtig. Die drei bekannten
+    Breite aufgefüllt und sortierten schon vorher richtig. Die vier bekannten
     Abweichungen sind Dateien, in denen eine Elterngruppe erst NACH ihren
-    Untergruppen auftaucht; dort ist die Ordnungszahl richtiger als das Dokument."""
+    Untergruppen auftaucht; dort ist die Ordnungszahl richtiger als das Dokument.
+    (R27 kam dazu, seit gleichnamige Titel — dort 4x "Plenum" — nicht mehr zu einer
+    Gruppe verschmolzen werden und die Elterngruppe damit sichtbar wird.)"""
     print("\n=== GAEB: Reihenfolge unverändert")
     dateien = sorted(set(glob.glob("infos/*.x8*") + glob.glob("infos/*.X8*")
                          + glob.glob("infos/*.D83")))
@@ -120,8 +127,8 @@ def test_gaeb_unveraendert():
                 eltern_nach_kind.append((os.path.basename(f)[:30], level))
     print(f"  {geprueft} Dateien · {len(eltern_nach_kind)} Abweichungen: {eltern_nach_kind}")
     check(geprueft >= 8, f"zu wenige GAEB-Dateien geprüft: {geprueft}")
-    check(len(eltern_nach_kind) == 3,
-          f"3 bekannte Abweichungen erwartet (Elterngruppe nach Kind), "
+    check(len(eltern_nach_kind) == 4,
+          f"4 bekannte Abweichungen erwartet (Elterngruppe nach Kind), "
           f"sind {len(eltern_nach_kind)}: {eltern_nach_kind}")
 
 

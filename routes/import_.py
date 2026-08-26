@@ -104,6 +104,104 @@ def _oz_key(num: str) -> tuple:
     return tuple(teile)
 
 
+def _grp_key(num: str, name: str) -> str:
+    """Identität einer Gruppe für die Job-Zuordnung: Ordnungszahl + Label.
+
+    Das Label allein reicht nicht — in GAEB-LVs heißen Titel in mehreren Abschnitten
+    gleich ("Lichttechnik" in 02.01, 03.01, 05.01 und 06.01). Über das Label
+    geschlüsselt zogen alle gleichnamigen Gruppen zwangsweise in denselben Job, und
+    beim Buchen landeten ihre Positionen alle dort. Die Ordnungszahl ist eindeutig,
+    das Label bleibt drin, damit der Schlüssel im Log lesbar ist. Ohne Ordnungszahl
+    (Excel-LV ohne Positionsnummern) bleibt nur das Label — dort tragen die Labels
+    ihre Herkunftskoordinate und sind ohnehin eindeutig.
+    """
+    return f"{num}|{name}" if num else name
+
+
+def _grp_of(grp: dict) -> str:
+    """Schlüssel einer Gruppen-Dict aus ``_import_gaeb_groups``."""
+    return grp.get("key") or _grp_key(grp.get("num", ""), grp.get("name", ""))
+
+
+def _migrate_group_jobs(ss) -> None:
+    """Alt-Entwürfe: ``d83_group_jobs`` war auf das reine Gruppenlabel geschlüsselt.
+
+    Nach dem Umstellen auf ``_grp_key`` (Ordnungszahl|Label) würden geladene Entwürfe
+    ihre Job-Zuordnung stillschweigend verlieren — alles wieder im Standard-Job. Also
+    einmalig umschlüsseln. Ein Label, das mehrere Gruppen trägt, verteilt sich dabei
+    auf alle (mehr ist aus dem alten Stand nicht rekonstruierbar); ab dann ist jede
+    Gruppe einzeln zuweisbar.
+    """
+    alt = ss.d83_group_jobs or {}
+    if not alt or not ss.d83_groups:
+        return
+    if any(_grp_of(g) in alt for g in ss.d83_groups):
+        return                          # schon im neuen Schema gespeichert
+    neu = {_grp_of(g): alt[g["name"]] for g in ss.d83_groups if g["name"] in alt}
+    logging.info("import: d83_group_jobs umgeschlüsselt (%d → %d Einträge)",
+                 len(alt), len(neu))
+    ss.d83_group_jobs = neu
+
+
+def _parent_levels(path_above: list[str], hg_oz_parts: list[str]) -> list[dict]:
+    """Die Ebenen ÜBER der Hauptgruppe, von außen nach innen — reine Anzeige.
+
+    Seit gleichnamige Titel nicht mehr verschmolzen werden, steht „Lichttechnik" im
+    polis-LV viermal in der Liste. Erst der Abschnitt darüber („TECHNIK KONFERENZ 1
+    ASH — KONGRESS") sagt, welche davon gemeint ist.
+
+    Die Ordnungszahl wird von rechts gekürzt — eine Ebene weniger je Schritt nach
+    außen — statt sie über den Pfad-Index aufzubauen. Eine GAEB-Kategorie ohne
+    ``LblTx`` erzeugt keinen Pfadeintrag, aber trotzdem eine OZ-Ebene; positionsweise
+    zugeordnet wären dann alle Nummern verschoben.
+    """
+    out: list[dict] = []
+    for k, label in enumerate(path_above):
+        trim = len(path_above) - k
+        num  = ".".join(hg_oz_parts[:-trim]) if len(hg_oz_parts) > trim else ""
+        out.append({"num": num, "name": label})
+    return out
+
+
+def _item_group_parts(item, level: int) -> dict:
+    """Gruppen-Koordinaten einer Position: Label, Ordnungszahl und Pfad je Ebene.
+
+    Die eine Stelle, an der „welche Gruppe gehört zu dieser Position" festgelegt ist.
+    ``_import_gaeb_groups`` (baut die Gruppen) und ``_assign_jobs`` (verteilt Jobs auf
+    Gruppen) müssen sich hier einig sein, sonst greift die Job-Zuordnung ins Leere.
+    """
+    path     = list(item.category_path)
+    oz_parts = (item.oz or "").split(".")
+
+    if not path:
+        return {"hg_label": "(ohne Gruppe)", "hg_num": "", "hg_path": ("",),
+                "g_label": "", "g_num": "", "g_path": None,
+                "lb_label": "", "lb_num": "", "parents": []}
+    if level == 1 and len(path) >= 2:
+        hg_num = ".".join(oz_parts[:-2]) if len(oz_parts) >= 3 else oz_parts[0]
+        return {
+            "hg_label": path[-2],
+            "hg_num":   hg_num,
+            "hg_path":  tuple(path[:-1]),
+            "g_label":  path[-1],
+            "g_num":    ".".join(oz_parts[:-1]) if len(oz_parts) >= 2 else "",
+            "g_path":   tuple(path),
+            "lb_label": path[-3] if len(path) >= 3 else "",
+            "lb_num":   ".".join(oz_parts[:-3]) if len(oz_parts) >= 4 else "",
+            "parents":  _parent_levels(path[:-2], oz_parts[:-2]),
+        }
+    hg_num = ".".join(oz_parts[:-1]) if len(oz_parts) >= 2 else oz_parts[0]
+    return {
+        "hg_label": path[-1],
+        "hg_num":   hg_num,
+        "hg_path":  tuple(path),
+        "g_label":  "", "g_num": "", "g_path": None,
+        "lb_label": path[-2] if len(path) >= 2 else "",
+        "lb_num":   ".".join(oz_parts[:-2]) if len(oz_parts) >= 3 else "",
+        "parents":  _parent_levels(path[:-1], oz_parts[:-1]),
+    }
+
+
 def _import_gaeb_groups(project: GaebProject, level: int = 0, alt_active: dict | None = None) -> list[dict]:
     """Extrahiert Haupt-/Untergruppen aus dem GAEB-Projekt, mit item_id + Alt-Block-Paaren."""
     if alt_active is None:
@@ -118,7 +216,7 @@ def _import_gaeb_groups(project: GaebProject, level: int = 0, alt_active: dict |
         if r.next_item_id:
             remarks_by_item.setdefault(r.next_item_id, []).append(rd)
         else:
-            trailing_remarks.append(((r.category_path[-1] if r.category_path else ""), rd))
+            trailing_remarks.append((tuple(r.category_path), rd))
 
     def _pd(it):
         d = _pos_dict(it)
@@ -134,75 +232,87 @@ def _import_gaeb_groups(project: GaebProject, level: int = 0, alt_active: dict |
         if root not in root_order:
             root_order[root] = len(root_order)
 
-    hg_map: dict[str, dict] = {}
+    hg_map: dict[tuple, dict] = {}
     for item in project.items:
         path     = item.category_path
-        oz_parts = (item.oz or "").split(".")
 
-        if not path:
-            hg_label, hg_num = "(ohne Gruppe)", ""
-            g_label,  g_num  = "", ""
-            lb_label, lb_num = "", ""
-        elif level == 1 and len(path) >= 2:
-            hg_label = path[-2]
-            hg_num   = ".".join(oz_parts[:-2]) if len(oz_parts) >= 3 else oz_parts[0]
-            g_label  = path[-1]
-            g_num    = ".".join(oz_parts[:-1]) if len(oz_parts) >= 2 else ""
-            lb_label = path[-3] if len(path) >= 3 else ""
-            lb_num   = ".".join(oz_parts[:-3]) if len(oz_parts) >= 4 else ""
-        else:
-            hg_label = path[-1]
-            hg_num   = ".".join(oz_parts[:-1]) if len(oz_parts) >= 2 else oz_parts[0]
-            g_label  = ""
-            g_num    = ""
-            lb_label = path[-2] if len(path) >= 2 else ""
-            lb_num   = ".".join(oz_parts[:-2]) if len(oz_parts) >= 3 else ""
+        # Gruppen werden über den vollen Pfad geschlüsselt, nicht über das Label:
+        # in GAEB-LVs wiederholen sich Titel ("Lichttechnik", "Tontechnik") in jedem
+        # Abschnitt. Über das Label gebündelt landeten 02.01, 03.01, 05.01 und 06.01
+        # in einer einzigen Hauptgruppe, die restlichen fehlten komplett.
+        gp       = _item_group_parts(item, level)
+        hg_label = gp["hg_label"]; hg_num = gp["hg_num"]; hg_key = gp["hg_path"]
+        g_label  = gp["g_label"];  g_num  = gp["g_num"];  g_key  = gp["g_path"]
+        lb_label = gp["lb_label"]; lb_num = gp["lb_num"]
 
-        if hg_label not in hg_map:
-            hg_map[hg_label] = {
+        if hg_key not in hg_map:
+            hg_map[hg_key] = {
                 "name": hg_label, "num": hg_num, "count": 0, "sub": {}, "_positions": [],
                 "parent_name": lb_label, "parent_num": lb_num, "remarks": [],
+                # Ebenen über der HG (Abschnitt/Los/Gewerk) — Anzeige, damit
+                # gleichnamige Titel unterscheidbar sind
+                "parents": gp["parents"],
+                # Identität für die Job-Zuordnung (Formularwert + d83_group_jobs)
+                "key": _grp_key(hg_num, hg_label),
                 "_root": root_order.get(path[0] if path else "", 0),
                 "_seq": len(hg_map),          # Auftreten im Dokument
+                "_path": hg_key,
             }
-        hg_map[hg_label]["count"] += 1
-        if g_label:
-            if g_label not in hg_map[hg_label]["sub"]:
-                hg_map[hg_label]["sub"][g_label] = {
+        hg_map[hg_key]["count"] += 1
+        if g_key is not None:
+            if g_key not in hg_map[hg_key]["sub"]:
+                hg_map[hg_key]["sub"][g_key] = {
                     "name": g_label, "num": g_num, "count": 0, "_positions": [], "remarks": [],
-                    "_seq": len(hg_map[hg_label]["sub"]),
+                    "key": _grp_key(g_num, g_label),
+                    "_seq": len(hg_map[hg_key]["sub"]),
+                    "_path": g_key,
                 }
-            hg_map[hg_label]["sub"][g_label]["count"] += 1
-            hg_map[hg_label]["sub"][g_label]["_positions"].append(_pd(item))
+            hg_map[hg_key]["sub"][g_key]["count"] += 1
+            hg_map[hg_key]["sub"][g_key]["_positions"].append(_pd(item))
         else:
-            hg_map[hg_label]["_positions"].append(_pd(item))
+            hg_map[hg_key]["_positions"].append(_pd(item))
 
-    # Nachlaufende Hinweise (ohne folgende Position) der Gruppe zuordnen.
-    for grp_label, rd in trailing_remarks:
+    # Nachlaufende Hinweise (ohne folgende Position) der Gruppe zuordnen — über den
+    # Pfad, damit ein Hinweis nicht in der erstbesten gleichnamigen Gruppe landet.
+    for rpath, rd in trailing_remarks:
         placed = False
         for hg in hg_map.values():
-            if hg["name"] == grp_label:
-                hg["remarks"].append(rd); placed = True; break
             for sub in hg["sub"].values():
-                if sub["name"] == grp_label:
+                if sub["_path"] == rpath:
                     sub["remarks"].append(rd); placed = True; break
             if placed:
                 break
+            if hg["_path"] == rpath:
+                hg["remarks"].append(rd); placed = True; break
 
     result = []
-    # Erst die oberste Ebene in Dokumentreihenfolge, dann die Ordnungszahl zahlenweise.
-    # So bleibt die Reihenfolge der Datei erhalten und eine Elterngruppe steht trotzdem
-    # vor ihren Untergruppen, auch wenn sie im Dokument später auftaucht.
-    # Reihenfolge: oberste Ebene (Blatt/Job) wie im Dokument, dann die Ordnungszahl
-    # zahlenweise, und bei gleicher Ordnungszahl wieder das Dokument. Der Name als
-    # Tiebreaker hätte alphabetisch sortiert — in LOS2 tragen alle Gruppen eines Blatts
-    # dieselbe OZ-Wurzel ("B"), da stand dann Personal vor Rigging.
-    for hg in sorted(hg_map.values(),
-                     key=lambda x: (x["_root"], _oz_key(x["num"]), x["_seq"])):
-        hg.pop("_root", None), hg.pop("_seq", None)
-        subs = sorted(hg["sub"].values(), key=lambda x: (_oz_key(x["num"]), x["_seq"]))
+    # Reihenfolge der Gruppen — je Quelle nach der jeweils verlässlicheren Angabe.
+    #
+    # GAEB: oberste Ebene wie im Dokument, darin die Ordnungszahl zahlenweise, bei
+    # gleicher OZ wieder das Dokument. Die OZ ist dort sogar besser als die
+    # Dokumentreihenfolge: es kommt vor, dass eine Elterngruppe erst NACH ihren
+    # Untergruppen auftaucht. Der Name als Tiebreaker hätte alphabetisch sortiert — in
+    # LOS2 tragen alle Gruppen eines Blatts dieselbe OZ-Wurzel ("B"), da stand dann
+    # Personal vor Rigging.
+    #
+    # Excel: rein die Dateireihenfolge. Die Positionsnummern einer Excel stammen vom
+    # Verfasser und laufen nicht monoton — in LOS2 folgt auf "04.04.10" ein
+    # "02.03.03.11". Nach OZ sortiert stand die Gruppenliste quer zur Datei. Ein
+    # Blatt wird zudem von oben nach unten gelesen, eine Elterngruppe steht dort also
+    # immer schon vor ihren Untergruppen.
+    aus_excel = (project.phase or "").upper() == "XLSX"
+    if aus_excel:
+        _hg_sort  = lambda x: (x["_root"], x["_seq"])
+        _sub_sort = lambda x: x["_seq"]
+    else:
+        _hg_sort  = lambda x: (x["_root"], _oz_key(x["num"]), x["_seq"])
+        _sub_sort = lambda x: (_oz_key(x["num"]), x["_seq"])
+
+    for hg in sorted(hg_map.values(), key=_hg_sort):
+        hg.pop("_root", None), hg.pop("_seq", None), hg.pop("_path", None)
+        subs = sorted(hg["sub"].values(), key=_sub_sort)
         for sub in subs:
-            sub.pop("_seq", None)
+            sub.pop("_seq", None), sub.pop("_path", None)
         for sub in subs:
             sub["blocks"] = _to_blocks(sub.pop("_positions"), alt_active)
         hg["sub"]    = subs
@@ -656,6 +766,7 @@ async def import_draft_load(draft_id: int, request: Request):
         ss.d83_draft_setup = state.get("setup") or {}
         level = 1 if ss.d83_import_mode == "groups" else 0
         ss.d83_groups = _import_gaeb_groups(project, level, ss.d83_alt_active)
+        _migrate_group_jobs(ss)           # Entwürfe von vor dem Nummern-Schlüssel
         ss.draft_id = draft_id
     except Exception as e:
         # Sperre nicht hängen lassen, wenn Parsen/Wiederherstellen scheitert.
@@ -980,9 +1091,10 @@ def _assign_jobs(ss, project: GaebProject) -> None:
     Welche Jobs es gibt, entscheidet der Parser (Szenario · Blatt · als „Job" gemalte
     Zeilen) und legt es in ``project.job_by_item`` ab. Hier wird daraus der
     Session-State: der erste Job ist der Standard-Job, alle weiteren kommen als
-    lokale Jobs dazu. ``d83_group_jobs`` schlüsselt auf das Gruppenlabel — genau wie
-    die manuelle Zuordnung in /api/import/local-add-job. Weil alle Gruppenlabels ihre
-    Herkunftskoordinate tragen, gehört jedes Label zu genau einem Job.
+    lokale Jobs dazu. ``d83_group_jobs`` schlüsselt auf ``_grp_key`` (Ordnungszahl +
+    Label) — genau wie die manuelle Zuordnung in /api/import/local-add-job. Beide
+    Ebenen werden geschrieben, weil beim Umschalten zwischen „Positionen" und
+    „Gruppen" eine andere Pfadebene zur Hauptgruppe wird.
     """
     jobs: list[str] = []
     for item in project.items:
@@ -1007,8 +1119,9 @@ def _assign_jobs(ss, project: GaebProject) -> None:
         lid = lid_by_job.get((project.job_by_item.get(item.item_id) or "").strip(), 1)
         if lid == 1:
             continue
-        for label in item.category_path:
-            ss.d83_group_jobs[label] = lid
+        for lv in (0, 1):
+            gp = _item_group_parts(item, lv)
+            ss.d83_group_jobs[_grp_key(gp["hg_num"], gp["hg_label"])] = lid
     logging.info("import/excel: %d Jobs -> %s", len(jobs), lid_by_job)
 
 
@@ -1297,15 +1410,15 @@ async def import_groups_display(request: Request, mode: str = "positions"):
 async def import_local_add_job(
     request:  Request,
     job_name: str = Form(""),
-    grp_name: str = Form(""),
+    grp_key:  str = Form(""),
 ):
     ss   = get_session(request.session)
     name = job_name.strip() or f"Job {ss.d83_next_lid}"
     lid  = ss.d83_next_lid
     ss.d83_local_jobs.append({"lid": lid, "name": name})
     ss.d83_next_lid += 1
-    if grp_name:
-        ss.d83_group_jobs[grp_name] = lid
+    if grp_key:
+        ss.d83_group_jobs[grp_key] = lid
     return templates.TemplateResponse(
         request, "partials/import_groups.html", _import_ctx(ss)
     )
@@ -1313,15 +1426,15 @@ async def import_local_add_job(
 
 @router.post("/api/import/local-assign", response_class=HTMLResponse)
 async def import_local_assign(
-    request:  Request,
-    grp_name: str = Form(...),
-    lid:      int = Form(...),
+    request: Request,
+    grp_key: str = Form(...),
+    lid:     int = Form(...),
 ):
     ss = get_session(request.session)
     if lid == 1:
-        ss.d83_group_jobs.pop(grp_name, None)
+        ss.d83_group_jobs.pop(grp_key, None)
     else:
-        ss.d83_group_jobs[grp_name] = lid
+        ss.d83_group_jobs[grp_key] = lid
     return templates.TemplateResponse(
         request, "partials/import_groups.html", _import_ctx(ss)
     )
@@ -2032,7 +2145,7 @@ async def _do_create_bg(
                 job_names[extra["lid"]] = extra["name"]
 
             for grp in ss.d83_groups:
-                lid    = ss.d83_group_jobs.get(grp["name"], 1)
+                lid    = ss.d83_group_jobs.get(_grp_of(grp), 1)
                 job_id = lid_map.get(lid, first_job_id)
                 j_name = job_names.get(lid, job_caption)
                 job_sort[job_id] += 1
@@ -2071,21 +2184,22 @@ async def _do_create_bg(
         res_bookings: list[dict] = []   # Ressourcen für den lokalen Snapshot
 
         try:
-            # oz → hg_name für Job-Zuweisung
-            oz_to_hg: dict[str, str] = {}
+            # oz → Gruppenschlüssel für die Job-Zuweisung. Über den Namen zugeordnet
+            # bekamen gleichnamige Gruppen aus verschiedenen Abschnitten denselben Job.
+            oz_to_hg_key: dict[str, str] = {}
             oz_to_sub_cap: dict[str, str] = {}
             for hg in ss.d83_groups:
-                hg_name_g = hg["name"]
+                hg_key_g = _grp_of(hg)
                 for pos in _all_positions(hg.get("blocks", [])):
                     oz = pos.get("oz", "")
                     if oz:
-                        oz_to_hg[oz] = hg_name_g
+                        oz_to_hg_key[oz] = hg_key_g
                 for sub in hg.get("sub", []):
                     sub_cap = f'[{sub["num"]}] {sub["name"]}' if sub.get("num") else sub["name"]
                     for pos in _all_positions(sub.get("blocks", [])):
                         oz = pos.get("oz", "")
                         if oz:
-                            oz_to_hg[oz] = hg_name_g
+                            oz_to_hg_key[oz] = hg_key_g
                             oz_to_sub_cap[oz] = sub_cap
 
             # caption → IdStockType2JobGroup je Job
@@ -2115,8 +2229,8 @@ async def _do_create_bg(
                     continue
                 if not (_it.is_alt or getattr(_it, "is_eventual", False)):
                     continue
-                _hg  = oz_to_hg.get(_it.oz or "")
-                _lid = ss.d83_group_jobs.get(_hg, 1) if _hg else 1
+                _hgk = oz_to_hg_key.get(_it.oz or "")
+                _lid = ss.d83_group_jobs.get(_hgk, 1) if _hgk else 1
                 _job = lid_map.get(_lid, first_job_id)
                 if import_mode == "positions":
                     _cap = f'[{_it.oz}] {_it.description}' if _it.oz else _it.description
@@ -2152,8 +2266,8 @@ async def _do_create_bg(
                         "indent": True,
                     })
                     continue
-                hg_name = oz_to_hg.get(item.oz or "")
-                lid_i   = ss.d83_group_jobs.get(hg_name, 1) if hg_name else 1
+                hg_key  = oz_to_hg_key.get(item.oz or "")
+                lid_i   = ss.d83_group_jobs.get(hg_key, 1) if hg_key else 1
                 job_i   = lid_map.get(lid_i, first_job_id)
                 if import_mode == "positions":
                     g_cap = f'[{item.oz}] {item.description}' if item.oz else item.description
@@ -2174,8 +2288,8 @@ async def _do_create_bg(
                 item_bundles = ss.bundles.get(item.item_id, [])
                 if not item_bundles:
                     continue
-                hg_name = oz_to_hg.get(item.oz or "")
-                lid_i   = ss.d83_group_jobs.get(hg_name, 1) if hg_name else 1
+                hg_key  = oz_to_hg_key.get(item.oz or "")
+                lid_i   = ss.d83_group_jobs.get(hg_key, 1) if hg_key else 1
                 job_i   = lid_map.get(lid_i, first_job_id)
                 if import_mode == "positions":
                     g_cap = f'[{item.oz}] {item.description}' if item.oz else item.description
@@ -2278,8 +2392,8 @@ async def _do_create_bg(
                 )
 
             def _res_job_grp(item_obj):
-                hg_name_r = oz_to_hg.get(item_obj.oz or "")
-                lid_r     = ss.d83_group_jobs.get(hg_name_r, 1) if hg_name_r else 1
+                hg_key_r  = oz_to_hg_key.get(item_obj.oz or "")
+                lid_r     = ss.d83_group_jobs.get(hg_key_r, 1) if hg_key_r else 1
                 job_id_r  = lid_map.get(lid_r, first_job_id)
                 g_cap_r   = (f'[{item_obj.oz}] {item_obj.description}'
                              if import_mode == "positions" and item_obj.oz

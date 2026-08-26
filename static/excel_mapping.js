@@ -13,10 +13,15 @@
   'use strict';
 
   var SINGLE    = ['desc', 'oz', 'unit', 'price', 'total', 'flag'];  // Rollen mit einer Spalte
-  var ROW_KINDS = ['header', 'job', 'main', 'grp', 'pos', 'note', 'skip'];
-  var COUNTED   = ['pos', 'job', 'main', 'note'];   // Zeilentypen mit Zähler
+  var ROW_KINDS = ['header', 'job', 'main', 'grp', 'outline', 'pos', 'note', 'skip'];
+  // Zeilentypen, deren Zähler direkt am Pinselwert hängt. 'main'/'grp'/'outline'
+  // fehlen bewusst: ob eine Gruppe als Hauptgruppe oder als Gliederung zählt, ergibt
+  // sich erst aus der Struktur (hat sie eigene Positionen?) und kann hier nicht
+  // geraten werden — dafür rechnet der Server nach dem Malen neu (needsRepreview).
+  var COUNTED   = ['pos', 'job', 'note'];
 
   var brush    = null;   // {mode:'col'|'row', value:'desc'|'grp'|…}
+  var needsRepreview = false;   // Gruppenebene gemalt → Zähler serverseitig neu
   var dragging = false;
   var busy     = false;
 
@@ -166,9 +171,15 @@
     sl.row_overrides[row] = brush.value;
     store(l);
     ROW_KINDS.forEach(function (k) { tr.classList.remove('xl-row-' + k); });
+    tr.classList.remove('xl-outline');           // abgeleitet, der Server entscheidet
     tr.classList.add('xl-row-' + brush.value);
     countDelta(sheet, prev, -1);
     countDelta(sheet, brush.value, 1);
+    // Jede gemalte Zeile kann die Aufteilung Hauptgruppe/Gliederung verschieben —
+    // nicht nur Gruppenebenen: malt man die einzige direkte Position einer Gruppe zu
+    // 'Hinweis' oder 'ignorieren', wird die Gruppe serverseitig zur Gliederung. Das
+    // ist lokal nicht fortschreibbar, also nach dem Ziehen einmal nachrechnen.
+    needsRepreview = true;
   }
 
   document.addEventListener('mousedown', function (e) {
@@ -186,7 +197,13 @@
     if (th) { paintRow(th, false); }
   });
 
-  document.addEventListener('mouseup', function () { dragging = false; });
+  document.addEventListener('mouseup', function () {
+    dragging = false;
+    // Flag nur löschen, wenn die Anfrage wirklich losgeschickt wurde. Läuft noch
+    // eine, verwirft repreview() den Aufruf (busy) — vorher war der Wunsch damit
+    // weg und die zweite Malaktion verschwand still im Antwort-HTML der ersten.
+    if (needsRepreview && repreview()) { needsRepreview = false; }
+  });
 
   // Aufklappen: die Tabelle wird serverseitig nur für offene Blätter aufgebaut,
   // also beim Öffnen einmal nachladen.
@@ -341,8 +358,9 @@
   }
 
   // ── Repreview: Klassifikation serverseitig neu rechnen ───────────────────
+  // Gibt zurück, ob die Anfrage losgeschickt wurde (false = es lief schon eine).
   function repreview() {
-    if (busy) { return; }
+    if (busy) { return false; }
     busy = true;
     var target = document.getElementById('import-groups');
     var body   = new FormData();
@@ -383,6 +401,9 @@
       .finally(function () {
         busy = false;
         if (target) { target.classList.remove('xl-loading'); }
+        // Während der Anfrage weitergemalt: jetzt nachziehen.
+        if (needsRepreview) { needsRepreview = false; repreview(); }
       });
+    return true;
   }
 })();
