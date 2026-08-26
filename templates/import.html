@@ -397,7 +397,11 @@
             hx-swap="innerHTML"
             hx-indicator="#imp-spin"
             hx-disabled-elt="#imp-create-btn"
-            onsubmit="this.querySelector('#imp-create-btn').textContent='⏳ Wird erstellt …'">
+            hx-confirm="Die Daten werden jetzt in Easyjob angelegt — Jobs, Gruppen und die zugeordneten Buchungen.&#10;&#10;Wirklich fortfahren?"
+            data-confirm-title="In Easyjob schreiben?"
+            data-confirm-icon="📤"
+            data-confirm-ok="Ja, anlegen"
+            hx-on::before-request="this.querySelector('#imp-create-btn').textContent='⏳ Wird erstellt …'">
 
         <!-- Modus-Umschalter: neues Projekt vs. Jobs zu bestehendem Projekt -->
         <div class="mode-toggle">
@@ -512,12 +516,13 @@
             <label>Von <span class="req">*</span></label>
             <input type="date" name="start_date" id="imp-start"
                    value="{{ S.d83_draft_setup.get('start_date') or (S.d83_project.date[:10] if S.d83_project and S.d83_project.date else '') }}"
-                   required>
+                   onchange="impSyncDates()" required>
           </div>
           <div class="form-row">
             <label>Bis <span class="req">*</span></label>
             <input type="date" name="end_date" id="imp-end"
-                   value="{{ S.d83_draft_setup.get('end_date') or '' }}" required>
+                   value="{{ S.d83_draft_setup.get('end_date') or '' }}"
+                   onchange="impSyncDates()" required>
           </div>
         </div>
 
@@ -752,6 +757,37 @@ function ejRowClick(tr, num, rawJson) {
                 { target: '#ej-replace-related', swap: 'innerHTML' });
     }
   }
+  ejSyncQty(form, num, rawJson);
+}
+
+// Mengenfeld an den gewaehlten Artikel anpassen: bei Laufmeter-Positionen zeigt
+// der Dialog sofort die Stueckzahl (18 lfm, 3-m-Traverse -> 6) statt der lfm-Zahl.
+// Die Umrechnung macht der Server, damit Dialog und Buchung dieselbe Regel nutzen.
+function ejSyncQty(form, num, rawJson) {
+  var qi = form.querySelector('input[name=qty]');
+  var iid = form.dataset ? form.dataset.itemId : '';
+  var hint = document.getElementById('ej-qty-hint');
+  var sync = document.getElementById('ej-qty-synced');
+  if (sync) sync.value = '';
+  if (hint) hint.textContent = '';
+  if (!qi || !iid) return;
+  var cap = '', cat = '';
+  try { var raw = JSON.parse(rawJson); cap = raw.Caption || ''; cat = raw.Category || ''; } catch (e) {}
+  fetch('/api/import/booking-qty/' + encodeURIComponent(iid)
+        + '?num=' + encodeURIComponent(num)
+        + '&cap=' + encodeURIComponent(cap)
+        + '&cat=' + encodeURIComponent(cat))
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (!d || !d.qty) return;
+      qi.value = d.qty;
+      if (sync) sync.value = '1';
+      if (hint && d.converted) {
+        hint.textContent = '= ' + d.src_qty + ' ' + d.unit + ' \u00f7 ' + d.piece_len + ' m/St\u00fcck';
+      }
+      if (window.ejUpdateExtraHidden) ejUpdateExtraHidden(qi);
+    })
+    .catch(function () {});
 }
 
 // Gewählte optionale Referenz-Mengen in die Hidden-Felder des Set-Formulars schreiben
@@ -1055,6 +1091,26 @@ function impSearchProject(inputEl) {
   }, 280);
 }
 
+// ── Zeitraum: "Bis" darf nie vor "Von" liegen ──────────────────────────
+// Setzt min= auf dem Bis-Feld und laesst Bis auf den Folgetag springen, sobald es
+// leer ist oder vor Von liegt (z.B. nach dem Setzen/Aendern von Von).
+function _impAddDays(iso, days) {
+  var d = new Date(iso + 'T00:00:00');
+  if (isNaN(d.getTime())) return '';
+  d.setDate(d.getDate() + days);
+  var m = String(d.getMonth() + 1), t = String(d.getDate());
+  return d.getFullYear() + '-' + (m.length < 2 ? '0' + m : m) + '-' + (t.length < 2 ? '0' + t : t);
+}
+function impSyncDates() {
+  var sEl = document.getElementById('imp-start'), eEl = document.getElementById('imp-end');
+  if (!sEl || !eEl) return;
+  var sv = (sEl.value || '').slice(0, 10), ev = (eEl.value || '').slice(0, 10);
+  eEl.min = sv;
+  if (!sv) return;
+  if (!ev || ev < sv) eEl.value = _impAddDays(sv, 1);
+}
+window.addEventListener('DOMContentLoaded', impSyncDates);
+
 function impSelectProject(id, num, name, start, end) {
   const label = '[' + num + '] ' + name;
   document.getElementById('imp-existing-pid').value   = id;
@@ -1065,6 +1121,7 @@ function impSelectProject(id, num, name, start, end) {
   // Zeitraum vom Projekt übernehmen (bleibt anpassbar)
   if (start) document.getElementById('imp-start').value = start;
   if (end)   document.getElementById('imp-end').value   = end;
+  impSyncDates();
 }
 
 // ── Veranstaltung (durchsuchbar, clientseitig – keine API-Abfrage) ─────────────
@@ -1105,6 +1162,7 @@ function impPickEvent(id, label, start, end) {
   document.getElementById('imp-event-sel').textContent = id ? ('✓ ' + label) : '';
   if (start) { var s = document.getElementById('imp-start'); if (s) s.value = start; }
   if (end)   { var en = document.getElementById('imp-end'); if (en) en.value = end; }
+  impSyncDates();
   document.getElementById('imp-event-list').classList.remove('open');
 }
 function impClearEvent() {

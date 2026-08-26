@@ -18,9 +18,8 @@ from easyjob_api import EjLiveClient
 from gaeb_parser import GaebProject, parse_gaeb
 import math as _math
 from matcher import (UnifiedMatcher, load_articles_db, load_resources_db,
-                     make_article_from_ej, MatchResult,
-                     parse_traverse_info, traverse_piece_count,
-                     TRAVERSE_STANDARD_LENGTH_M, is_motor_position,
+                     make_article_from_ej, MatchResult, booking_qty_for,
+                     is_motor_position, is_motor_article,
                      is_kalkulations_position)
 import time as _time
 from state import HAENGEPUNKT_NR
@@ -379,6 +378,138 @@ def _bqty(raw_qty) -> float:
     except (TypeError, ValueError):
         q = 0.0
     return q if q > 0 else 1.0
+
+
+def _booking_entry(article, item) -> dict:
+    """Buchungsmenge einer Position inkl. Info zur Laufmeter-Umrechnung.
+
+    Die lfm-Stueck-Umrechnung greift nur, wenn der tatsaechlich gebuchte Artikel
+    ein gerades Traversenstueck mit bekannter Laenge ist. Frueher wurde jede
+    Position mit Laufmeter-Einheit stur durch die 3-m-Standardlaenge geteilt --
+    auch wenn ein 1-m-Stueck oder etwas voellig anderes (Kabel, Stoff, ...)
+    gebucht war. Die Laenge kommt jetzt aus dem Artikel, nicht aus dem GAEB-Text.
+    """
+    qty, piece_len = booking_qty_for(article, float(item.qty or 0), item.unit or "")
+    if piece_len:
+        return {"qty": float(qty), "lfm_converted": True, "piece_len": piece_len}
+    return {"qty": _bqty(item.qty), "lfm_converted": False, "piece_len": None}
+
+
+def _hp_article(ss):
+    """Artikel "Haengepunkt Satz Material pauschal" aus dem Stamm."""
+    if not ss.matcher:
+        return None
+    idx = ss.matcher._num_to_idx.get(HAENGEPUNKT_NR)
+    return ss.matcher._pool[idx] if idx is not None else None
+
+
+def _needs_haengepunkt(item, article) -> bool:
+    """Haengepunkt-Pauschale faellig? Position ODER gebuchter Artikel zaehlt.
+
+    Frueher entschied allein der GAEB-Kurztext. Der trifft aber nicht zuverlaessig
+    ("Punktzug 1t", "Kettenzugmotor"), und beim manuellen Zuordnen eines Motors
+    lief die Regel gar nicht — die Pauschale fehlte dann still.
+    """
+    if article is not None and is_motor_article(article):
+        return True
+    return bool(item is not None and is_motor_position(item.description or ""))
+
+
+def _sync_haengepunkt(ss, item_id: str, article) -> None:
+    """Haengepunkt-Pauschale an die aktuelle Zuordnung angleichen.
+
+    Vorhandene Pauschalen werden zuerst entfernt und danach neu gesetzt, damit
+    beim Wechsel Motor -> Nicht-Motor keine verwaiste Pauschale stehenbleibt und
+    beim mehrfachen Zuordnen keine Dubletten entstehen.
+    """
+    item = None
+    if ss.d83_project:
+        item = next((it for it in ss.d83_project.items if it.item_id == item_id), None)
+    bundle = [b for b in ss.bundles.get(item_id, [])
+              if getattr(b.get("article"), "nummer", None) != HAENGEPUNKT_NR]
+    hp = _hp_article(ss)
+    if item is not None and hp is not None and _needs_haengepunkt(item, article):
+        bq = (ss.d83_booking_qtys.get(item_id) or {}).get("qty")
+        bundle.append({"article": hp, "qty": float(bq or _bqty(item.qty))})
+    if bundle:
+        ss.bundles[item_id] = bundle
+    else:
+        ss.bundles.pop(item_id, None)
+
+
+def _desc_key(text: str) -> str:
+    """Normalisierter Kurztext -- Vergleichsschluessel fuer gleiche Positionen."""
+    return " ".join((text or "").split()).casefold()
+
+
+def _twin_items(ss, item_id: str) -> list:
+    """Positionen mit gleichem Kurztext, die WEITER UNTEN in der Liste stehen.
+
+    Ausgelassen werden Positionen, die der Nutzer selbst schon von Hand zugeordnet
+    hat (method "manual") -- eine bewusste abweichende Wahl soll nicht ueberschrieben
+    werden. Propagierte Zuordnungen tragen "manual-twin" und duerfen erneut
+    ueberschrieben werden.
+    """
+    if not ss.d83_project:
+        return []
+    items = ss.d83_project.items
+    src_i = next((i for i, it in enumerate(items) if it.item_id == item_id), None)
+    if src_i is None:
+        return []
+    key = _desc_key(items[src_i].description)
+    if not key:
+        return []
+    out = []
+    for it in items[src_i + 1:]:
+        if _desc_key(it.description) != key:
+            continue
+        mr = ss.matches.get(it.item_id)
+        if mr and mr.method == "manual":
+            continue
+        out.append(it)
+    return out
+
+
+def _apply_match_to_twins(ss, item_id: str, article) -> int:
+    """Uebertraegt Artikel + Zusatzartikel der Position auf alle gleichlautenden
+    Positionen weiter unten. Menge und Traversen-Umrechnung werden je Position neu
+    aus deren eigener Ausschreibungsmenge bestimmt; die Zusatzartikel (Referenz-/
+    Bundle-Artikel) werden im gleichen Verhaeltnis zur Hauptmenge mitskaliert.
+
+    Gibt die Zahl der geaenderten Positionen zurueck.
+    """
+    twins = _twin_items(ss, item_id)
+    if not twins:
+        return 0
+    src_bq  = ss.d83_booking_qtys.get(item_id) or {}
+    src_qty = float(src_bq.get("qty") or 0) or 1.0
+    src_bundle = ss.bundles.get(item_id, [])
+    for it in twins:
+        ss.matches[it.item_id] = MatchResult(
+            matched=article, score=99.0, method="übernommen", confident=True,
+        )
+        entry = _booking_entry(article, it)
+        ss.d83_booking_qtys[it.item_id] = entry
+        tgt_qty = float(entry["qty"]) or 1.0
+        copied = []
+        for b in src_bundle:
+            # Verhaeltnis zur Hauptmenge beibehalten: 1 Kabel je Scheinwerfer
+            # bleibt 1 Kabel je Scheinwerfer, auch bei anderer Stueckzahl.
+            share = float(b.get("qty") or 0) / src_qty
+            q = _math.ceil(share * tgt_qty) if share > 0 else 0
+            if q <= 0:
+                continue
+            nb = {"qty": float(q)}
+            if b.get("article") is not None:
+                nb["article"] = b["article"]
+            if b.get("resource") is not None:
+                nb["resource"] = b["resource"]
+            copied.append(nb)
+        if copied:
+            ss.bundles[it.item_id] = copied
+        else:
+            ss.bundles.pop(it.item_id, None)
+    return len(twins)
 
 
 # EJ-Spalte StockType2JobGroup(.Parent).Caption ist nvarchar(250). Lange GAEB-
@@ -900,22 +1031,23 @@ def run_auto_match(ss, project: GaebProject) -> tuple[dict, dict, dict]:
                 mr, matched_art = top[0]
                 results[item.item_id] = mr
 
-                # Traverse-Berechnung: Stücklänge aus Beschreibung oder Standard 3 m
-                ti        = parse_traverse_info(item.description)
-                piece_len = (ti.length_m if ti and ti.length_m else None) or TRAVERSE_STANDARD_LENGTH_M
-                pieces    = traverse_piece_count(float(item.qty), item.unit or "", piece_len)
-                if pieces is not None:
-                    booking_qtys[item.item_id] = {"qty": float(pieces), "lfm_converted": True, "piece_len": piece_len}
-                else:
-                    booking_qtys[item.item_id] = {"qty": _bqty(item.qty), "lfm_converted": False, "piece_len": None}
+                # Laufmeter -> Stueck: nur wenn der gematchte Artikel wirklich
+                # ein Traversenstueck bekannter Laenge ist
+                booking_qtys[item.item_id] = _booking_entry(matched_art, item)
 
-                # Hängepunkt-Pauschale bei Motor-Positionen
-                if is_motor_position(item.description) and hp_art:
+                # Hängepunkt-Pauschale: Positionstext ODER gebuchter Artikel
+                has_hp = False
+                if hp_art and _needs_haengepunkt(item, matched_art):
                     bundles.setdefault(item.item_id, []).append(
                         {"article": hp_art, "qty": item.qty}
                     )
+                    has_hp = True
 
                 for extra_num in ss.matcher.get_bundle_extras(item.description):
+                    # Ein gelerntes Mapping kann die Pauschale ebenfalls enthalten —
+                    # dann nicht doppelt buchen.
+                    if has_hp and extra_num == HAENGEPUNKT_NR:
+                        continue
                     idx = ss.matcher._num_to_idx.get(extra_num)
                     if idx is not None:
                         extra_art = ss.matcher._pool[idx]
@@ -1323,6 +1455,8 @@ async def import_set_match(
     qty:      float = Form(default=1.0),
     extra_nums: str = Form(default=""),
     extra_qtys: str = Form(default=""),
+    apply_twins: str = Form(default=""),
+    qty_synced:  str = Form(default=""),
 ):
     import json as _json
     ss = get_session(request.session)
@@ -1334,19 +1468,25 @@ async def import_set_match(
         return '<p class="error-msg">Ungültige Artikeldaten.</p>'
     art = make_article_from_ej(raw, None, ss.matcher)
     ss.matches[item_id] = MatchResult(matched=art, score=99.0, method="manual", confident=True)
-    # Buchungsmenge: Traverse-Check auf GAEB-Position
+    # Buchungsmenge: Laufmeter-Umrechnung nur bei echtem Laengenstueck
     if ss.d83_project:
         item = next((it for it in ss.d83_project.items if it.item_id == item_id), None)
         if item:
-            ti        = parse_traverse_info(item.description)
-            piece_len = (ti.length_m if ti and ti.length_m else None) or TRAVERSE_STANDARD_LENGTH_M
-            pieces    = traverse_piece_count(float(item.qty), item.unit or "", piece_len)
-            if pieces is not None:
-                ss.d83_booking_qtys[item_id] = {"qty": float(pieces), "lfm_converted": True, "piece_len": piece_len}
-            else:
-                ss.d83_booking_qtys[item_id] = {"qty": _bqty(item.qty), "lfm_converted": False, "piece_len": None}
+            entry = _booking_entry(art, item)
+            # Der Dialog stellt das Mengenfeld beim Anklicken auf genau diesen Wert
+            # (qty_synced=1). Weicht die abgeschickte Menge davon ab, hat der Nutzer
+            # sie von Hand geaendert — dann gilt seine Zahl. Ohne die Synchronisation
+            # (z.B. wenn der Abruf fehlschlug) bleibt es beim berechneten Wert.
+            if qty_synced == "1" and qty > 0 and float(qty) != float(entry["qty"]):
+                entry = {"qty": float(qty), "lfm_converted": False, "piece_len": None}
+            ss.d83_booking_qtys[item_id] = entry
     _add_optional_ref_bundles(ss, item_id, extra_nums, extra_qtys)
     _learn_article_match(ss, item_id)
+    # Erst nach dem Lernen: die Pauschale gehört nicht ins gelernte Mapping
+    _sync_haengepunkt(ss, item_id, art)
+    # Gleiche Kurztexte weiter unten mitziehen (Checkbox im Dialog, Default an)
+    if apply_twins == "1":
+        _apply_match_to_twins(ss, item_id, art)
     return templates.TemplateResponse(
         request, "partials/import_groups.html", _import_ctx(ss)
     )
@@ -1378,8 +1518,13 @@ async def import_add_match(
         # Haupt-Match, das fälschlich „Nicht zugeordnet" anzeigt).
         ss.matches[item_id] = MatchResult(matched=art, score=99.0, method="manual", confident=True)
         ss.d83_booking_qtys[item_id] = {"qty": _bqty(qty), "lfm_converted": False, "piece_len": None}
-    else:
-        ss.bundles.setdefault(item_id, []).append({"article": art, "qty": qty})
+        _add_optional_ref_bundles(ss, item_id, extra_nums, extra_qtys)
+        _learn_article_match(ss, item_id)
+        _sync_haengepunkt(ss, item_id, art)
+        return templates.TemplateResponse(
+            request, "partials/import_groups.html", _import_ctx(ss)
+        )
+    ss.bundles.setdefault(item_id, []).append({"article": art, "qty": qty})
     _add_optional_ref_bundles(ss, item_id, extra_nums, extra_qtys)
     _learn_article_match(ss, item_id)
     return templates.TemplateResponse(
@@ -1553,7 +1698,9 @@ async def import_ej_dialog(item_id: str, request: Request):
                     "_raw_json":   _json.dumps({
                         "Number":      getattr(art, "nummer", ""),
                         "Caption":     getattr(art, "bezeichnung", ""),
-                        "IdStockType": 0,
+                        # EJ-IdStockType mitgeben, damit der Dialog auch fuer
+                        # Ranking-Vorschlaege die Referenzkarte laden kann.
+                        "IdStockType": int(getattr(art, "ej_id", 0) or 0),
                     }),
                 })
         except Exception as _exc:
@@ -1561,6 +1708,7 @@ async def import_ej_dialog(item_id: str, request: Request):
 
     return templates.TemplateResponse(request, "partials/ej_dialog.html", {
         "item_id":           item_id,
+        "twin_count":        len(_twin_items(ss, item_id)),
         "item_desc":         item.description,
         "default_q":         item.description[:60],
         "default_qty":       _bqty(item.qty),
@@ -1612,6 +1760,10 @@ def _learn_article_match(ss, item_id: str) -> None:
         nums.append(mr.article.nummer)
     for b in ss.bundles.get(item_id, []):
         art = b.get("article")
+        # Die Hängepunkt-Pauschale wird aus der Motor-Regel abgeleitet, nicht
+        # gelernt — sonst käme sie beim nächsten Import doppelt.
+        if art and getattr(art, "nummer", None) == HAENGEPUNKT_NR:
+            continue
         if art and (getattr(art, "nummer", "") or "").strip() and art.nummer not in nums:
             nums.append(art.nummer)
     if not nums:
@@ -1620,6 +1772,41 @@ def _learn_article_match(ss, item_id: str) -> None:
     save_gui_bundle(item.description, nums)
     if ss.matcher:
         ss.matcher.add_learned_bundle(item.description, nums)
+
+
+@router.get("/api/import/booking-qty/{item_id}")
+async def import_booking_qty(item_id: str, request: Request,
+                             num: str = "", cap: str = "", cat: str = ""):
+    """Buchungsmenge, die dieser Artikel fuer diese Position ergaebe.
+
+    Der Artikel-Dialog fragt das beim Anklicken einer Trefferzeile ab und stellt
+    das Mengenfeld darauf ein — so sieht man die Laufmeter-Umrechnung schon bei
+    der Auswahl ("18 lfm, 3-m-Stueck" -> 6) und nicht erst nach dem Zuordnen.
+    """
+    ss = get_session(request.session)
+    item = None
+    if ss.d83_project:
+        item = next((it for it in ss.d83_project.items if it.item_id == item_id), None)
+    if not item:
+        return {"qty": None}
+    art = None
+    if ss.matcher and num:
+        idx = ss.matcher._num_to_idx.get(num) or ss.matcher._num_to_idx.get(f"{num}.00")
+        if idx is not None:
+            art = ss.matcher._pool[idx]
+    if art is None:
+        # Artikel (noch) nicht im lokalen Stamm: aus den EJ-Feldern aufbauen,
+        # article_piece_length_m kommt mit fehlender Artikelart zurecht.
+        art = make_article_from_ej({"Number": num, "Caption": cap, "Category": cat},
+                                   None, ss.matcher)
+    entry = _booking_entry(art, item)
+    return {
+        "qty":       entry["qty"],
+        "converted": entry["lfm_converted"],
+        "piece_len": entry["piece_len"],
+        "src_qty":   float(item.qty or 0),
+        "unit":      item.unit or "",
+    }
 
 
 @router.get("/api/import/references/{ej_id}", response_class=HTMLResponse)

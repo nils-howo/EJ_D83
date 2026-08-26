@@ -262,7 +262,7 @@ def _parse_art_inch(text: str) -> Optional[int]:
 
 # ── Motor / Hebezeug ──────────────────────────────────────────────────────────
 _MOTOR_DETECT_RE = re.compile(
-    r'\bmotor(?:en)?\b'
+    r'\w*motor(?:en)?\b'
     r'|\bkettenzug(?:e)?\b|\bkettenz[üu]ge\b'
     r'|\bhebezeug(?:e)?\b'
     r'|\bchain[\s-]?hoist\b'
@@ -308,6 +308,34 @@ def motor_art_hub_m(bezeichnung: str) -> Optional[int]:
 def is_motor_position(description: str) -> bool:
     """Erkennt GAEB-Positionen die Hebezeuge/Motoren anfragen."""
     return bool(_MOTOR_DETECT_RE.search(description))
+
+
+# Artikelart eines echten Hebezeugs. Der Stamm trennt das sauber: "Motorkettenzug",
+# "Motorkettenzug nach BGV C1", "Handkettenzug" sind Zuege; "Motorkettenzugsteuerung",
+# "Regenschutz fuer Motorkettenzug" oder "Motorkabel" sind es nicht — die Wortgrenze
+# hinter "kettenzug" haelt die Steuerungen draussen.
+_MOTOR_ART_RE = re.compile(r'^(motor|hand|elektro)?kettenzug\b', re.IGNORECASE)
+
+
+def is_motor_article(article) -> bool:
+    """True, wenn der Artikel ein Hebezeug ist (Motor-/Handkettenzug).
+
+    Die Haengepunkt-Pauschale haengt nicht nur am GAEB-Text: wer von Hand einen
+    Motor zuordnet, soll sie ebenso bekommen — auch wenn die Position nur
+    "Punktzug 1t" heisst und das Wort "Motor" gar nicht vorkommt.
+    """
+    if article is None:
+        return False
+    art = (getattr(article, "artikelart", "") or "").strip()
+    if art:
+        return bool(_MOTOR_ART_RE.match(art))
+    # Ohne Artikelart (EJ-API-Artikel): Warengruppe muss die Familie belegen.
+    wg = f'{getattr(article, "warengruppe", "") or ""} ' \
+         f'{getattr(article, "mutterwarengruppe", "") or ""}'
+    if "hebezeug" not in wg.lower():
+        return False
+    name = getattr(article, "bezeichnung", "") or ""
+    return bool(re.search(r'kettenzug\b', name, re.IGNORECASE))
 
 # Eurotruss HD-Nomenklatur: HDxy → x=Größenklasse, y=Holmzahl
 # Größe in mm → Eurotruss-Größenziffer
@@ -454,6 +482,102 @@ def traverse_piece_count(total_qty: float, unit: str,
     if unit.lower().strip(".") in {u.strip(".") for u in TRAVERSE_LFM_UNITS}:
         return math.ceil(total_qty / piece_length_m)
     return None
+
+
+# Artikelart eines GERADEN Längenstücks — Traversen, Pipes und HB-Rohre.
+# Der Artikelstamm trennt das sauber: Stücke heißen "Vierholmtraverse",
+# "Aluminiumrohr", "Stahlrohr", "Aluminium-Doppelrohr" (= HB-Rohr); Ecken
+# dagegen "Dreiholmtraverseneckelement", Fittings "Rohrverbinder"/"Konusverbinder".
+_LENGTH_PIECE_ART_RE = re.compile(
+    r'^(ein|zwei|drei|vier)holmtraverse$'
+    r'|^(kasten|leiter)?traverse$'
+    r'|^(aluminium|alu|stahl|steel)[-\s]?(doppel)?rohr$'
+    r'|^(rohr|pipe)$',
+    re.IGNORECASE,
+)
+# Warengruppen-Nachweis für Artikel ohne Artikelart (frisch aus der EJ-API).
+_LENGTH_PIECE_WG_RE = re.compile(r'traverse|pipe|rohr', re.IGNORECASE)
+# Ecken, Verbinder und Zubehör aussortieren. Läuft immer, denn die Artikelart
+# allein reicht nicht: "Global Truss F32 V21 2-weg Ecke" trägt die Artikelart
+# "Zweiholmtraverse", "HB-Rohr Verbinder kurz" die Artikelart "Aluminium-Doppelrohr".
+# Wortgrenzen sind Pflicht — die geraden Stücke heißen "… 300cm Traverse + 3xKonus"
+# und dürfen an "Konus" nicht hängenbleiben.
+_LENGTH_NOT_PIECE_RE = re.compile(
+    r'\beck\w*|corner|\bkreuz\b|\bt[-\s]?st[üu]ck\b|\bt[-\s]?pipe\b|\bvariable\b'
+    r'|verbinder|\bbodenplatte\b|\bkonusbuchse\b|\bhalbkonus\b|\bbolzen\b'
+    r'|\bfederstecker\b|\bspacer\b|\badapter\b|\bh[üu]lse\b|\bbuchse\b|\bdice\b'
+    r'|\bhingepart\b|\bbauteil\b|\bwerkzeug\b|\bhammer\b|\bschablone\b|\bmatte\b'
+    r'|\blift\b|\bklemme\b|\bschelle\b|\bhaken\b|\bschraube\b|\bgabelkopf\b'
+    r'|kreis|\bframe\b|\bsonderbauteil\b|\bbohrungen\b',
+    re.IGNORECASE,
+)
+# Plausible Stücklängen: unter 20 cm ist es Zubehör, über 6 m gibt es nichts.
+_PIECE_LEN_MIN_M = 0.2
+_PIECE_LEN_MAX_M = 6.0
+
+
+def _piece_length_from_name(name: str) -> Optional[float]:
+    """Liest die Stücklänge aus einem Artikelnamen: "… 300cm …" → 3.0, "… 3m …" → 3.0."""
+    lm = _TRAVERSE_LEN_RE.search(name)
+    if lm:
+        try:
+            v = float((lm.group(1) or lm.group(2) or "0").replace(",", "."))
+        except ValueError:
+            v = 0.0
+        if _PIECE_LEN_MIN_M <= v <= _PIECE_LEN_MAX_M:
+            return v
+    cm = _TRAVERSE_CM_RE.search(name)
+    if cm:
+        v = int(cm.group(1)) / 100
+        if _PIECE_LEN_MIN_M <= v <= _PIECE_LEN_MAX_M:
+            return v
+    return None
+
+
+def article_piece_length_m(article) -> Optional[float]:
+    """Stücklänge eines Längenstücks in Metern — Traverse, Pipe oder HB-Rohr.
+    None, wenn der Artikel kein gerades Stück mit erkennbarer Länge ist.
+
+    Basis für die lfm→Stück-Umrechnung: geteilt werden darf nur, wenn der
+    tatsächlich gebuchte Artikel wirklich ein Stück dieser Länge ist. Vorher
+    kam die Länge aus dem GAEB-Text bzw. der 3-m-Standardlänge — dadurch wurde
+    auch dann durch 3 geteilt, wenn ein 1-m-Stück oder etwas völlig anderes
+    (Kabel, Stoff, …) gebucht war.
+    """
+    name = (getattr(article, "bezeichnung", "") or "").strip()
+    if not name or _LENGTH_NOT_PIECE_RE.search(name):
+        return None
+    art = (getattr(article, "artikelart", "") or "").strip()
+    if art:
+        if not _LENGTH_PIECE_ART_RE.match(art):
+            return None
+    else:
+        # Ohne Artikelart (EJ-API-Artikel) muss die Warengruppe die Familie
+        # belegen und der Name selbst das Bauteil benennen.
+        wg = (f'{getattr(article, "warengruppe", "") or ""} '
+              f'{getattr(article, "mutterwarengruppe", "") or ""}')
+        if not _LENGTH_PIECE_WG_RE.search(wg):
+            return None
+        if not (_TRAVERSE_WORD_RE.search(name)
+                or re.search(r'\bpipe\b|\brohr\b', name, re.IGNORECASE)):
+            return None
+    return _piece_length_from_name(name)
+
+
+def booking_qty_for(article, total_qty: float, unit: str) -> tuple[float, Optional[float]]:
+    """Buchungsmenge für eine Position: (Menge, verwendete Stücklänge in m).
+
+    Die lfm→Stück-Umrechnung greift nur, wenn die Position in Laufmetern
+    ausgeschrieben ist UND der gebuchte Artikel ein gerades Traversenstück mit
+    bekannter Länge ist. Sonst wird die geforderte Menge unverändert gebucht.
+    Die zurückgegebene Stücklänge ist None, wenn nicht umgerechnet wurde.
+    """
+    piece_len = article_piece_length_m(article) if article is not None else None
+    if piece_len:
+        pieces = traverse_piece_count(float(total_qty or 0), unit or "", piece_len)
+        if pieces is not None:
+            return float(pieces), piece_len
+    return float(total_qty or 0), None
 
 GAEB_SYNONYM_TAG = "[GAEB-Synonyme:"
 GAEB_SYNONYM_END = "]"

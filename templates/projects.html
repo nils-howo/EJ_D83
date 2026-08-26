@@ -134,11 +134,19 @@
         <button class="btn-del"
                 hx-post="/api/import/draft/{{ p.id }}/delete"
                 hx-target="#draft-msg" hx-swap="innerHTML"
-                hx-confirm="Entwurf „{{ p.name }}“ wirklich löschen?">✕</button>
+                hx-confirm="Der Entwurf „{{ p.name }}“ wird endgültig gelöscht.&#10;&#10;Wirklich löschen?"
+                data-confirm-title="Entwurf löschen?"
+                data-confirm-icon="🗑"
+                data-confirm-ok="Ja, löschen"
+                data-confirm-variant="danger">✕</button>
         {% elif is_admin %}
         <form hx-post="/api/projects/{{ p.id }}/delete"
               hx-target="#proj-list" hx-select="#proj-list" hx-swap="outerHTML"
-              hx-confirm="Projekt {{ p.name }} wirklich löschen?">
+              hx-confirm="Das Projekt „{{ p.name }}“ wird endgültig gelöscht.&#10;&#10;Wirklich löschen?"
+              data-confirm-title="Projekt löschen?"
+              data-confirm-icon="🗑"
+              data-confirm-ok="Ja, löschen"
+              data-confirm-variant="danger">
           <button type="submit" class="btn-del">✕</button>
         </form>
         {% endif %}

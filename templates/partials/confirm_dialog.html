@@ -1,0 +1,63 @@
+{# Gestyltes Bestaetigungs-Popup als Ersatz fuer das window.confirm() von htmx.
+   Wird ueber partials/nav.html auf allen Seiten eingebunden und greift automatisch
+   fuer jedes Element mit hx-confirm="…".
+
+   Eigene .confirm-*-Klassen statt der globalen .btn/.btn-primary: import.html
+   ueberschreibt .btn-primary seitenweit mit width:100% — das hat den Ja-Button
+   im Popup auseinandergezogen.
+
+   Optionale Feinsteuerung am ausloesenden Element per data-Attribut:
+     data-confirm-title    Ueberschrift              (Default: "Bestaetigen")
+     data-confirm-icon     Emoji links daneben       (Default: "❓")
+     data-confirm-ok       Text des Ja-Buttons       (Default: "Ja, weiter")
+     data-confirm-variant  "ok" (blau) | "danger" (rot)  (Default: "ok") #}
+<dialog id="app-confirm">
+  <div class="confirm-head">
+    <span class="confirm-icon" id="app-confirm-icon">❓</span>
+    <h2 id="app-confirm-title">Bestätigen</h2>
+  </div>
+  <p class="confirm-text" id="app-confirm-text"></p>
+  <div class="confirm-foot">
+    <button type="button" class="confirm-btn confirm-btn-ok" id="app-confirm-yes">Ja, weiter</button>
+    <button type="button" class="confirm-btn confirm-btn-cancel" id="app-confirm-no">Abbrechen</button>
+  </div>
+</dialog>
+
+<script>
+(function () {
+  var dlg = document.getElementById('app-confirm');
+  if (!dlg) return;
+  var elIcon  = document.getElementById('app-confirm-icon');
+  var elTitle = document.getElementById('app-confirm-title');
+  var elText  = document.getElementById('app-confirm-text');
+  var btnYes  = document.getElementById('app-confirm-yes');
+  var btnNo   = document.getElementById('app-confirm-no');
+  var pending = null;                       // Callback des laufenden htmx:confirm
+
+  function finish(ok) {
+    var cb = pending;
+    pending = null;
+    if (dlg.open) dlg.close();
+    if (cb) cb(ok);
+  }
+  btnYes.addEventListener('click', function () { finish(true); });
+  btnNo.addEventListener('click',  function () { finish(false); });
+  // ESC und Klick auf den Hintergrund zaehlen als Abbrechen
+  dlg.addEventListener('cancel', function (e) { e.preventDefault(); finish(false); });
+  dlg.addEventListener('click',  function (e) { if (e.target === dlg) finish(false); });
+
+  document.body.addEventListener('htmx:confirm', function (e) {
+    if (!e.detail.question) return;         // kein hx-confirm → Request normal durchlassen
+    e.preventDefault();                     // Request anhalten, bis der Nutzer entschieden hat
+    var d = (e.detail.elt && e.detail.elt.dataset) || {};
+    elIcon.textContent  = d.confirmIcon  || '❓';
+    elTitle.textContent = d.confirmTitle || 'Bestätigen';
+    elText.textContent  = e.detail.question;
+    btnYes.textContent  = d.confirmOk    || 'Ja, weiter';
+    btnYes.className    = 'confirm-btn confirm-btn-' + (d.confirmVariant === 'danger' ? 'danger' : 'ok');
+    pending = function (ok) { if (ok) e.detail.issueRequest(true); };
+    dlg.showModal();
+    btnYes.focus();
+  });
+})();
+</script>

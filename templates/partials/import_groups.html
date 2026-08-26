@@ -180,7 +180,7 @@
                    style="width:54px;padding:1px 4px;border:1px solid #bbb;border-radius:3px;font-size:.82rem;font-weight:700">
           </form>
           {{ m.article.einheit }}
-          {% if lfm %}<i style="color:#1565c0">({{ pos.qty }} {{ pos.unit }} ÷ {{ plen|int }} m)</i>{% endif %}
+          {% if lfm %}<i style="color:#1565c0">({{ pos.qty }} {{ pos.unit }} ÷ {{ "%g"|format(plen) }} m/Stück)</i>{% endif %}
         </span>
         {% if m.article.mietpreis %}
         {% set tf = resolve_time_factor(time_factor_curves, m.article.id_time_factor, einsatztage) %}

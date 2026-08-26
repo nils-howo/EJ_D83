@@ -180,6 +180,53 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
 .dialog-body { padding: 12px 16px; overflow-y: auto; flex: 1; }
 .dialog-footer { padding: 10px 16px; border-top: 1px solid #e0e0e0; display: flex; gap: 8px; align-items: center; background: #fafafa; }
 
+/* ── Bestaetigungs-Popup (Ersatz fuer window.confirm) ─────────────────── */
+/* Alles ueber #app-confirm, damit seitenspezifische Overrides (z.B. das
+   .btn-primary{width:100%} in import.html) hier nicht hineinregieren.
+   margin:auto ist noetig, weil der globale Reset (* { margin:0 }) das
+   margin:auto des Browsers fuer <dialog> ueberschreibt — sonst klebt das
+   Popup in der linken oberen Ecke statt mittig im Viewport zu stehen. */
+#app-confirm {
+  inset: 0; margin: auto;
+  width: min(440px, 92vw); padding: 0; border: none; border-radius: 12px;
+  overflow: hidden; background: #fff; color: #222;
+  box-shadow: 0 16px 48px rgba(0,0,0,.3);
+  animation: confirm-pop .14s ease-out;
+}
+#app-confirm::backdrop { background: rgba(20,24,40,.5); }
+@keyframes confirm-pop {
+  from { opacity: 0; transform: translateY(-8px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+#app-confirm .confirm-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 15px 20px 12px; border-bottom: 1px solid #eceff1;
+}
+#app-confirm .confirm-icon { font-size: 1.35rem; line-height: 1; }
+#app-confirm .confirm-head h2 { font-size: 1rem; font-weight: 600; color: #1a237e; margin: 0; }
+#app-confirm .confirm-text {
+  margin: 0; padding: 16px 20px 18px;
+  font-size: .88rem; line-height: 1.5; color: #37474f; white-space: pre-line;
+}
+/* Beide Buttons exakt gleich breit; Abbrechen rechts */
+#app-confirm .confirm-foot {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  padding: 12px 16px 16px; border-top: 1px solid #eceff1; background: #fafafa;
+}
+#app-confirm .confirm-btn {
+  width: 100%; margin: 0; display: inline-flex; align-items: center; justify-content: center;
+  padding: 9px 12px; border: 1px solid transparent; border-radius: 6px;
+  font-family: inherit; font-size: .88rem; font-weight: 600; cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+#app-confirm .confirm-btn-ok      { background: #3f51b5; color: #fff; }
+#app-confirm .confirm-btn-ok:hover      { background: #303f9f; }
+#app-confirm .confirm-btn-danger  { background: #c62828; color: #fff; }
+#app-confirm .confirm-btn-danger:hover  { background: #a31f1f; }
+#app-confirm .confirm-btn-cancel  { background: #fff; color: #555; border-color: #cfd8dc; }
+#app-confirm .confirm-btn-cancel:hover  { background: #f0f2f5; border-color: #b0bec5; }
+#app-confirm .confirm-btn:focus-visible { outline: 2px solid #1565c0; outline-offset: 2px; }
+
 /* EJ Results Tabelle */
 .ej-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .ej-table th { background: #e8eaf6; padding: 5px 8px; text-align: left; font-size: 0.75rem; color: #333; position: sticky; top: 0; }

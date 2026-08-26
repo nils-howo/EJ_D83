@@ -12,3 +12,6 @@
   {% if nav_status %}<span class="nav-status">{{ nav_status }}</span>{% endif %}
   <a href="/logout" class="nav-logout">Abmelden</a>
 </header>
+
+{# Gestyltes Bestaetigungs-Popup fuer alle hx-confirm-Elemente der Seite #}
+{% include "partials/confirm_dialog.html" %}
