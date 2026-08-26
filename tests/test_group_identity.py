@@ -27,6 +27,8 @@ from gaeb_parser import GaebItem, GaebProject, GaebRemark, parse_gaeb
 from routes.import_ import (_all_positions, _grp_key, _grp_of,
                             _import_gaeb_groups, _item_group_parts,
                             _migrate_group_jobs)
+import glob as _glob
+import xml.etree.ElementTree as _ET
 
 POLIS = "infos/260823_LV_polis Convention 2027_TECHNIK_v11.x83"
 
@@ -347,6 +349,150 @@ def test_hinweise_landen_in_ihrer_gruppe():
         check(ist == erwartet, f"level={level}: {erwartet} erwartet, ist {ist}")
 
 
+def test_kein_hinweis_geht_verloren():
+    """Jeder nicht-leere <Remark> muss gelesen UND angezeigt werden.
+
+    Gelesen wurden vorher nur Remarks innerhalb von <Itemlist>. In GAEB darf ein
+    <Remark> aber auch direkt unter <BoQBody> stehen — als Einleitung eines
+    Abschnitts, vor der ersten Untergruppe. Über die Beispiel-LVs waren das 33
+    verschluckte Hinweise, u.a. "Das Kapitel STROM kann auch unabhängig von der
+    restlichen Ausschreibung vergeben werden" (polis, Abschnitt 11).
+
+    Leere <Remark>-Elemente (Tender (8).x84 hat 25 davon) zählen nicht: da ist
+    nichts anzuzeigen.
+    """
+    print("\n=== Kein Hinweis geht verloren")
+
+    def gezeigt(groups):
+        """Hinweise, die in der Gruppenliste wirklich gerendert werden.
+
+        Drei Töpfe: ``lead_remarks`` über der Kopfzeile (Abschnitts-Einleitungen),
+        ``remarks`` am Gruppenende und die Hinweise an den Positionen. Wer einen
+        davon vergisst, zählt zu wenig — genau so fiel auf, dass die
+        Abschnitts-Einleitungen einen eigenen Topf bekommen haben.
+        """
+        n = 0
+        for g in groups:
+            n += len(g.get("lead_remarks") or []) + len(g.get("remarks") or [])
+            for blk in g.get("blocks", []):
+                for pos in _all_positions([blk]):
+                    n += len(pos.get("remarks") or [])
+            for sub in g.get("sub", []):
+                n += len(sub.get("lead_remarks") or []) + len(sub.get("remarks") or [])
+                for blk in sub.get("blocks", []):
+                    for pos in _all_positions([blk]):
+                        n += len(pos.get("remarks") or [])
+        return n
+
+    dateien = sorted(set(_glob.glob("infos/*.x8*") + _glob.glob("infos/*.X8*")
+                         + _glob.glob("infos/*.D83")))
+    geprueft = 0
+    for f in dateien:
+        try:
+            wurzel = _ET.parse(f).getroot()
+        except Exception:
+            continue
+        raum = wurzel.tag.split("}")[0][1:] if "}" in wurzel.tag else ""
+        ns = "{" + raum + "}" if raum else ""
+        roh = list(wurzel.iter(ns + "Remark"))
+        if not roh:
+            continue
+        leer = sum(1 for x in roh if not "".join(x.itertext()).strip())
+        try:
+            pr = parse_gaeb(f)
+        except Exception:
+            continue
+        geprueft += 1
+        kurz = os.path.basename(f)[:30]
+        check(len(pr.remarks) == len(roh) - leer,
+              f"{kurz}: {len(roh) - leer} Hinweise mit Text, gelesen {len(pr.remarks)}")
+        for level in (0, 1):
+            check(gezeigt(_import_gaeb_groups(pr, level, {})) == len(pr.remarks),
+                  f"{kurz} level={level}: {len(pr.remarks)} Hinweise gelesen, "
+                  f"angezeigt {gezeigt(_import_gaeb_groups(pr, level, {}))}")
+    print(f"  {geprueft} Dateien: alle Hinweise gelesen und in beiden Modi angezeigt")
+
+    # Der konkret gemeldete Fall
+    pp = parse_gaeb(POLIS)
+    strom = [r for r in pp.remarks if r.category_path == ["STROM"]]
+    check(len(strom) == 1,
+          f"Abschnitts-Hinweis unter STROM erwartet, sind {len(strom)}")
+    if strom:
+        check("unabhängig" in strom[0].long_text,
+              f"Text des STROM-Hinweises unerwartet: {strom[0].long_text[:60]!r}")
+        check(bool(strom[0].next_item_id),
+              "der Hinweis muss an die folgende Position gebunden sein")
+        check(strom[0].is_section_lead,
+              "Abschnitts-Einleitung muss als is_section_lead erkannt sein")
+        # Abschnitts-Einleitungen sitzen ÜBER der Kopfzeile der Hauptgruppe, nicht
+        # zwischen den Positionen — dort wirkten sie wie ein Kommentar zur ersten.
+        for level, num_soll in ((0, "11.01"), (1, "11")):
+            treffer = [(g["num"], r.get("scope"))
+                       for g in _import_gaeb_groups(pp, level, {})
+                       for r in (g.get("lead_remarks") or [])
+                       if "unabhängig" in r["long_text"]]
+            check(treffer == [(num_soll, "[11] STROM")],
+                  f"level={level}: STROM-Hinweis über HG {num_soll} mit Herkunft "
+                  f"'[11] STROM' erwartet, ist {treffer}")
+        # und NICHT mehr an einer Position
+        an_pos = [p_["oz"] for g in _import_gaeb_groups(pp, 0, {})
+                  for blk in g["blocks"] for p_ in _all_positions([blk])
+                  if any("unabhängig" in r["long_text"]
+                         for r in (p_.get("remarks") or []))]
+        check(not an_pos,
+              f"Abschnitts-Einleitung darf nicht an einer Position hängen: {an_pos}")
+        print("  polis Abschnitt 11: Hinweis sitzt über der HG, Herkunft '[11] STROM'")
+
+    # Jeder angezeigte Hinweis muss sagen, wozu er gehört
+    for level in (0, 1):
+        ohne = []
+        for g in _import_gaeb_groups(pp, level, {}):
+            for topf in ("lead_remarks", "remarks"):
+                ohne += [r["title"] for r in (g.get(topf) or []) if not r.get("scope")]
+            for blk in g.get("blocks", []):
+                for pos in _all_positions([blk]):
+                    ohne += [r["title"] for r in (pos.get("remarks") or [])
+                             if not r.get("scope")]
+            for sub in g.get("sub", []):
+                for topf in ("lead_remarks", "remarks"):
+                    ohne += [r["title"] for r in (sub.get(topf) or [])
+                             if not r.get("scope")]
+                for blk in sub.get("blocks", []):
+                    for pos in _all_positions([blk]):
+                        ohne += [r["title"] for r in (pos.get("remarks") or [])
+                                 if not r.get("scope")]
+        check(not ohne, f"level={level}: Hinweise ohne Herkunftsangabe: {ohne[:3]}")
+    print("  jeder Hinweis trägt eine Herkunftsangabe")
+
+
+def test_nachlaufender_hinweis_findet_seine_gruppe():
+    """Ein nachlaufender Hinweis auf Abschnittsebene braucht ein Auffangnetz.
+
+    Sein Pfad ist ('STROM',), die Gruppen heißen aber ('STROM', 'Verstromung …').
+    Ohne Präfix-Treffer wäre er still verschwunden.
+    """
+    print("\n=== Nachlaufender Hinweis auf Abschnittsebene")
+    p = GaebProject(name="t", label="", phase="", date="", currency="EUR",
+                    items=[_mk("a", "11.01.10", ["STROM", "Verstromung"]),
+                           _mk("b", "11.02.10", ["STROM", "Erdung"])],
+                    remarks=[GaebRemark(title="Kapitel STROM", long_text="x",
+                                        category_path=["STROM"], next_item_id=""),
+                             GaebRemark(title="Nur Erdung", long_text="y",
+                                        category_path=["STROM", "Erdung"],
+                                        next_item_id="")])
+    for level, erwartet in ((0, [("11.01", ["Kapitel STROM"]), ("11.02", ["Nur Erdung"])]),
+                            (1, [("11", ["Kapitel STROM"]), ("11.02", ["Nur Erdung"])])):
+        ist = []
+        for g in _import_gaeb_groups(p, level, {}):
+            if g["remarks"]:
+                ist.append((g["num"], [r["title"] for r in g["remarks"]]))
+            for sub in g["sub"]:
+                if sub["remarks"]:
+                    ist.append((sub["num"], [r["title"] for r in sub["remarks"]]))
+        print(f"  level={level}: {ist}")
+        check(ist == erwartet, f"level={level}: {erwartet} erwartet, ist {ist}")
+
+
 def test_altentwurf_wird_umgeschluesselt():
     """Entwürfe von vor der Umstellung trugen reine Labels als Schlüssel."""
     print("\n=== Alt-Entwurf: Label-Schlüssel werden migriert")
@@ -381,6 +527,8 @@ test_export_findet_ueber_oz_zurueck()
 test_elternebenen_werden_mitgeliefert()
 test_excel_folgt_derselben_hg_regel()
 test_hinweise_landen_in_ihrer_gruppe()
+test_kein_hinweis_geht_verloren()
+test_nachlaufender_hinweis_findet_seine_gruppe()
 test_altentwurf_wird_umgeschluesselt()
 
 print("\n" + "=" * 60)

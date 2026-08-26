@@ -210,17 +210,46 @@ def _import_gaeb_groups(project: GaebProject, level: int = 0, alt_active: dict |
     # Hinweistexte (Remarks): positionsgebunden (vor der folgenden Position) bzw.
     # nachlaufend (der Gruppe zugeordnet). Nur Anzeige, werden nicht gebucht.
     remarks_by_item: dict[str, list] = {}
+    # Abschnitts-Einleitungen (<Remark> direkt unter einer Kategorie): sie gelten dem
+    # ganzen Abschnitt, nicht der Position, die zufällig darauf folgt. Zwischen den
+    # Positionen gelesen wirkten sie wie ein Kommentar zur ersten Position — also
+    # über die Kopfzeile der Hauptgruppe, in der die gebundene Position liegt.
+    lead_by_item: dict[str, list] = {}
     trailing_remarks: list = []
     for r in project.remarks:
         rd = {"title": r.title, "long_text": r.long_text, "images": r.images}
-        if r.next_item_id:
+        if r.next_item_id and getattr(r, "is_section_lead", False):
+            lead_by_item.setdefault(r.next_item_id, []).append(
+                (tuple(r.category_path), rd))
+        elif r.next_item_id:
             remarks_by_item.setdefault(r.next_item_id, []).append(rd)
         else:
             trailing_remarks.append((tuple(r.category_path), rd))
 
+    def _scope_of_lead(item, rpath: tuple) -> str:
+        """Bezeichnung der Ebene, auf der ein Abschnitts-Hinweis steht.
+
+        Der Hinweis kennt nur seinen Pfad, nicht seine Ordnungszahl — die steckt in
+        der Position, an die er gebunden ist. Die OZ wird von rechts gekürzt, eine
+        Ebene je Stufe zwischen Hinweis und Position (gleiche Regel wie
+        ``_parent_levels``): eine GAEB-Kategorie ohne Label erzeugt keinen
+        Pfadeintrag, aber trotzdem eine OZ-Ebene.
+        """
+        gruppen_oz = (item.oz or "").split(".")[:-1]
+        tiefer = max(0, len(item.category_path) - len(rpath))
+        num = ".".join(gruppen_oz[:len(gruppen_oz) - tiefer]) if gruppen_oz else ""
+        name = rpath[-1] if rpath else ""
+        return f"[{num}] {name}" if num else name
+
     def _pd(it):
         d = _pos_dict(it)
-        d["remarks"] = remarks_by_item.get(it.item_id, [])
+        rms = remarks_by_item.get(it.item_id, [])
+        for rd in rms:
+            # Herkunft benennen: die Position, zu der der Hinweis gehört. Ohne „vor" —
+            # dass er darüber steht, sieht man an der Stelle, an der er gerendert wird.
+            rd.setdefault("scope", f"[{it.oz}] {it.description}"[:120]
+                                   if it.oz else it.description[:120])
+        d["remarks"] = rms
         return d
 
     # Reihenfolge der obersten Ebene (Job bzw. Blatt) in Dokumentreihenfolge. Nötig,
@@ -249,6 +278,8 @@ def _import_gaeb_groups(project: GaebProject, level: int = 0, alt_active: dict |
             hg_map[hg_key] = {
                 "name": hg_label, "num": hg_num, "count": 0, "sub": {}, "_positions": [],
                 "parent_name": lb_label, "parent_num": lb_num, "remarks": [],
+                # Einleitungen über der Kopfzeile (Abschnitts-Hinweise)
+                "lead_remarks": [],
                 # Ebenen über der HG (Abschnitt/Los/Gewerk) — Anzeige, damit
                 # gleichnamige Titel unterscheidbar sind
                 "parents": gp["parents"],
@@ -259,6 +290,10 @@ def _import_gaeb_groups(project: GaebProject, level: int = 0, alt_active: dict |
                 "_path": hg_key,
             }
         hg_map[hg_key]["count"] += 1
+        for rpath, rd in lead_by_item.get(item.item_id, ()):
+            rd.setdefault("scope", _scope_of_lead(item, rpath))
+            if rd not in hg_map[hg_key]["lead_remarks"]:
+                hg_map[hg_key]["lead_remarks"].append(rd)
         if g_key is not None:
             if g_key not in hg_map[hg_key]["sub"]:
                 hg_map[hg_key]["sub"][g_key] = {
@@ -274,16 +309,30 @@ def _import_gaeb_groups(project: GaebProject, level: int = 0, alt_active: dict |
 
     # Nachlaufende Hinweise (ohne folgende Position) der Gruppe zuordnen — über den
     # Pfad, damit ein Hinweis nicht in der erstbesten gleichnamigen Gruppe landet.
-    for rpath, rd in trailing_remarks:
-        placed = False
+    #
+    # Zwei Durchgänge: erst der genaue Pfad, dann als Auffangnetz die erste Gruppe,
+    # die unter dem Pfad des Hinweises liegt. Nötig, weil ein <Remark> in GAEB auch
+    # direkt unter einer Kategorie stehen kann ("Das Kapitel STROM …" auf Ebene 11):
+    # sein Pfad ist dann ('STROM',), die Gruppen heißen aber ('STROM', 'Verstromung
+    # Messestände') — ohne Auffangnetz wäre der Hinweis still verschwunden.
+    def _ebenen():
+        """Alle Gruppen und Untergruppen, in Dokumentreihenfolge."""
         for hg in hg_map.values():
-            for sub in hg["sub"].values():
-                if sub["_path"] == rpath:
-                    sub["remarks"].append(rd); placed = True; break
-            if placed:
-                break
-            if hg["_path"] == rpath:
-                hg["remarks"].append(rd); placed = True; break
+            yield hg
+            yield from hg["sub"].values()
+
+    for rpath, rd in trailing_remarks:
+        treffer = next((g for g in _ebenen() if g["_path"] == rpath), None)
+        if treffer is None:
+            treffer = next((g for g in _ebenen()
+                            if tuple(g["_path"][:len(rpath)]) == tuple(rpath)), None)
+        if treffer is None:
+            logging.warning("import: Hinweis %r ohne passende Gruppe (Pfad %s) — "
+                            "wird nicht angezeigt", (rd.get("title") or "")[:40], rpath)
+            continue
+        rd.setdefault("scope", (f'[{treffer["num"]}] {treffer["name"]}'
+                                if treffer.get("num") else treffer["name"])[:120])
+        treffer["remarks"].append(rd)
 
     result = []
     # Reihenfolge der Gruppen — je Quelle nach der jeweils verlässlicheren Angabe.

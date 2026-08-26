@@ -109,6 +109,12 @@
       list-style:none; display:flex; align-items:center; gap:5px;
     }
     .info-remark summary::-webkit-details-marker { display:none; }
+    /* Herkunft des Hinweises: zu welchem Abschnitt bzw. welcher Position er gehört.
+       Bei Abschnitts-Einleitungen über der Kopfzeile sonst nicht erkennbar. */
+    .info-remark-scope {
+      margin-left:6px; font-weight:400; font-size:.72rem; color:#a1887f;
+      font-style:italic; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    }
     .info-remark[open] summary { margin-bottom:4px; }
     .info-remark-body {
       color:#5d4037; white-space:pre-wrap; line-height:1.35;

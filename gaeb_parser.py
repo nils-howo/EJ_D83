@@ -41,12 +41,19 @@ class GaebRemark:
 
     next_item_id: item_id der Position, die im Dokument direkt auf den Hinweis folgt.
     Damit wird der Hinweis an der richtigen Stelle (vor dieser Position) angezeigt.
-    Leer = Hinweis steht am Ende der Gruppe (keine folgende Position)."""
+    Leer = Hinweis steht am Ende der Gruppe (keine folgende Position).
+
+    is_section_lead: der Hinweis stand direkt unter einer Kategorie (<Remark> als
+    Kind von <BoQBody>), nicht in der Positionsliste — er leitet also den ganzen
+    Abschnitt ein, nicht die eine Position, die zufällig darauf folgt. Solche
+    Hinweise werden über der Hauptgruppe angezeigt statt zwischen den Positionen.
+    """
     title: str                      # Kurztext/Überschrift (OutlineText)
     long_text: str                  # Langtext (DetailTxt)
     category_path: list[str]
     images: list[str] = field(default_factory=list)
     next_item_id: str = ""
+    is_section_lead: bool = False
 
 
 @dataclass
@@ -187,14 +194,32 @@ def _extract_long_text(item_el: ET.Element, ns: dict) -> tuple[str, list[str]]:
 
 def _parse_body(body_el: ET.Element, ns: dict, path: list[str],
                 oz_prefix: str, items: list[GaebItem],
-                remarks: list[GaebRemark]):
-    """Recurse through BoQBody collecting items and remarks (info texts)."""
+                remarks: list[GaebRemark], pending: list[dict]):
+    """Recurse through BoQBody collecting items and remarks (info texts).
+
+    pending: Hinweise, die noch auf die Position warten, vor der sie stehen sollen.
+    Die Liste wird durch die Rekursion durchgereicht, weil ein <Remark> auch DIREKT
+    in <BoQBody> stehen kann - als Einleitung eines Abschnitts, vor der ersten
+    Untergruppe. Solche Hinweise wurden vorher gar nicht gelesen (in den Beispiel-LVs
+    33 Stueck, u.a. "Das Kapitel STROM kann auch unabhaengig ... vergeben werden"),
+    weil nur <Itemlist> nach Remarks durchsucht wurde. Gebunden werden sie an die
+    erste Position, die im Dokument darauf folgt - und die steht eine Ebene tiefer.
+    """
     tag = lambda t: f"{{{ns['g']}}}{t}" if ns else t
 
     for child in body_el:
         local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
 
-        if local == "BoQCtgy":
+        if local == "Remark":
+            # Abschnitts-Einleitung: gehoert zu DIESER Kategorie, angezeigt wird sie
+            # vor der naechsten Position (die meist in einer Untergruppe liegt).
+            r_title        = _extract_outline_text(child, ns)
+            r_long, r_imgs = _extract_long_text(child, ns)
+            if r_title or r_long or r_imgs:
+                pending.append({"title": r_title, "long_text": r_long,
+                                "images": r_imgs, "path": path[:], "lead": True})
+
+        elif local == "BoQCtgy":
             # Ordnungszahl der Kategorie aus RNoPart aufbauen
             rno_raw = child.get("RNoPart", "")
             child_oz = (f"{oz_prefix}.{rno_raw.zfill(2)}"
@@ -207,12 +232,12 @@ def _parse_body(body_el: ET.Element, ns: dict, path: list[str],
             new_path = path + [lbl] if lbl else path[:]
             inner_body = child.find(tag("BoQBody"))
             if inner_body is not None:
-                _parse_body(inner_body, ns, new_path, child_oz, items, remarks)
+                _parse_body(inner_body, ns, new_path, child_oz, items, remarks, pending)
 
         elif local == "Itemlist":
             # In Dokumentreihenfolge: Hinweise (Remark) puffern und an die folgende
             # Position binden, damit sie an der richtigen Stelle angezeigt werden.
-            pending: list[dict] = []
+            saw_item = False
             for el in child:
                 el_local = el.tag.split("}")[-1] if "}" in el.tag else el.tag
 
@@ -220,9 +245,12 @@ def _parse_body(body_el: ET.Element, ns: dict, path: list[str],
                     r_title        = _extract_outline_text(el, ns)
                     r_long, r_imgs = _extract_long_text(el, ns)
                     if r_title or r_long or r_imgs:
-                        pending.append({"title": r_title, "long_text": r_long, "images": r_imgs})
+                        pending.append({"title": r_title, "long_text": r_long,
+                                        "images": r_imgs, "path": path[:],
+                                        "lead": False})
 
                 elif el_local == "Item":
+                    saw_item = True
                     item_el = el
                     item_id = item_el.get("ID", "")
                     rno_raw = item_el.get("RNoPart", "")
@@ -262,21 +290,28 @@ def _parse_body(body_el: ET.Element, ns: dict, path: list[str],
                         is_eventual=is_eventual,
                         long_text_images=imgs,
                     ))
-                    # gepufferte Hinweise gehören vor diese Position
+                    # Gepufferte Hinweise gehoeren vor diese Position - jeder mit dem
+                    # Pfad, an dem er im Dokument steht (kann eine Ebene hoeher sein).
                     for pr in pending:
                         remarks.append(GaebRemark(
                             title=pr["title"], long_text=pr["long_text"],
-                            category_path=path[:], images=pr["images"],
+                            category_path=pr["path"], images=pr["images"],
                             next_item_id=item_id,
+                            is_section_lead=pr["lead"],
                         ))
-                    pending = []
+                    pending.clear()
 
-            # Hinweise nach der letzten Position (keine folgende Position)
-            for pr in pending:
-                remarks.append(GaebRemark(
-                    title=pr["title"], long_text=pr["long_text"],
-                    category_path=path[:], images=pr["images"], next_item_id="",
-                ))
+            # Hinweise nach der letzten Position dieser Gruppe: keine folgende
+            # Position mehr, also der Gruppe zuordnen. Hatte die Itemlist gar keine
+            # Position, bleiben sie gepuffert - dann bindet sie die naechste.
+            if saw_item:
+                for pr in pending:
+                    remarks.append(GaebRemark(
+                        title=pr["title"], long_text=pr["long_text"],
+                        category_path=pr["path"], images=pr["images"], next_item_id="",
+                        is_section_lead=pr["lead"],
+                    ))
+                pending.clear()
 
 
 def parse_gaeb(source: str | Path | bytes) -> GaebProject:
@@ -295,10 +330,18 @@ def parse_gaeb(source: str | Path | bytes) -> GaebProject:
 
     items: list[GaebItem] = []
     remarks: list[GaebRemark] = []
+    pending: list[dict] = []
     for boq in root.findall(f".//{tag('BoQ')}"):
         body = boq.find(tag("BoQBody"))
         if body is not None:
-            _parse_body(body, ns, [], "", items, remarks)
+            _parse_body(body, ns, [], "", items, remarks, pending)
+    # Hinweise, auf die keine Position mehr folgte (z.B. Schlusstext eines Abschnitts)
+    for pr in pending:
+        remarks.append(GaebRemark(
+            title=pr["title"], long_text=pr["long_text"],
+            category_path=pr["path"], images=pr["images"], next_item_id="",
+            is_section_lead=pr["lead"],
+        ))
 
     # Projektweite Vorbemerkungen (Award > AddText): Nachhaltigkeit, Timing, …
     preliminaries: list[GaebRemark] = []

@@ -338,7 +338,9 @@
 {% macro render_remarks(remarks) %}
 {% for rm in remarks %}
 <details class="info-remark">
-  <summary>ℹ️ {{ rm.title or 'Hinweis aus Ausschreibung' }}</summary>
+  <summary>ℹ️ {{ rm.title or 'Hinweis aus Ausschreibung' }}
+    {%- if rm.scope %} <span class="info-remark-scope">{{ rm.scope }}</span>{% endif %}
+  </summary>
   <div class="info-remark-body">{{ rm.long_text | autolink }}</div>
   {% if rm.images %}
   <div class="pos-lt-imgs">{% for src in rm.images %}<img src="{{ src }}">{% endfor %}</div>
@@ -366,6 +368,10 @@
 {% set cur_lid = group_jobs.get(hg.key, 1) %}
 {% set pkey = hg.parents | map(attribute='name') | join('|') %}
 <div class="category-group" data-lid="{{ cur_lid }}">
+  {# Abschnitts-Einleitungen sitzen ÜBER der Kopfzeile: sie gelten der ganzen
+     Hauptgruppe, nicht der ersten Position. Zwischen den Positionen gelesen wirkten
+     sie wie ein Kommentar zu genau dieser einen. #}
+  {% if hg.lead_remarks %}{{ render_remarks(hg.lead_remarks) }}{% endif %}
   <div class="category-header" onclick="toggleCat(this)" data-catkey="hg:{{ hg.num or hg.name }}">
     <span>▼</span>
     {# Elternpfad bleibt INNERHALB dieses span — _impCatKey greift die Kopfzeile
