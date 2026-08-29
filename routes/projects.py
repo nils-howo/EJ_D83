@@ -1080,6 +1080,9 @@ async def project_overview(project_id: int, request: Request):
     return templates.TemplateResponse(request, "projects_overview.html", {
         "project":  proj,
         "is_admin": ss.is_admin,
+        # Die Personalplanung liegt in eigenen Tabellen, nicht im Abbild der
+        # Buchungen — nur wenn es sie gibt, hat der Export etwas zu tun.
+        "hat_crew": _db.load_crew_plan(project_id) is not None,
     })
 
 
@@ -1125,6 +1128,22 @@ async def project_overview_content(project_id: int, request: Request):
     bookings_by_item: dict[str, list[dict]] = {}
     cost_mat  = 0.0
     cost_pers = 0.0
+    cost_trans = 0.0
+    cost_sonst = 0.0
+    # In welchen Topf eine Ressource gehört, steht im lokalen Stamm — die Buchungszeile
+    # in Easyjob sagt es nicht. Ein LKW oder eine Storno-Pauschale in den
+    # Personalkosten ist beim Gegenrechnen nicht zu finden; die Einordnung ist
+    # dieselbe wie beim Import (`_kostentopf`).
+    from routes.import_ import _kostentopf as _topf_von
+
+    class _RohRes:
+        def __init__(self, row):
+            self.id = int(row["id"])
+            self.funktion = row.get("funktion") or ""
+            self.ressourcenart = row.get("ressourcenart") or ""
+
+    _topf_by_id = {int(r["id"]): _topf_von(_RohRes(r))
+                   for r in _db.load_personal_db()}
 
     job_ids = [
         int(x) for x in (proj.get("ej_job_ids") or "").split(",")
@@ -1243,7 +1262,13 @@ async def project_overview_content(project_id: int, request: Request):
                 if not item_id:
                     continue
 
-                cost_pers += total_p
+                _t = _topf_by_id.get(res_id, "personal")
+                if _t == "transport":
+                    cost_trans += total_p
+                elif _t == "sonstiges":
+                    cost_sonst += total_p
+                else:
+                    cost_pers += total_p
                 bookings_by_item.setdefault(item_id, []).append({
                     "type":        "resource",
                     "resource_id": res_id,
@@ -1272,7 +1297,13 @@ async def project_overview_content(project_id: int, request: Request):
             qty     = float(b.get("qty") or 1)
             if (b.get("kind") or "article") == "resource":
                 total_p = qty * up   # Tage × Tagessatz
-                cost_pers += total_p
+                _t = _topf_by_id.get(int(b.get("ej_stock_type_id") or 0), "personal")
+                if _t == "transport":
+                    cost_trans += total_p
+                elif _t == "sonstiges":
+                    cost_sonst += total_p
+                else:
+                    cost_pers += total_p
                 bookings_by_item.setdefault(item_id, []).append({
                     "type":        "resource",
                     "resource_id": int(b.get("ej_stock_type_id") or 0),
@@ -1328,7 +1359,9 @@ async def project_overview_content(project_id: int, request: Request):
         "res_count":   res_count,
         "cost_mat":    cost_mat,
         "cost_pers":   cost_pers,
-        "cost_total":  cost_mat + cost_pers,
+        "cost_trans":  cost_trans,
+        "cost_sonst":  cost_sonst,
+        "cost_total":  cost_mat + cost_pers + cost_trans + cost_sonst,
     }
 
     # ── Kosten je Hauptgruppe (für Anzeige im Gruppen-Header) ────────────────

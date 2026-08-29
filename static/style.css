@@ -501,3 +501,621 @@ body.xl-painting .xl-rowhead { cursor:cell; }
 .xl-grid .xl-colhead.xl-role-total { width:110px; }
 
 .xl-collapsed { font-size:.74rem; color:#9fa8da; padding:6px 8px; font-style:italic; }
+
+/* ══ Personalplanung (Crew-Matrix) ══════════════════════════════════════════
+   Tagesraster wie die bisherige Excel-Personalliste: Zeile = Ressource,
+   Spalte = Kalendertag, Zelle = Personenzahl. Der Zeilenkopf und die Kopfzeilen
+   kleben beim Scrollen, sonst weiß man bei 30 Tagesspalten nicht mehr, wessen
+   Zahl man gerade tippt. */
+
+.crew-empty       { padding:14px 4px 6px; }
+.crew-empty-lead  { font-size:.86rem; color:#555; margin:0 0 10px; max-width:62ch; }
+.crew-empty-hint  { font-size:.8rem; color:#5c35b0; background:#f3edfb;
+                    border-radius:4px; padding:6px 10px; margin:10px 0 0;
+                    display:inline-block; }
+.crew-range-form  { display:flex; align-items:flex-end; gap:10px; flex-wrap:wrap; }
+.crew-range-form label { font-size:.76rem; color:#666; display:flex;
+                    flex-direction:column; gap:2px; }
+.crew-range-form input[type=date] { font-size:.82rem; padding:3px 6px;
+                    border:1px solid #cfd8dc; border-radius:4px; }
+.crew-range-inline { align-items:center; gap:5px; }
+.crew-range-dash   { color:#90a4ae; }
+
+.crew-bar        { display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+                   padding:0 0 10px; border-bottom:1px solid #eceff1; margin-bottom:10px; }
+.crew-metrics    { display:flex; gap:14px; flex-wrap:wrap; font-size:.78rem;
+                   color:#666; }
+.crew-metrics b  { color:#1a237e; font-variant-numeric:tabular-nums; }
+.crew-metrics .crew-cost b { color:#5c35b0; }
+.crew-actions    { margin-left:auto; display:flex; align-items:center; gap:8px;
+                   flex-wrap:wrap; }
+.crew-danger     { color:#c62828; }
+
+.crew-search      { background:#fafbff; border:1px solid #e0e0e0; border-radius:6px;
+                    padding:9px 11px; margin-bottom:10px; }
+.crew-search-head { display:flex; gap:8px; flex-wrap:wrap; }
+.crew-search-head input { font-size:.82rem; padding:4px 8px; border:1px solid #cfd8dc;
+                    border-radius:4px; }
+#crew-add-q       { flex:1; min-width:180px; }
+#crew-add-gewerk  { width:170px; }
+.crew-res-row .crew-res-add { font-size:.7rem; color:#5c35b0; white-space:nowrap; }
+.crew-res-row:hover td      { background:#f3edfb; }
+
+/* ── Raster ─────────────────────────────────────────────────────────────── */
+.crew-scroll { overflow-x:auto; border:1px solid #e0e0e0; border-radius:6px;
+               background:#fff; }
+.crew-table  { border-collapse:separate; border-spacing:0; font-size:.78rem;
+               width:100%; }
+.crew-table th, .crew-table td { padding:0; }
+
+.crew-table .crew-head {
+  position:sticky; left:0; z-index:3; background:#fff; text-align:left;
+  width:var(--crew-kopf); min-width:var(--crew-kopf); max-width:var(--crew-kopf);
+  border-right:1px solid #cfd8dc; padding:0 6px 0 8px;
+}
+.crew-table thead .crew-head { z-index:5; background:#eceff1; }
+.crew-table thead th { position:sticky; top:0; background:#eceff1; }
+.crew-table thead tr:nth-child(2) th { top:19px; }
+.crew-table thead tr:nth-child(3) th { top:36px; }
+
+.crew-month { font-size:.7rem; font-weight:700; letter-spacing:.07em;
+              text-transform:uppercase; color:#78909c; text-align:left;
+              padding:2px 0 2px 5px; border-left:1px solid #e0e0e0; height:19px; }
+.crew-phase { font-size:.66rem; font-weight:700; letter-spacing:.06em;
+              text-transform:uppercase; color:#fff; text-align:center;
+              padding:2px 3px; height:17px; overflow:hidden; white-space:nowrap; }
+.crew-day   { width:26px; min-width:26px; font-family:monospace; font-weight:600;
+              font-size:.68rem; color:#455a64; text-align:center; padding:2px 0 3px;
+              border-bottom:1px solid #cfd8dc; border-left:1px solid #e0e0e0; }
+.crew-day.crew-we { background:#e4e7ec; color:#90a4ae; }
+.crew-dow   { display:block; font-size:.56rem; font-weight:400; color:#90a4ae; }
+
+.crew-gewerk td { background:#eef1f6; font-size:.72rem; font-weight:700;
+                  letter-spacing:.07em; text-transform:uppercase; color:#546e7a;
+                  padding:3px 8px; border-top:1px solid #cfd8dc;
+                  border-bottom:1px solid #e0e0e0; }
+.crew-gewerk .crew-head { background:#eef1f6; }
+
+.crew-row .crew-cell { border-left:1px solid #eceff1; height:23px;
+                       border-bottom:1px solid #f2f4f7; }
+.crew-row .crew-cell.crew-we { background:#f6f7f9; }
+
+.crew-in { width:26px; height:22px; border:0; background:transparent; text-align:center;
+           font-family:monospace; font-size:.76rem; font-weight:600; color:#311b92;
+           padding:0; border-radius:2px; }
+.crew-in:focus  { outline:2px solid #5c35b0; outline-offset:-2px; background:#fff; }
+.crew-in.crew-err { background:#ffebee; outline:1px solid #c62828; }
+
+.crew-label { width:100%; border:0; background:transparent; font:inherit;
+              font-size:.79rem; color:#222; padding:3px 0; }
+.crew-label:focus { outline:1px solid #5c35b0; background:#fff; border-radius:3px; }
+
+.crew-num, .crew-num-day { font-family:monospace; font-variant-numeric:tabular-nums;
+              text-align:right; padding:0 6px; white-space:nowrap;
+              border-left:1px solid #eceff1; font-size:.72rem; }
+.crew-num-day { text-align:center; }
+.crew-table thead .crew-num { font-size:.62rem; font-weight:600; color:#78909c;
+              letter-spacing:.04em; text-transform:uppercase; text-align:right;
+              border-bottom:1px solid #cfd8dc; padding-bottom:3px;
+              vertical-align:bottom; }
+.crew-num  { min-width:46px; }
+.crew-wide { min-width:74px; }
+.crew-num b { color:#333; }
+.crew-wide b { color:#5c35b0; }
+
+.crew-rate { width:56px; max-width:56px; border:0; background:transparent;
+             font-family:monospace; font-size:.72rem; text-align:right; color:#555;
+             padding:2px 0; }
+.crew-rate:focus { outline:1px solid #5c35b0; background:#fff; border-radius:2px; }
+.crew-rate.crew-err { background:#ffebee; outline:1px solid #c62828; }
+.crew-cnt  { max-width:34px; }
+
+.crew-del  { width:22px; text-align:center; }
+.crew-x    { border:0; background:none; color:#b0bec5; cursor:pointer; font-size:1rem;
+             line-height:1; padding:0 4px; }
+.crew-x:hover { color:#c62828; }
+
+.crew-total td { border-top:2px solid #cfd8dc; background:#f7f8fc; font-family:monospace;
+                 font-weight:700; color:#455a64; height:23px; }
+.crew-total .crew-head { background:#f7f8fc; font-family:inherit; font-size:.74rem;
+                 font-weight:700; letter-spacing:.05em; text-transform:uppercase; }
+.crew-total .crew-peak { color:#c62828; }
+.crew-none { color:#90a4ae; font-style:italic; padding:10px 8px; }
+
+/* Kundenversion: dieselbe Matrix ohne Sätze und Beträge — das ist heute die
+   zweite Excel-Datei, in der die Kostenspalten von Hand gelöscht wurden. */
+
+.crew-foot { font-size:.74rem; color:#90a4ae; margin:8px 2px 0; }
+
+/* Aufklappbares Personalplanungs-Panel auf der Import-Seite */
+.crew-panel-wrap > summary { cursor:pointer; list-style:none; display:flex;
+                    align-items:baseline; gap:10px; flex-wrap:wrap; }
+.crew-panel-wrap > summary::-webkit-details-marker { display:none; }
+.crew-panel-wrap > summary::before { content:"▶"; font-size:.7rem; color:#90a4ae;
+                    transform:translateY(-1px); }
+.crew-panel-wrap[open] > summary::before { content:"▼"; }
+.crew-panel-wrap > summary h2 { margin:0; }
+.crew-summary-meta { font-size:.78rem; color:#78909c; }
+.crew-summary-meta .crew-cost { color:#5c35b0; font-weight:600; }
+.crew-panel-wrap[open] > summary { margin-bottom:8px; }
+
+/* ── Zuordnungsband unter jeder Ressourcenzeile ─────────────────────────────
+   Zeigt, auf welche LV-Position die Tage laufen. Farbe = Position (dieselbe wie
+   in der Positionsliste darunter). */
+.crew-band td            { height:11px; }
+.crew-band-head          { vertical-align:top; padding-top:0 !important; }
+.crew-band-note          { font-size:.62rem; color:#b0bec5; }
+.crew-band-empty         { color:#e0a030; }
+.crew-bandcell           { border-left:1px solid #eceff1; position:relative; padding:0; }
+.crew-bandcell.crew-open { background:repeating-linear-gradient(45deg,
+                             #fff8e1 0 3px, #ffe0a0 3px 6px); }
+.crew-seg                { display:block; height:9px; margin:1px 0; position:relative; }
+.crew-seg-start          { border-radius:2px 0 0 2px; }
+.crew-seg-end            { border-radius:0 2px 2px 0; }
+.crew-seg-start.crew-seg-end { border-radius:2px; }
+.crew-seg-label          { position:absolute; left:2px; top:-2px; z-index:2;
+                           font-family:monospace; font-size:.56rem; font-weight:700;
+                           color:#fff; white-space:nowrap; line-height:11px;
+                           text-shadow:0 0 2px rgba(0,0,0,.35); }
+
+/* Malmodus: im Band wird der Zeiger zum Pinsel */
+.crew-painting .crew-bandcell { cursor:crosshair; }
+.crew-bandcell.crew-paint     { outline:1px solid #5c35b0; outline-offset:-1px;
+                                background:#ede7f6; }
+
+/* ── Positionsliste unter der Matrix (gleichzeitig Palette) ────────────────── */
+.crew-pos           { margin-top:14px; border:1px solid #e0e0e0; border-radius:6px;
+                      background:#fafbff; padding:9px 11px 10px; }
+.crew-pos-head      { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;
+                      margin-bottom:7px; }
+.crew-pos-title     { font-size:.78rem; font-weight:700; letter-spacing:.06em;
+                      text-transform:uppercase; color:#546e7a; }
+.crew-pos-hint      { font-size:.74rem; color:#90a4ae; }
+.crew-pos-warn      { margin-left:auto; font-size:.74rem; color:#c62828;
+                      background:#ffebee; border:1px solid #ef9a9a;
+                      border-radius:4px; padding:1px 7px; }
+.crew-pos-tools     { display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+                      margin-bottom:7px; }
+.crew-pos-fill      { font-size:.73rem; color:#78909c; }
+.crew-fill-btn      { font-size:.73rem !important; padding:2px 6px !important; }
+
+.crew-swatch        { display:inline-flex; align-items:center; gap:5px; cursor:pointer;
+                      background:none; border:1px solid transparent; border-radius:4px;
+                      padding:1px 5px; font:inherit; font-size:.74rem; color:#333; }
+.crew-swatch:hover  { background:#eef1ff; }
+.crew-swatch-on     { border-color:#5c35b0; background:#ede7f6; font-weight:600;
+                      box-shadow:0 0 0 1px #5c35b0 inset; }
+.crew-swatch-dot    { width:11px; height:11px; border-radius:2px; flex-shrink:0; }
+.crew-swatch-dot-erase { background:repeating-linear-gradient(45deg,
+                           #cfd8dc 0 2px, #fff 2px 4px); border:1px solid #b0bec5; }
+.crew-swatch-erase  { color:#607d8b; }
+
+.tbl-scroll         { overflow-x:auto; }
+.crew-pos-table     { width:100%; border-collapse:collapse; font-size:.78rem;
+                      background:#fff; }
+.crew-pos-table th  { text-align:left; font-size:.66rem; font-weight:700;
+                      letter-spacing:.05em; text-transform:uppercase; color:#90a4ae;
+                      padding:4px 7px; border-bottom:1px solid #cfd8dc; white-space:nowrap; }
+.crew-pos-table td  { padding:3px 7px; border-bottom:1px solid #f2f4f7;
+                      vertical-align:middle; }
+.crew-pos-table tr:last-child td { border-bottom:0; }
+.crew-pos-num       { text-align:right; white-space:nowrap;
+                      font-variant-numeric:tabular-nums; }
+.crew-pos-c-oz      { width:1%; white-space:nowrap; }
+.crew-pos-c-mode    { width:1%; }
+.crew-pos-c-act     { width:1%; white-space:nowrap; text-align:right; }
+.crew-pos-desc      { color:#333; }
+.crew-pos-batch .crew-pos-desc { color:#607d8b; }
+.crew-pos-arrow     { color:#b0bec5; margin-right:2px; }
+.crew-pos-badge     { display:inline-block; font-size:.64rem; font-weight:700;
+                      border-radius:3px; padding:0 4px; margin-left:4px; }
+.crew-pos-badge-warn { background:#ffebee; color:#c62828; border:1px solid #ef9a9a; }
+.crew-mode-btn      { font:inherit; font-size:.68rem; cursor:pointer; white-space:nowrap;
+                      border:1px solid #cfd8dc; border-radius:3px; padding:1px 6px;
+                      background:#fff; color:#78909c; }
+.crew-mode-btn.crew-mode-on { border-color:#9fa8da; background:#e8eaf6; color:#283593;
+                      font-weight:600; }
+.crew-pos-mv        { font-size:.72rem; }
+.crew-x[disabled]   { opacity:.25; cursor:default; }
+
+.crew-open-list     { margin:8px 0 0; padding-left:18px; font-size:.75rem; color:#8d6e63; }
+.crew-open-list b   { color:#5d4037; }
+.crew-open-days     { color:#a1887f; }
+
+/* Position, deren Personal aus der Personalplanung kommt */
+.crew-covered-btn      { color:#5c35b0 !important; background:#ede7f6 !important;
+                         border:1px solid #b39ddb !important; font-weight:600; }
+.crew-covered-note     { font-size:.75rem; color:#5c35b0; background:#f3edfb;
+                         border-left:3px solid #7c4dff; border-radius:0 4px 4px 0;
+                         padding:4px 9px; margin-bottom:6px; }
+.crew-covered-note b   { color:#4527a0; }
+.crew-covered-open     { color:#e0a030; font-weight:600; }
+
+
+/* Aus den LV-Vorbemerkungen gelesener Terminplan */
+.crew-detect        { background:#e8f5e9; border:1px solid #a5d6a7; border-radius:6px;
+                      padding:8px 11px 9px; margin:0 0 12px; max-width:640px; }
+.crew-detect-head   { font-size:.7rem; font-weight:700; letter-spacing:.06em;
+                      text-transform:uppercase; color:#2e7d32; margin-bottom:5px; }
+.crew-detect-phases { display:flex; flex-wrap:wrap; gap:6px 16px; }
+.crew-detect-phase  { font-size:.8rem; color:#33691e; }
+.crew-detect-phase b { color:#1b5e20; }
+.crew-detect-phase .mono { color:#558b2f; }
+.crew-detect-note   { font-size:.72rem; color:#689f38; margin-top:5px; }
+.crew-detect-src    { font-size:.72rem; color:#2e7d32; align-self:center; }
+
+
+/* ── Positionen als Chips (Palette und Kontext) ─────────────────────────────
+   Linksklick wählt, Rechtsklick schaltet Menüpunkt ⇄ Sammelposition. Die
+   gewählte Position ist danach Ziel für Manntage, neue Zeilen und das Band. */
+.crew-chips        { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:8px; }
+.crew-chip         { display:inline-flex; align-items:center; gap:6px; cursor:pointer;
+                     font:inherit; font-size:.76rem; color:#333; background:#fff;
+                     border:1px solid #dde1ea; border-radius:14px; padding:2px 10px 2px 7px;
+                     max-width:340px; }
+.crew-chip:hover   { border-color:#b39ddb; background:#f7f4fd; }
+.crew-chip-on      { border-color:#5c35b0; background:#ede7f6; font-weight:600;
+                     box-shadow:0 0 0 1px #5c35b0; }
+.crew-chip-dot     { width:11px; height:11px; border-radius:3px; flex-shrink:0; }
+.crew-chip-oz      { font-size:.72rem; color:#455a64; flex-shrink:0; }
+.crew-chip-on .crew-chip-oz { color:#311b92; }
+.crew-chip-name    { overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+                     color:#546e7a; }
+.crew-chip-mt      { font-size:.68rem; color:#5c35b0; background:#f0eafa;
+                     border-radius:8px; padding:0 5px; flex-shrink:0; }
+.crew-chip-flag    { color:#c62828; font-weight:700; }
+.crew-chip-arrow   { color:#b0bec5; }
+.crew-chip-batch   { border-style:dashed; padding-left:5px; }
+.crew-chip-batch .crew-chip-name { font-style:italic; }
+.crew-chip-warn    { border-color:#ef9a9a; background:#fff5f5; }
+.crew-chip-erase   { color:#607d8b; }
+.crew-chip-dot-erase { background:repeating-linear-gradient(45deg,
+                         #cfd8dc 0 2px, #fff 2px 4px); border:1px solid #b0bec5; }
+.crew-chip-new     { color:#2e7d32; border-color:#a5d6a7; background:#f1f8e9; }
+.crew-chip-new:hover { background:#e8f5e9; border-color:#66bb6a; }
+
+.crew-pos-details  { margin-top:8px; }
+.crew-pos-details > summary { cursor:pointer; font-size:.74rem; color:#78909c; }
+.crew-menu-title   { font:inherit; font-size:.78rem; border:1px solid #e0e0e0;
+                     border-radius:3px; padding:1px 5px; width:100%; max-width:280px; }
+.crew-search-note  { font-size:.72rem; color:#90a4ae; align-self:center; }
+.crew-row-move     { display:block; font:inherit; font-size:.64rem; color:#90a4ae;
+                     background:none; border:0; padding:0; cursor:pointer;
+                     text-align:left; }
+.crew-row-move:hover { color:#5c35b0; }
+.crew-gewerk-offen td { background:#fff8e1; color:#8d6e63; }
+.crew-gewerk-offen .crew-head { background:#fff8e1; }
+
+/* ── Termine (Phasen) bearbeiten ────────────────────────────────────────── */
+.crew-terms        { margin:0 0 10px; border:1px solid #e0e0e0; border-radius:6px;
+                     background:#fafbff; padding:7px 10px; }
+.crew-terms > summary { cursor:pointer; font-size:.76rem; font-weight:700;
+                     color:#546e7a; letter-spacing:.04em; text-transform:uppercase; }
+.crew-terms-sum    { font-weight:400; text-transform:none; letter-spacing:0;
+                     color:#78909c; margin-left:8px; font-size:.74rem; }
+.crew-terms-table  { border-collapse:collapse; margin:7px 0 5px; }
+.crew-terms-table td { padding:1px 4px; }
+.crew-term-name    { font:inherit; font-size:.78rem; width:150px;
+                     border:1px solid #e0e0e0; border-radius:3px; padding:2px 6px; }
+.crew-terms input[type=date], .crew-term-new input[type=date] {
+                     font-size:.78rem; padding:2px 5px; border:1px solid #cfd8dc;
+                     border-radius:3px; }
+.crew-term-dash    { color:#b0bec5; padding:0 2px; }
+.crew-term-days    { font-size:.72rem; color:#90a4ae; white-space:nowrap; }
+.crew-term-new     { display:flex; align-items:center; gap:5px; flex-wrap:wrap;
+                     border-top:1px solid #eceff1; padding-top:6px; }
+.crew-term-new input[type=text] { font:inherit; font-size:.78rem; width:150px;
+                     border:1px solid #cfd8dc; border-radius:3px; padding:2px 6px; }
+
+
+/* Zeilen per Ziehen einem anderen Menüpunkt zuordnen */
+.crew-table .crew-head[draggable] { cursor:grab; }
+.crew-grip          { color:#cfd8dc; font-size:.7rem; margin-right:4px;
+                      vertical-align:1px; }
+.crew-table .crew-head[draggable]:hover .crew-grip { color:#5c35b0; }
+.crew-label         { font-size:.79rem; color:#222; }
+tr.crew-dragging td { opacity:.45; }
+/* Ablageziel beim Verschieben: die Linie sitzt UNTEN an der Überschrift — dort
+   landet die Zeile. Oben gezeichnet sah es aus, als käme sie über den Abschnitt. */
+tr.crew-drop-on td  { background:#ede7f6 !important;
+                      box-shadow:inset 0 -3px 0 #5c35b0; }
+
+
+/* Eigener Menüpunkt: Titel direkt im Chip änderbar */
+.crew-chip-menu     { border-color:#9fa8da; background:#f3f4fd; }
+.crew-chip-menu.crew-chip-on { border-color:#5c35b0; background:#ede7f6; }
+.crew-chip-fresh    { border-color:#5c35b0; box-shadow:0 0 0 1px #5c35b0; }
+.crew-chip-input    { font:inherit; font-size:.76rem; border:0; background:transparent;
+                      width:130px; padding:0; color:#283593; }
+.crew-chip-input:focus { outline:1px solid #5c35b0; border-radius:2px; background:#fff; }
+.crew-chip-x        { border:0; background:none; color:#b0bec5; cursor:pointer;
+                      font-size:.9rem; line-height:1; padding:0 0 0 2px; }
+.crew-chip-x:hover  { color:#c62828; }
+.crew-head-input    { font:inherit; font-size:.72rem; font-weight:700;
+                      letter-spacing:.07em; text-transform:uppercase; color:#546e7a;
+                      border:0; background:transparent; width:100%; padding:0; }
+.crew-head-input:focus { outline:1px solid #5c35b0; background:#fff; border-radius:2px;
+                      text-transform:none; letter-spacing:0; }
+
+
+/* Mehrfachauswahl in der Matrix */
+.crew-sel-hint       { font-size:.76rem; color:#5c35b0; background:#f0eafa;
+                       border-radius:4px; padding:4px 9px; margin:8px 2px 0;
+                       display:inline-block; }
+/* Text-Markierung beim Ziehen verhindert das JS an der Wurzel (preventDefault beim
+   Drücken) und setzt den Fokus selbst. user-select:none auf den Feldern hatte
+   denselben Zweck, nahm ihnen aber den Cursor — in eine Auswahl ließ sich dann
+   nichts mehr schreiben. */
+
+
+/* Standard-Positionen in der Abschnitts-Überschrift */
+.crew-menu-bar      { padding:0 !important; white-space:nowrap; }
+.crew-mp            { display:inline-flex; align-items:center; gap:3px;
+                      font-size:.66rem; background:#fff; border:1px solid #cfd8dc;
+                      border-radius:9px; padding:0 4px 0 5px; margin-right:4px;
+                      text-transform:none; letter-spacing:0; font-weight:400; }
+.crew-mp-dot        { width:7px; height:7px; border-radius:2px; }
+.crew-mp-x          { border:0; background:none; color:#b0bec5; cursor:pointer;
+                      font-size:.75rem; line-height:1; padding:0; }
+.crew-mp-x:hover    { color:#c62828; }
+.crew-mp-add        { font:inherit; font-size:.64rem; color:#90a4ae; background:none;
+                      border:1px dashed #cfd8dc; border-radius:9px; padding:0 6px;
+                      cursor:pointer; text-transform:none; letter-spacing:0;
+                      font-weight:400; }
+.crew-mp-add:hover  { color:#5c35b0; border-color:#b39ddb; }
+.crew-painting .crew-mp-add { color:#5c35b0; border-color:#b39ddb; border-style:solid; }
+.crew-band-head     { padding:0 !important; }
+
+
+/* Position als Hinterlegung der Zahlenzelle — der eigene Bandstreifen unter jeder
+   Zeile ist entfallen, er hat die Matrix doppelt so hoch gemacht. */
+.crew-row .crew-cell            { transition:background .12s ease; }
+.crew-row .crew-cell.crew-open  { background:repeating-linear-gradient(45deg,
+                                    #fff8e1 0 3px, #ffe0a0 3px 6px) !important; }
+
+
+/* Standardposition einer Zeile — wohin ihre Eingaben ohne weiteres Zutun laufen */
+.crew-std       { display:inline-flex; align-items:center; gap:3px; font-size:.62rem;
+                  color:#78909c; margin-left:4px; vertical-align:1px; }
+.crew-std-dot   { width:7px; height:7px; border-radius:2px; flex-shrink:0; }
+
+
+/* Zellenfarben, abschließend:
+   – besetzt und einer Position zugeordnet → deren Farbe (als style-Attribut)
+   – besetzt ohne Position                 → schraffiert (Fehlerzustand)
+   – leer                                  → Wochenendton oder nichts
+   Eine zusätzliche Tönung für „besetzt" gab es früher in Lila — das ist selbst eine
+   Positionsfarbe und sah aus wie eine falsche Zuordnung. */
+.crew-row .crew-cell            { background:transparent; }
+.crew-row .crew-cell.crew-we    { background:#f6f7f9; }
+.crew-row .crew-cell.crew-filled .crew-in { font-weight:700; }
+.crew-gewerk-on td              { background:#ede7f6 !important;
+                                  box-shadow:inset 3px 0 0 #5c35b0; }
+.crew-gewerk td                 { cursor:pointer; }
+
+
+/* Titel eines Abschnitts: erst per Doppelklick änderbar. Vorher nimmt das Feld
+   keine Klicks an, damit der Einfachklick den Abschnitt auswählt. */
+.crew-head-input                { pointer-events:none; cursor:pointer; }
+.crew-head-input.crew-head-edit { pointer-events:auto; cursor:text;
+                                  outline:1px solid #5c35b0; background:#fff;
+                                  border-radius:2px; text-transform:none;
+                                  letter-spacing:0; }
+.crew-warn-btn                  { font:inherit; font-size:.7rem; margin-left:6px;
+                                  border:1px solid #ef9a9a; border-radius:9px;
+                                  background:#fff; color:#c62828; cursor:pointer;
+                                  padding:0 7px; }
+.crew-warn-btn:hover            { background:#ffebee; }
+
+
+/* Die Zahl erbt die Schriftfarbe ihrer Zelle — auf voller Positionsfarbe ist das
+   Weiß, auf hellem Grund Schwarz (siehe routes/crew.py:_textfarbe). */
+
+
+/* Die Position zeigt sich als Rahmen um die Zelle (style-Attribut), nicht als
+   Füllung: das Feld bleibt weiß, die Zahl schwarz und damit lesbar — und die Farbe
+   ist dieselbe wie im Chip statt abgeschwächt. */
+.crew-row .crew-cell.crew-filled .crew-in { font-weight:700; color:#1a1a1a; }
+
+
+/* ── Mehrfachauswahl, deutlich sichtbar ─────────────────────────────────────
+   Die Auswahl muss auch über schon eingefärbten Zellen erkennbar bleiben. Deshalb
+   liegt sie als kräftige Fläche im Hintergrund: der Positionsrahmen ist ein
+   inset-Schatten und wird darüber gezeichnet, beides ist also gleichzeitig zu sehen.
+   Das !important schlägt die Schraffur nicht zugeordneter Tage — während man
+   auswählt, will man die Auswahl sehen, nicht den Fehlerzustand. */
+.crew-row .crew-cell.crew-sel   { background:#b39ddb !important; }
+.crew-row .crew-cell.crew-sel .crew-in { color:#1a1a1a; }
+/* Rand der Auswahl kräftiger, damit ein Block als Block erkennbar ist. */
+.crew-row .crew-cell.crew-sel::after {
+  content:""; position:absolute; inset:0; pointer-events:none;
+  border-top:1px solid #4527a0; border-bottom:1px solid #4527a0;
+}
+.crew-row .crew-cell            { position:relative; }
+
+
+/* Löschknopf im Zeilenkopf: der klebt links und bleibt sichtbar. Rechts am
+   Zeilenende lag er hinter dem waagerechten Scrollbereich. */
+.crew-head-inner                { display:flex; align-items:center; gap:4px; }
+.crew-head-inner .crew-label    { flex:1; overflow:hidden; text-overflow:ellipsis;
+                                  white-space:nowrap; }
+.crew-row-x                     { flex-shrink:0; opacity:0; transition:opacity .1s; }
+.crew-row:hover .crew-row-x,
+.crew-row-x:focus-visible       { opacity:1; }
+
+
+/* ── Nachbesserungen an der Matrix ──────────────────────────────────────────
+   Der Auswahl-Hinweis trägt display:inline-block; das übersteuert das display:none
+   des hidden-Attributs, und übrig blieb eine leere Pille unter der Tabelle. */
+.crew-sel-hint[hidden]          { display:none; }
+
+/* Die Überschrift eines Abschnitts klebt links wie die Zeilenköpfe — sonst wandert
+   sie beim seitlichen Scrollen unter die Tagesspalten. Ihre Standard-Positionen
+   bleiben gleich daneben stehen, statt mit den Tagen wegzulaufen. */
+
+/* Das Titelfeld nahm die ganze Breite ein — ein langer weißer Kasten quer über die
+   Überschrift. Es wächst jetzt nur so weit, wie es gebraucht wird. */
+
+
+/* ── Nebenkosten ────────────────────────────────────────────────────────────
+   Spesen werden gerechnet, bei Hotel und Reisen wird nur die Anzahl eingetragen —
+   der Betrag steht klein daneben, damit man sieht, was daraus wird. */
+.crew-nk-sum        { display:block; font-size:.62rem; color:#90a4ae; line-height:1.1; }
+.crew-spesen        { font-size:.76rem; }
+.crew-spesen > summary { cursor:pointer; color:#5c35b0; white-space:nowrap; }
+.crew-spesen-list   { position:absolute; z-index:20; background:#fff; margin-top:4px;
+                      border:1px solid #cfd8dc; border-radius:6px; padding:4px;
+                      max-height:280px; overflow-y:auto; box-shadow:0 6px 20px -8px rgba(0,0,0,.35); }
+.crew-spesen-opt    { display:flex; gap:12px; width:100%; align-items:center;
+                      font:inherit; font-size:.78rem; background:none; border:0;
+                      border-radius:4px; padding:3px 8px; cursor:pointer; text-align:left; }
+.crew-spesen-opt:hover { background:#f0eafa; }
+.crew-spesen-on     { background:#ede7f6; font-weight:600; }
+.crew-spesen-name   { flex:1; white-space:nowrap; }
+.crew-spesen-satz   { color:#5c35b0; }
+.crew-spesen-leer   { font-size:.76rem; color:#90a4ae; padding:6px 8px; max-width:280px; }
+.crew-nk            { display:inline-flex; align-items:center; gap:3px; font-size:.64rem;
+                      color:#90a4ae; margin-right:6px; text-transform:none;
+                      letter-spacing:0; font-weight:400; }
+
+
+/* Die erste Spalte klebt links. Damit dahinter nichts hervorschaut, brauchen ihre
+   Zellen einen deckenden Hintergrund UND eine höhere Ebene als die Tageszellen —
+   deren farbiger Rahmen lugte sonst an der Kante hervor. Das Flex-Layout steckt
+   deshalb in einem inneren Element: eine Zelle mit display:flex wächst nicht auf
+   die Zeilenhöhe, und die Tageszellen schauten unten heraus. */
+
+
+/* ══ Geklebte erste Spalte ══════════════════════════════════════════════════
+   Alles an einer Stelle. Vorher lagen Ebenen und Hintergründe über fünf Stellen
+   verstreut und haben sich gegenseitig überschrieben — zuletzt färbte eine
+   allgemeine Regel die Überschriften weiß, sodass die geklebte Zelle beim Scrollen
+   wie eine Lücke aussah.
+
+   Jede Zelle der ersten Spalte klebt, ebenso die Leiste mit den Standard-Positionen
+   direkt daneben. Sie brauchen einen deckenden Hintergrund und eine höhere Ebene als
+   die Tageszellen, sonst schaut deren farbiger Rahmen an der Kante hervor. */
+.crew-table .crew-head          { position:sticky; left:0; }
+
+.crew-table td.crew-cell        { z-index:0; }
+.crew-table tr.crew-row    td.crew-head { z-index:3; background:#fff; }
+.crew-table tr.crew-gewerk td.crew-head,
+.crew-table tr.crew-gewerk td.crew-menu-bar { z-index:5; background:#eef1f6; }
+.crew-table tr.crew-total  td.crew-head { z-index:3; background:#f7f8fc; }
+.crew-table thead th.crew-head  { z-index:6; background:#eceff1; }
+
+.crew-table tr.crew-gewerk-offen td.crew-head,
+.crew-table tr.crew-gewerk-offen td.crew-menu-bar { background:#fff8e1; }
+.crew-table tr.crew-gewerk-on td.crew-head,
+.crew-table tr.crew-gewerk-on td.crew-menu-bar    { background:#ede7f6; }
+
+/* Das Titelfeld war wieder gewachsen: ohne feste Höhe richtet es sich nach der
+   Standard-Zeilenhöhe des Browsers und macht die Überschrift höher als die Zeilen. */
+.crew-head-input                { width:auto; max-width:130px; height:15px;
+                                  line-height:15px; }
+
+/* Ausgewählte Zeilen: auch ihre Kostenspalten werden markiert, damit sichtbar ist,
+   worauf ein Wert in Hotel oder Reisen mit Enter übertragen wird. */
+/* Auswahl in den Kostenspalten: markiert wird genau, was aufgezogen wurde — wie in
+   der Matrix. Vorher lag die Markierung auf der ganzen Zeile und färbte auch Felder,
+   die nichts abbekommen; MT, Spesen und Summe werden ohnehin gerechnet. */
+.crew-rate.crew-rate-sel        { background:#ede7f6; border-radius:2px;
+                                  box-shadow:inset 0 0 0 1px #b39ddb; color:#311b92; }
+.crew-rate.crew-rate-sel::placeholder { color:#9a86c4; }
+
+.crew-hotelsatz     { font-size:.76rem; color:#78909c; white-space:nowrap; }
+.crew-hotelsatz input { width:52px; font:inherit; font-size:.76rem; text-align:right;
+                      border:1px solid #cfd8dc; border-radius:3px; padding:1px 4px; }
+
+.crew-mp-titel      { color:#b0bec5; font-size:.6rem; letter-spacing:.06em; }
+
+
+/* ══ Breite und Höhe der Matrix ════════════════════════════════
+   Eine Stelle für die Kopfspalte: die Zellen der ersten Spalte, das Innenleben des
+   Zeilenkopfs und der Anschlag der Marken hängen alle daran. */
+:root { --crew-kopf: 228px; }
+
+/* max-width allein bremst eine Tabellenzelle nicht — im automatischen Layout
+   entscheidet der Inhalt. Der Name wuchs die Spalte auf mehr als das Doppelte auf,
+   weil ein Flex-Element ohne min-width:0 nicht unter seine Textbreite schrumpft. */
+.crew-head-inner                { width:100%; min-width:0; height:21px; }
+.crew-head-inner .crew-label    { min-width:0; padding:0; font-size:.75rem; }
+.crew-head-inner > *            { line-height:1; }
+.crew-head-inner .crew-x        { font-size:.85rem; padding:0 2px; }
+.crew-grip                      { font-size:.6rem; margin-right:0; }
+
+/* Zeilenhöhe: die Kostenspalten hatten den Betrag unter der Anzahl stehen und
+   machten damit jede Zeile eineinhalb Zeilen hoch. Der Betrag steht jetzt im
+   Tooltip, die Summe der Zeile sowieso rechts. */
+.crew-table tr.crew-row td      { height:23px; }
+
+/* Die Überschrift darf etwas höher sein als eine Zeile — sie trägt zwei Marken. */
+.crew-table tr.crew-gewerk td   { height:25px; }
+.crew-head-input                { max-width:calc(var(--crew-kopf) - 16px);
+                                  height:17px; line-height:17px; font-size:.7rem; }
+
+/* Die Marken standen in einer Zelle über die ganze Tabellenbreite. Eine so breite
+   Zelle kann nicht kleben — sie füllt den Sichtbereich ohnehin, und ihr Inhalt
+   scrollt mit weg. Also klebt der Inhalt selbst, genau neben der Kopfspalte. */
+/* Der Anschlag ist die tatsächliche Breite der Kopfspalte, gemessen in
+   crew_matrix.js. Eine feste Zahl stimmt nur, solange die Spalte exakt so breit ist;
+   ist sie breiter, rutscht die Leiste bis zur Zahl mit — das sah aus, als würde die
+   Überschrift beim Scrollen ein Stück wegwandern. */
+.crew-mp-bar                    { position:sticky;
+                                  left:var(--crew-kopf-ist, var(--crew-kopf));
+                                  display:inline-flex; align-items:center; gap:3px;
+                                  padding:0 8px; }
+.crew-nk-sum[hidden]            { display:none; }
+
+/* Hotelspalte: Nächte und Preis nebeneinander in einer Zeile. Untereinander wäre
+   jede Matrixzeile wieder eineinhalb Zeilen hoch. */
+.crew-satz          { color:#90a4ae; }
+.crew-satz::placeholder { color:#cfd8dc; }
+
+/* Hotelspalte trägt zwei Felder nebeneinander — Nächte und Preis. Ohne eigene Breite
+   rechnet die Zelle nur mit einem und schneidet das zweite ab. */
+.crew-hotel                     { min-width:108px; }
+.crew-hotel .crew-cnt           { width:30px; max-width:30px; }
+.crew-hotel .crew-satz          { width:42px; max-width:42px; }
+.crew-mal                       { color:#cfd8dc; font-size:.66rem; padding:0 2px; }
+
+/* Die Trennlinie zwischen den Kostenspalten stand direkt an den Feldern und ging
+   dadurch unter. Mehr Luft daneben, und eine Spur kräftiger. */
+.crew-table .crew-cost          { padding-left:11px; padding-right:11px;
+                                  border-left:1px solid #dbe1e8; }
+
+/* Neuer Abschnitt am Fuß der Matrix — in derselben Spalte wie die übrigen
+   Überschriften, dort steht er, wo er entsteht. */
+.crew-table tr.crew-neu td      { height:26px; background:#fff;
+                                  border-top:1px solid #eceff1; }
+.crew-table tr.crew-neu td.crew-head { z-index:3; }
+.crew-neu-btn                   { font:inherit; font-size:.7rem; color:#2e7d32;
+                                  background:#f1f8e9; border:1px dashed #a5d6a7;
+                                  border-radius:9px; padding:1px 9px; cursor:pointer; }
+.crew-neu-btn:hover             { background:#e8f5e9; border-color:#66bb6a; }
+
+/* Die allgemeine Formularregel `input[type=text]` ist spezifischer als eine einzelne
+   Klasse — ein Attributselektor zählt wie eine Klasse, und `input` kommt noch dazu.
+   Sie hat Breite und Innenabstand der Matrixfelder die ganze Zeit übersteuert:
+   `width:100%` ließ den Tagessatz mit dem Innenabstand der Zelle mitschrumpfen, und
+   `padding:5px 8px` nahm dem Betrag zusätzlich Platz weg. Deshalb hier mit der
+   Tabelle davor — damit gewinnen die Maße der Matrix. */
+.crew-table input.crew-rate             { width:56px; padding:2px 5px; }
+.crew-table input.crew-cnt              { width:34px; }
+.crew-table .crew-hotel input.crew-cnt  { width:30px; }
+.crew-table .crew-hotel input.crew-satz { width:42px; }
+
+/* Export-Menü: dieselbe Aufklapp-Form wie die Spesenauswahl, damit die Leiste eine
+   Sprache spricht. Die Einträge sind Links, keine Knöpfe — der Browser lädt die
+   Datei selbst herunter, ohne dass dafür JavaScript nötig wäre. */
+.crew-export summary            { font-weight:600; color:#37474f; }
+.crew-export .crew-spesen-opt   { text-decoration:none; display:block; }
+
+/* Ausgewählte Tageszellen: die Farbe gehört auf das Eingabefeld selbst. Auf der
+   Zelle allein wird sie vom weißen Hintergrund des Feldes verdeckt — die allgemeine
+   Regel `input[type=text]` ist spezifischer als `.crew-in`. */
+.crew-table .crew-cell.crew-sel input.crew-in {
+  background:#b39ddb; box-shadow:inset 0 0 0 1px #5c35b0; color:#1a1a1a;
+  font-weight:700;
+}
+.crew-table .crew-cell.crew-sel input.crew-in:focus { background:#d1c4e9; }

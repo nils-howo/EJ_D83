@@ -9,7 +9,7 @@ from datetime import datetime
 
 import pyodbc
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 import db as _db
 import excel_parser as _xl
@@ -24,6 +24,8 @@ from matcher import (UnifiedMatcher, load_articles_db, load_resources_db,
 import time as _time
 from state import HAENGEPUNKT_NR
 from state import get_session, templates
+from crew_plan import CrewPlan, bookings as crew_bookings
+from routes.crew import crew_ctx, crew_oob_html
 
 router = APIRouter()
 
@@ -550,13 +552,37 @@ def _calc_import_metrics(ss, curves: dict | None = None) -> dict:
     items  = [it for it in ss.d83_project.items if not active or it.item_id in active]
     total = len(items)
     matched = confident = art_count = res_count = 0
-    cost_mat = cost_pers = 0.0
+    cost_mat = cost_pers = cost_trans = cost_sonst = 0.0
+    _topf = {"personal": "pers", "transport": "trans", "sonstiges": "sonst"}
+    # Positionen, deren Personal aus der Matrix kommt: ihre Kosten stehen dort und
+    # nicht im Matching. Ohne das zählt der Voranschlag beides und weicht von dem ab,
+    # was der Import dann wirklich bucht.
+    crew_cost: dict[str, float] = {}
+    crew_eigen: set[str] = set()
+    if ss.crew is not None:
+        _stats = ss.crew.position_stats()
+        crew_cost = {iid: float(st.get("cost") or 0.0) for iid, st in _stats.items()}
+        # Abgelöst wird das Matching nur dort, wo die Matrix auch Manntage legt.
+        # Eine Position, die bloß Nebenkosten abbekommt, behält ihre eigene
+        # Ressource — ihre Kosten kommen dann aus beidem.
+        crew_eigen = {iid for iid, st in _stats.items() if st.get("mt")}
     for it in items:
         mr  = ss.matches.get(it.item_id)
         bq  = ss.d83_booking_qtys.get(it.item_id) or {}
         qty = float(bq.get("qty", it.qty))
         # Alternativ-/Eventualpositionen werden gebucht, zählen aber NICHT zur Summe.
         in_total = not (it.is_alt or it.is_eventual)
+        if it.item_id in crew_eigen:
+            res_count += 1
+            if in_total:
+                cost_pers += crew_cost[it.item_id]
+            if mr and mr.matched and mr.score > 0 and mr.method != "kalkpos":
+                matched += 1
+                if mr.score >= 85:
+                    confident += 1
+            continue
+        if in_total and it.item_id in crew_cost:
+            cost_pers += crew_cost[it.item_id]      # nur Nebenkosten der Planung
         if mr and mr.matched and mr.score > 0 and mr.method != "kalkpos":
             matched += 1
             if mr.score >= 85:
@@ -569,7 +595,14 @@ def _calc_import_metrics(ss, curves: dict | None = None) -> dict:
             elif isinstance(mr.matched, _Resource):
                 res_count += 1
                 if mr.matched.tagessatz and in_total:
-                    cost_pers += qty * mr.matched.tagessatz
+                    topf = _kostentopf(mr.matched)
+                    betrag = qty * mr.matched.tagessatz
+                    if topf == "transport":
+                        cost_trans += betrag
+                    elif topf == "sonstiges":
+                        cost_sonst += betrag
+                    else:
+                        cost_pers += betrag
         for b in ss.bundles.get(it.item_id, []):
             bres = b.get("resource")
             bart = b.get("article")
@@ -577,7 +610,14 @@ def _calc_import_metrics(ss, curves: dict | None = None) -> dict:
             if bres and isinstance(bres, _Resource):
                 res_count += 1
                 if bres.tagessatz and in_total:
-                    cost_pers += bqty * bres.tagessatz
+                    topf = _kostentopf(bres)
+                    betrag = bqty * bres.tagessatz
+                    if topf == "transport":
+                        cost_trans += betrag
+                    elif topf == "sonstiges":
+                        cost_sonst += betrag
+                    else:
+                        cost_pers += betrag
             elif bart:
                 art_count += 1
                 if getattr(bart, "mietpreis", 0) and in_total:
@@ -586,7 +626,8 @@ def _calc_import_metrics(ss, curves: dict | None = None) -> dict:
     return dict(
         total=total, matched=matched, confident=confident,
         art_count=art_count, res_count=res_count,
-        cost_mat=cost_mat, cost_pers=cost_pers,
+        cost_mat=cost_mat, cost_pers=cost_pers, cost_trans=cost_trans,
+        cost_sonst=cost_sonst,
     )
 
 
@@ -607,7 +648,77 @@ def _import_ctx(ss) -> dict:
         "time_factor_curves": curves,
         "preliminaries":      (ss.d83_project.preliminaries if ss.d83_project else []),
         "imp_metrics":        _calc_import_metrics(ss, curves),
+        # Personalplanung: welche Positionen deckt sie ab? Für diese muss im
+        # Positionsbaum keine Ressource mehr gebucht werden.
+        "crew_ready":         ss.crew is not None,
+        "crew_covered":       _crew_covered(ss),
     }
+
+
+# Arbeitsmittel sind ein gemischter Topf: die zwanzig Spesensätze stehen dort neben
+# „Leergut- und Vollguthandling", „Ausfallpauschale bei Storno" und „Externe
+# Reparatur". Zum Personal gehört davon nur, was an den Leuten hängt — Spesen und
+# Reisekosten; genau darauf bucht auch die Personalplanung. Erkannt wird das am Namen:
+# eine Kennzeichnung dafür gibt es im Stamm nicht. Kommt eine neue Art dazu, gehört
+# sie hier hinein.
+_PERSONAL_MITTEL = ("spesensatz", "reisekosten")
+
+
+def _kostentopf(res) -> str:
+    """In welchen Topf eine Ressource gehört: personal, transport oder sonstiges.
+
+    Im Easyjob-Stamm liegen Personal, Fahrzeuge und Arbeitsmittel in derselben
+    Tabelle und wurden von der Kennzahl „Personalkosten" allesamt mitgezählt. Ein LKW
+    oder eine Storno-Pauschale in dieser Zahl ist beim Gegenrechnen nicht zu finden.
+    """
+    art = (getattr(res, "ressourcenart", "") or "").strip().lower()
+    if art == "fahrzeug":
+        return "transport"
+    if art != "arbeitsmittel":
+        return "personal"          # „Personal" — und Unbekanntes lieber hierher
+    name = (getattr(res, "funktion", "") or "").strip().lower()
+    if name.startswith(_PERSONAL_MITTEL):
+        return "personal"
+    # Die Ressourcen, auf die die Personalplanung selbst bucht, gehören immer zum
+    # Personal — auch wenn sie im Stamm einmal umbenannt werden.
+    from crew_plan import DEFAULT_HOTEL_ID, DEFAULT_RK_ID, DEFAULT_SPESEN_ID
+    if int(getattr(res, "id", 0) or 0) in (DEFAULT_SPESEN_ID, DEFAULT_RK_ID,
+                                           DEFAULT_HOTEL_ID):
+        return "personal"
+    return "sonstiges"
+
+
+def metrics_oob_html(ss) -> str:
+    """Die Kennzahlenzeile als Out-of-band-Stück.
+
+    Die Personalplanung ändert die Personalkosten, tauscht aber nur ihre eigene
+    Matrix — die Zeile darüber bliebe sonst auf dem Stand von vorhin stehen und
+    zeigte eine Summe, die nicht mehr gilt.
+    """
+    if not ss.d83_project:
+        return ""
+    try:
+        werte = _calc_import_metrics(ss)
+    except Exception as e:      # noqa: BLE001
+        # Die Zeile hängt hier als Zugabe an einer fremden Antwort. Scheitert sie,
+        # bleibt sie eben stehen — die Matrix selbst muss trotzdem zurückkommen.
+        logging.warning("Kennzahlen nicht berechenbar: %s", e)
+        return ""
+    return templates.get_template("partials/import_metrics.html").render({
+        "imp_metrics": werte,
+        "einsatztage": ss.einsatztage,
+        "metrics_oob": True,
+    })
+
+
+def _crew_covered(ss) -> dict:
+    """item_id → {mt, cost} für die von der Personalplanung abgedeckten Positionen."""
+    if ss.crew is None:
+        return {}
+    stats = ss.crew.position_stats()
+    return {iid: {"mt": stats.get(iid, {}).get("mt", 0),
+                  "cost": stats.get(iid, {}).get("cost", 0.0)}
+            for iid in ss.crew.positions}
 
 
 # ─── Seiten-Route ─────────────────────────────────────────────────────────────
@@ -615,6 +726,21 @@ def _import_ctx(ss) -> dict:
 @router.get("/import", response_class=HTMLResponse)
 async def import_page(request: Request):
     ss = get_session(request.session)
+
+    # Wer die Seite verlässt, gibt die Sperre frei (Beacon beim pagehide) — der
+    # Entwurf steht danach anderen offen. Die Arbeitskopie in dieser Sitzung bleibt
+    # aber liegen, und beim Zurückkommen sähe man einen Stand, den inzwischen jemand
+    # anderes überholt hat. Deshalb hier die Sperre neu holen: klappt das (freier
+    # Entwurf oder man selbst — auch nach einem gewöhnlichen Neuladen), geht alles
+    # weiter wie bisher. Hat ihn jemand anderes übernommen, wird die eigene Kopie
+    # verworfen, statt später über seine Arbeit zu schreiben.
+    if ss.draft_id:
+        _ok, _fremd = _db.acquire_draft_lock(ss.draft_id, ss.ej_user or "")
+        if not _ok:
+            logging.info("import: Entwurf %s ist fremd gesperrt — Arbeitskopie "
+                         "verworfen", ss.draft_id)
+            _verwerfe_arbeitskopie(ss)
+            return RedirectResponse("/projects?entwurf=uebernommen", status_code=303)
 
     if not ss.ej_client and ss.ej_url and ss.ej_user and ss.ej_pass:
         try:
@@ -654,6 +780,7 @@ async def import_page(request: Request):
         "proj_types": ss.d83_proj_types,
         "events":     ss.d83_events,
         **_import_ctx(ss),
+        **crew_ctx(ss),      # Personalplanung (nur die Vollseite braucht sie)
     })
 
 
@@ -893,6 +1020,10 @@ async def import_draft_save(
         # Entwurf existiert nicht mehr als Entwurf (z.B. zwischenzeitlich hochgeladen)
         return HTMLResponse('<span class="error-msg">Entwurf nicht mehr vorhanden (evtl. bereits hochgeladen).</span>')
     ss.draft_id = saved_id
+    # Die Personalplanung liegt nicht im state_json, sondern in den crew_*-Tabellen
+    # an derselben Zeile — promote_draft_to_project behält deren ID, die Planung
+    # überlebt das Hochladen also ohne Umzug.
+    _db.save_crew_plan(saved_id, ss.crew.to_dict() if ss.crew else None, ss.ej_user or "")
     return HTMLResponse(f'<span class="save-ok">💾 Entwurf „{name}" gespeichert ✓</span>')
 
 
@@ -947,6 +1078,7 @@ async def import_draft_load(draft_id: int, request: Request):
         level = 1 if ss.d83_import_mode == "groups" else 0
         ss.d83_groups = _import_gaeb_groups(project, level, ss.d83_alt_active)
         _migrate_group_jobs(ss)           # Entwürfe von vor dem Nummern-Schlüssel
+        ss.crew = CrewPlan.from_dict(_db.load_crew_plan(draft_id))
         ss.draft_id = draft_id
     except Exception as e:
         # Sperre nicht hängen lassen, wenn Parsen/Wiederherstellen scheitert.
@@ -1078,6 +1210,28 @@ def reset_import_state(ss) -> None:
     ss.d83_standard_job_name = ""
     ss.d83_alt_active        = {}
     ss.d83_booking_qtys      = {}
+    ss.crew                  = None
+    ss.crew_schedule         = {}
+
+
+def _verwerfe_arbeitskopie(ss) -> None:
+    """Alles zum geladenen Entwurf aus der Sitzung nehmen.
+
+    ``reset_import_state`` räumt nur Auswahl und Jobs auf — dort folgt unmittelbar
+    eine neue Datei. Hier folgt nichts: der Entwurf gehört jetzt jemand anderem, und
+    was hier noch liegt, würde beim nächsten Speichern über dessen Arbeit schreiben.
+    """
+    reset_import_state(ss)
+    ss.draft_id = None
+    ss.d83_project = None
+    ss.d83_name = ""
+    ss.d83_groups = []
+    ss.d83_draft_setup = {}
+    ss.matches = {}
+    ss.bundles = {}
+    ss.x83_bytes = None
+    ss.excel_bytes = None
+    ss.import_filename = ""
 
 
 def start_match_bg(ss, project: GaebProject, notice: str = "") -> HTMLResponse:
@@ -1389,9 +1543,14 @@ async def import_match_progress(request: Request):
             '<div class="imp-spinner" style="margin:0 auto"></div>'
             '</div>'
         )
-    return templates.TemplateResponse(
+    # Die Personalplanung hängt am Import: eine neue Datei setzt sie zurück
+    # (reset_import_state). htmx tauscht hier aber nur die Gruppenansicht, deshalb
+    # kommt das Panel als Out-of-band-Fragment mit — sonst zeigt die Matrix daneben
+    # noch die Zeilen der vorigen Datei.
+    resp = templates.TemplateResponse(
         request, "partials/import_groups.html", _import_ctx(ss)
     )
+    return HTMLResponse(resp.body + crew_oob_html(ss).encode("utf-8"))
 
 
 # ─── Alt-Toggle ───────────────────────────────────────────────────────────────
@@ -1865,6 +2024,41 @@ async def import_ej_search(item_id: str, request: Request, q: str = ""):
     })
 
 
+@router.post("/api/import/crew-position", response_class=HTMLResponse)
+async def import_crew_position(request: Request,
+                               item_id: str = Form(...),
+                               action: str = Form("add")):
+    """„Personal über Personalplanung" an einer Position an- oder abschalten.
+
+    Antwort ist der Positionsbaum plus das Personalplanungs-Panel als
+    Out-of-band-Fragment: die Position bekommt ihr Abzeichen, und unter der Matrix
+    steht sie sofort als Zuordnungsziel — ein Austausch, zwei Ansichten.
+    """
+    ss = get_session(request.session)
+    if ss.crew is None:
+        # Planung bei Bedarf gleich mit anlegen: den Zeitraum kennt das Tool aus dem
+        # Terminplan des LV (oder aus der Projektanlage). Erst „oben Zeitraum
+        # festlegen" zu verlangen, während man unten an einer Position arbeitet,
+        # wäre ein Umweg ohne Zweck.
+        from routes.crew import start_plan_for
+        if not start_plan_for(ss):
+            return HTMLResponse(
+                '<p class="error-msg">Zeitraum der Personalplanung unbekannt — bitte '
+                'oben im Panel „3. Personalplanung" Von und Bis angeben.</p>')
+    if action == "remove":
+        n = ss.crew.remove_position(item_id)
+        if n:
+            logging.info("crew: Position %s abgewählt, %d Tage gelöst", item_id, n)
+    else:
+        if item_id not in {it.item_id for it in ss.d83_project.items}:
+            return HTMLResponse('<p class="error-msg">Position nicht gefunden.</p>')
+        ss.crew.add_position(item_id, manual=True)
+    resp = templates.TemplateResponse(
+        request, "partials/import_groups.html", _import_ctx(ss)
+    )
+    return HTMLResponse(resp.body + crew_oob_html(ss).encode("utf-8"))
+
+
 # ─── Ressourcen-Dialog ────────────────────────────────────────────────────────
 
 @router.get("/api/import/resource/dialog/{item_id}", response_class=HTMLResponse)
@@ -1938,6 +2132,37 @@ async def import_resource_search(item_id: str, request: Request, q: str = ""):
     })
 
 
+def _crew_uebernehmen(ss, item_id: str) -> bool:
+    """Eine Position der Personalplanung übergeben.
+
+    Dieselbe Wirkung wie der Knopf „📋 über Personalplanung" im Positionsbaum: die
+    Position wird Zuordnungsziel in der Matrix, und ihre Ressource erscheint dort als
+    Zeile. Personal gehört in die Planung — Menge und Termine kommen aus der Matrix,
+    nicht aus einer Pauschalmenge am Match. Wer das nicht will, klickt das Abzeichen
+    an der Position wieder weg.
+    """
+    if ss.crew is None:
+        # Zeitraum kennt das Werkzeug aus dem Terminplan des LV. Erst „oben Zeitraum
+        # festlegen" zu verlangen, während man unten an einer Position arbeitet, wäre
+        # ein Umweg ohne Zweck.
+        from routes.crew import start_plan_for
+        if not start_plan_for(ss):
+            return False
+    ss.crew.add_position(item_id, manual=True)
+    return True
+
+
+def _gruppen_mit_crew(request, ss):
+    """Positionsbaum plus Personalplanung als Out-of-band-Fragment.
+
+    Ein Austausch, zwei Ansichten: die Position bekommt ihr Abzeichen, und unter der
+    Matrix steht sie sofort als Ziel mit ihrer Ressource als Zeile.
+    """
+    resp = templates.TemplateResponse(request, "partials/import_groups.html",
+                                      _import_ctx(ss))
+    return HTMLResponse(resp.body + crew_oob_html(ss).encode("utf-8"))
+
+
 @router.post("/api/import/add-resource/{item_id}", response_class=HTMLResponse)
 async def import_add_resource(
     item_id:     str,
@@ -1969,7 +2194,8 @@ async def import_add_resource(
                 ss.matcher.add_learned_resource(item.description, resource_id)
     else:
         ss.bundles.setdefault(item_id, []).append({"resource": res, "qty": qty})
-    return templates.TemplateResponse(request, "partials/import_groups.html", _import_ctx(ss))
+    _crew_uebernehmen(ss, item_id)
+    return _gruppen_mit_crew(request, ss)
 
 
 @router.post("/api/import/set-resource/{item_id}", response_class=HTMLResponse)
@@ -1998,7 +2224,8 @@ async def import_set_resource(
         if item and item.description.strip():
             save_gui_resource_mapping(item.description, resource_id)
             ss.matcher.add_learned_resource(item.description, resource_id)
-    return templates.TemplateResponse(request, "partials/import_groups.html", _import_ctx(ss))
+    _crew_uebernehmen(ss, item_id)
+    return _gruppen_mit_crew(request, ss)
 
 
 @router.post("/api/import/set-qty/{item_id}", response_class=HTMLResponse)
@@ -2604,11 +2831,22 @@ async def _do_create_bg(
 
             def _insert_rfa(res_id: int, job_id_r: int, days: float, grp_id: int,
                             default_day_pay: float = 0.0, default_fixed_cost: float = 0.0,
-                            custom_day_pay: float | None = None):
+                            custom_day_pay: float | None = None,
+                            date_start=None, date_end=None,
+                            fixed_cost_override: float | None = None,
+                            quantity: int = 1):
                 day_pay    = custom_day_pay if custom_day_pay is not None else default_day_pay
                 fixed_cost = round(custom_day_pay * 0.9, 4) if custom_day_pay is not None else default_fixed_cost
-                total_price = round(days * day_pay, 4)
-                total_costs = round(days * fixed_cost, 4)
+                if fixed_cost_override is not None:
+                    fixed_cost = fixed_cost_override
+                # Kopfzahl: Easyjob rechnet TotalPrice = Quantity × Tage × Satz.
+                qty = max(1, int(quantity or 1))
+                # Ohne eigene Termine wie bisher: Projektstart und der Tag darauf. Die
+                # Personalplanung gibt echte mit — dort steht, wer wann arbeitet.
+                d_von = date_start or dt_start
+                d_bis = date_end or dt_end_1
+                total_price = round(qty * days * day_pay, 4)
+                total_costs = round(qty * days * fixed_cost, 4)
                 grp_val     = grp_id if grp_id else None
                 cur.execute(
                     "INSERT INTO ResourceFunctionAllocation "
@@ -2619,11 +2857,12 @@ async def _do_create_bg(
                     " TotalPrice, TotalCosts, IdTable, IdObject, "
                     " IdUserCreated, IdUserUpdated, CreationTime, UpdateTime, "
                     " Quantity, QuantityInvoice, Printable, ScheduledByEvent, IdStockType2JobGroup) "
-                    "VALUES (?, 1, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, 0, 0, ?, ?, 4, ?, ?, ?, ?, ?, 1, 1, 1, 0, ?)",
+                    "VALUES (?, 1, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, 0, 0, ?, ?, 4, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)",
                     res_id, job_id_r,
-                    dt_start, dt_end_1, days, day_pay,
+                    d_von, d_bis, days, day_pay,
                     fixed_cost, total_price, total_costs, job_id_r,
                     uid, uid, now, now,
+                    qty, qty,
                     grp_val,
                 )
 
@@ -2637,9 +2876,28 @@ async def _do_create_bg(
                 grp_id_r  = cap_to_gid.get((job_id_r, _gcap(g_cap_r)), 0) if g_cap_r else 0
                 return job_id_r, grp_id_r
 
+            # Was die Personalplanung bucht, darf das Matching nicht noch einmal
+            # buchen. Maßgeblich ist, worauf die Matrix tatsächlich Manntage legt —
+            # nicht, welche Positionen in ihr auftauchen: eine Position ohne
+            # eingetragene Tage bleibt Sache des Matchings, sonst fiele sie still weg.
+            crew_lines = crew_bookings(ss.crew) if ss.crew else []
+            crew_lines = [b for b in crew_lines if b.item_id in active_ids]
+            # Nur **Tageskosten** lösen das Matching ab. Nebenkosten können auf einer
+            # Position landen, die selbst keine Manntage trägt — etwa wenn ein
+            # Abschnitt seine Spesen ausdrücklich dorthin lenkt. Würde diese Position
+            # deshalb aus 4b fallen, bliebe ihr eigenes Personal ungebucht, und das
+            # merkt niemand.
+            crew_items = {b.item_id for b in crew_lines if b.kind == "tage"}
+            if crew_items:
+                log.append({"ok": True, "indent": False,
+                            "text": f'{len(crew_items)} Positionen kommen aus der '
+                                    f'Personalplanung ({len(crew_lines)} Einsätze)'})
+
             for item_id, mr in ss.matches.items():
                 if item_id not in active_ids:
                     continue
+                if item_id in crew_items:
+                    continue        # steht in der Matrix, wird unten gebucht
                 if not mr or not isinstance(mr.matched, _Resource):
                     continue
                 res      = mr.matched
@@ -2665,7 +2923,7 @@ async def _do_create_bg(
                     log.append({"ok": False, "text": f'[{item_obj.oz}] Ressource {res.funktion} fehlgeschlagen: {_re}', "indent": True})
 
             for item_id, bundle in ss.bundles.items():
-                if item_id not in active_ids:
+                if item_id not in active_ids or item_id in crew_items:
                     continue
                 item_obj = next((it for it in ss.d83_project.items if it.item_id == item_id), None)
                 if not item_obj:
@@ -2689,6 +2947,42 @@ async def _do_create_bg(
                         log.append({"ok": True, "text": f'[{item_obj.oz}] Bundle-Ressource: {res.funktion} × {days:.1f}d', "indent": True})
                     except Exception as _re:
                         log.append({"ok": False, "text": f'[{item_obj.oz}] Bundle-Ressource {res.funktion} fehlgeschlagen: {_re}', "indent": True})
+
+            # ── 4c. Personalplanung buchen ───────────────────────────────────
+            # Je Einsatz eine RFA mit echten Terminen: ein Block endet, wo Position
+            # oder Besetzung wechseln, und jede Person bekommt eine eigene Zeile — so
+            # legen es die Disponenten in Easyjob selbst an (tools/probe_rfa.py).
+            # Spesen, Hotel und Reisekosten laufen auf ihre eigenen Ressourcen und
+            # nicht als Zuschlag auf den Tagessatz der Techniker.
+            if crew_lines:
+                items_by_id = {it.item_id: it for it in ss.d83_project.items}
+                crew_ok = 0
+                for b in crew_lines:
+                    item_obj = items_by_id.get(b.item_id)
+                    if not item_obj:
+                        continue
+                    job_id_r, grp_id_r = _res_job_grp(item_obj)
+                    try:
+                        _insert_rfa(b.resource_id, job_id_r, b.days, grp_id_r,
+                                    custom_day_pay=b.day_pay,
+                                    fixed_cost_override=b.fixed_cost,
+                                    quantity=b.count,
+                                    date_start=b.start_dt(), date_end=b.end_dt())
+                        res_count += 1
+                        crew_ok += 1
+                        res_bookings.append({
+                            "item_id": b.item_id, "oz": item_obj.oz or "",
+                            "description": b.label or item_obj.description,
+                            "ej_group_id": grp_id_r, "resource_id": b.resource_id,
+                            "days": b.count * b.days, "day_pay": b.day_pay,
+                        })
+                    except Exception as _ce:
+                        log.append({"ok": False, "indent": True,
+                                    "text": f'[{item_obj.oz}] Personalplanung '
+                                            f'{b.label or b.kind} fehlgeschlagen: {_ce}'})
+                if crew_ok:
+                    log.append({"ok": True, "indent": True,
+                                "text": f'Personalplanung: {crew_ok} Einsätze mit Terminen'})
 
             if res_count:
                 cn.commit()

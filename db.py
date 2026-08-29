@@ -177,6 +177,78 @@ CREATE TABLE IF NOT EXISTS excel_layouts (
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMP
 );
+
+-- ── Personalplanung (Crew-Matrix) ───────────────────────────────────────────
+-- Hängt an derselben projects-Zeile wie der Import: ein Entwurf trägt die Planung
+-- genauso wie das daraus entstandene Projekt (promote_draft_to_project behält die
+-- Zeilen-ID). Die Arbeitskopie lebt bis zum Speichern in der Session.
+CREATE TABLE IF NOT EXISTS crew_plans (
+    project_id   INTEGER PRIMARY KEY REFERENCES projects(id),
+    date_from    TEXT    NOT NULL,          -- ISO, erster Tag der Matrix
+    date_to      TEXT    NOT NULL,          -- ISO, letzter Tag
+    phases_json  TEXT    NOT NULL DEFAULT '[]',
+    hotel_satz   REAL    DEFAULT 150,
+    rk_satz      REAL    DEFAULT 250,     -- unbenutzt: RK sind ein halber Tagessatz
+    spesen_id    INTEGER DEFAULT 123,     -- Arbeitsmittel „Spesensatz Inland"
+    spesen_name  TEXT    DEFAULT 'Spesensatz Inland',
+    spesen_satz  REAL    DEFAULT 32,      -- voller Satz; halber Satz ohne Übernachtung
+    hotel_id     INTEGER DEFAULT 37,      -- „Hotelkosten"
+    hotel_name   TEXT    DEFAULT 'Hotelkosten',
+    rk_id        INTEGER DEFAULT 126,     -- „Reisekosten Pauschal"
+    rk_name      TEXT    DEFAULT 'Reisekosten Pauschal',
+    rk_faktor    REAL    DEFAULT 0.5,
+    menunk_json  TEXT    DEFAULT '{}',    -- Abschnitt → Position für Nebenkosten
+    next_row_id  INTEGER DEFAULT 1,
+    positions_json TEXT  DEFAULT '[]',      -- Menüpunkte/Positionen, in Reihenfolge
+    manual_json    TEXT  DEFAULT '[]',      -- davon von Hand dazugelegt
+    dismissed_json TEXT  DEFAULT '[]',      -- abgewählte Ressourcen (Zeile gelöscht)
+    custom_json    TEXT  DEFAULT '{}',      -- selbst angelegte Menüpunkte: key → Titel
+    menupos_json   TEXT  DEFAULT '{}',      -- Standard-Positionen je Menüpunkt
+    next_custom    INTEGER DEFAULT 1,
+    pos_modes_json TEXT  DEFAULT '{}',      -- item_id → 'batch' (Sammelposition)
+    updated_at   TIMESTAMP,
+    updated_by   TEXT
+);
+
+-- Eine Zeile = eine Ressource. Sätze sind Kopien aus `personal`: eine spätere
+-- Preispflege in Easyjob darf eine abgegebene Kalkulation nicht rückwirkend ändern.
+CREATE TABLE IF NOT EXISTS crew_rows (
+    id            INTEGER NOT NULL,          -- planweite ID (CrewPlan.next_row_id)
+    project_id    INTEGER NOT NULL REFERENCES crew_plans(project_id),
+    group_key     TEXT    NOT NULL DEFAULT '',   -- Menüpunkt (item_id oder eigen:N)
+    label         TEXT    NOT NULL,
+    resource_id   INTEGER NOT NULL,          -- personal.id = EJ IdResourceFunction
+    tagessatz     REAL    DEFAULT 0,
+    eigenkosten   REAL    DEFAULT 0,
+    spesen_satz   REAL    DEFAULT 0,
+    hotel_naechte INTEGER DEFAULT 0,
+    hotel_satz    REAL    DEFAULT 0,     -- 0 = Preis der Planung gilt
+    rk_anzahl     INTEGER DEFAULT 0,
+    rk_satz       REAL    DEFAULT 0,     -- 0 = halber Tagessatz der Zeile
+    sort_order    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (project_id, id)
+);
+
+-- Positions-Zuordnung als zusammenhängende Blöcke. In der Anwendung liegt sie
+-- tageweise (CrewRow.assign) — hier wird zusammengefasst, weil zwei Wochen Aufbau
+-- auf einer Pauschale ein Block sind und nicht vierzehn Zeilen.
+CREATE TABLE IF NOT EXISTS crew_segments (
+    project_id INTEGER NOT NULL,
+    row_id     INTEGER NOT NULL,            -- crew_rows(project_id, id)
+    day_from   TEXT    NOT NULL,
+    day_to     TEXT    NOT NULL,
+    item_id    TEXT    NOT NULL,            -- GaebItem.item_id der LV-Position
+    PRIMARY KEY (project_id, row_id, day_from)
+);
+
+-- Besetzung je Zeile und Tag. Nur belegte Tage stehen hier.
+CREATE TABLE IF NOT EXISTS crew_cells (
+    project_id INTEGER NOT NULL,
+    row_id     INTEGER NOT NULL,
+    day        TEXT    NOT NULL,             -- ISO-Datum
+    persons    INTEGER NOT NULL,             -- ganze Personen, > 0
+    PRIMARY KEY (project_id, row_id, day)
+);
 """
 
 
@@ -187,6 +259,32 @@ def init_db() -> None:
         # Migration: Spalten die in älteren DBs fehlen könnten
         for sql in [
             "ALTER TABLE projects ADD COLUMN gaeb_bytes BLOB",
+            "ALTER TABLE crew_plans ADD COLUMN pos_modes_json TEXT DEFAULT '{}'",
+            "ALTER TABLE crew_plans ADD COLUMN positions_json TEXT DEFAULT '[]'",
+            "ALTER TABLE crew_plans ADD COLUMN custom_json TEXT DEFAULT '{}'",
+            "ALTER TABLE crew_plans ADD COLUMN next_custom INTEGER DEFAULT 1",
+            "ALTER TABLE crew_plans ADD COLUMN manual_json TEXT DEFAULT '[]'",
+            "ALTER TABLE crew_plans ADD COLUMN dismissed_json TEXT DEFAULT '[]'",
+            "ALTER TABLE crew_plans ADD COLUMN menupos_json TEXT DEFAULT '{}'",
+            "ALTER TABLE crew_plans ADD COLUMN spesen_id INTEGER DEFAULT 123",
+            "ALTER TABLE crew_plans ADD COLUMN spesen_name TEXT DEFAULT 'Spesensatz Inland'",
+            "ALTER TABLE crew_plans ADD COLUMN spesen_satz REAL DEFAULT 32",
+            "ALTER TABLE crew_plans ADD COLUMN rk_faktor REAL DEFAULT 0.5",
+            "ALTER TABLE crew_plans ADD COLUMN menunk_json TEXT DEFAULT '{}'",
+            "ALTER TABLE crew_rows ADD COLUMN hotel_satz REAL DEFAULT 0",
+            "ALTER TABLE crew_rows ADD COLUMN rk_satz REAL DEFAULT 0",
+            "ALTER TABLE crew_plans ADD COLUMN hotel_id INTEGER DEFAULT 37",
+            "ALTER TABLE crew_plans ADD COLUMN hotel_name TEXT "
+            "DEFAULT 'Hotelkosten'",
+            # Entwürfe, die noch auf „Hotelkosten eigenes Personal" zeigen,
+            # mitziehen: gebucht werden soll nur auf „Hotelkosten" (37).
+            "UPDATE crew_plans SET hotel_id = 37, hotel_name = 'Hotelkosten' "
+            "WHERE hotel_id = 167",
+            "ALTER TABLE crew_plans ADD COLUMN rk_id INTEGER DEFAULT 126",
+            "ALTER TABLE crew_plans ADD COLUMN rk_name TEXT "
+            "DEFAULT 'Reisekosten Pauschal'",
+            # Die Gliederung folgt jetzt den Menüpunkten statt einem freien Gewerk-Feld.
+            "ALTER TABLE crew_rows ADD COLUMN group_key TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE project_bookings ADD COLUMN unit_price REAL DEFAULT 0",
             "ALTER TABLE articles ADD COLUMN ej_id INTEGER DEFAULT 0",
             "ALTER TABLE personal ADD COLUMN eigenkosten REAL DEFAULT 0",
@@ -810,7 +908,237 @@ def get_project_bookings(project_id: int) -> list[dict]:
 def delete_project(project_id: int) -> None:
     with get_conn() as conn:
         conn.execute("DELETE FROM project_bookings WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM crew_cells       WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM crew_segments    WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM crew_rows        WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM crew_plans       WHERE project_id = ?", (project_id,))
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+
+
+# ── Personalplanung ───────────────────────────────────────────────────────────
+
+def _segments_of(assign: dict) -> list[dict]:
+    """Tageweise Zuordnung zu zusammenhängenden Blöcken zusammenfassen.
+
+    Aufeinanderfolgende Kalendertage mit derselben Position werden ein Block; eine
+    Lücke (Tag ohne Zuordnung) trennt. Ohne dieses Zusammenfassen stünden zwei Wochen
+    Aufbau als vierzehn Datensätze in der DB statt als einer.
+    """
+    from datetime import date as _date, timedelta as _td
+
+    out: list[dict] = []
+    for day in sorted(assign):
+        item = assign[day]
+        if not item:
+            continue
+        if out and out[-1]["item_id"] == item:
+            try:
+                letzter = _date.fromisoformat(out[-1]["to"])
+                if _date.fromisoformat(day) == letzter + _td(days=1):
+                    out[-1]["to"] = day
+                    continue
+            except ValueError:
+                pass
+        out.append({"from": day, "to": day, "item_id": item})
+    return out
+
+
+def _assign_of(segments) -> dict[str, str]:
+    """Blöcke zurück in die tageweise Zuordnung auflösen."""
+    from datetime import date as _date, timedelta as _td
+
+    out: dict[str, str] = {}
+    for s in segments:
+        try:
+            tag, ende = _date.fromisoformat(s["day_from"]), _date.fromisoformat(s["day_to"])
+        except (ValueError, TypeError):
+            continue
+        while tag <= ende:
+            out[tag.isoformat()] = s["item_id"]
+            tag += _td(days=1)
+    return out
+
+
+def save_crew_plan(project_id: int, plan: dict | None, user_name: str = "") -> None:
+    """Schreibt eine Planung (Dict aus ``CrewPlan.to_dict()``) zum Projekt.
+
+    Ersetzend statt zusammenführend: die Planung ist klein (Zeilen × belegte Tage),
+    und ein Abgleich einzelner Zellen würde gelöschte Zeilen stehen lassen.
+    ``plan=None`` löscht die Planung.
+    """
+    with get_conn() as conn:
+        conn.execute("DELETE FROM crew_cells    WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM crew_segments WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM crew_rows     WHERE project_id = ?", (project_id,))
+        if not plan:
+            conn.execute("DELETE FROM crew_plans WHERE project_id = ?", (project_id,))
+            return
+        conn.execute(
+            "INSERT INTO crew_plans (project_id, date_from, date_to, phases_json, "
+            "  hotel_satz, rk_satz, next_row_id, positions_json, pos_modes_json, "
+            "  custom_json, next_custom, manual_json, dismissed_json, menupos_json, "
+            "  spesen_id, spesen_name, spesen_satz, rk_faktor, menunk_json, "
+            "  hotel_id, hotel_name, rk_id, rk_name, "
+            "  updated_at, updated_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "        ?, ?, ?, ?, CURRENT_TIMESTAMP, ?) "
+            "ON CONFLICT(project_id) DO UPDATE SET "
+            "  date_from=excluded.date_from, date_to=excluded.date_to, "
+            "  phases_json=excluded.phases_json, hotel_satz=excluded.hotel_satz, "
+            "  rk_satz=excluded.rk_satz, next_row_id=excluded.next_row_id, "
+            "  positions_json=excluded.positions_json, "
+            "  pos_modes_json=excluded.pos_modes_json, "
+            "  custom_json=excluded.custom_json, next_custom=excluded.next_custom, "
+            "  manual_json=excluded.manual_json, dismissed_json=excluded.dismissed_json, "
+            "  menupos_json=excluded.menupos_json, spesen_id=excluded.spesen_id, "
+            "  spesen_name=excluded.spesen_name, spesen_satz=excluded.spesen_satz, "
+            "  rk_faktor=excluded.rk_faktor, menunk_json=excluded.menunk_json, "
+            "  hotel_id=excluded.hotel_id, hotel_name=excluded.hotel_name, "
+            "  rk_id=excluded.rk_id, rk_name=excluded.rk_name, "
+            "  updated_at=CURRENT_TIMESTAMP, updated_by=excluded.updated_by",
+            (project_id, plan.get("date_from", ""), plan.get("date_to", ""),
+             json.dumps(plan.get("phases") or [], ensure_ascii=False),
+             float(plan.get("hotel_satz") or 0), float(plan.get("rk_satz") or 0),
+             int(plan.get("next_row_id") or 1),
+             json.dumps(plan.get("positions") or [], ensure_ascii=False),
+             json.dumps(plan.get("pos_modes") or {}, ensure_ascii=False),
+             json.dumps(plan.get("custom_titles") or {}, ensure_ascii=False),
+             int(plan.get("next_custom") or 1),
+             json.dumps(plan.get("manual") or [], ensure_ascii=False),
+             json.dumps(plan.get("dismissed") or [], ensure_ascii=False),
+             json.dumps(plan.get("menu_positions") or {}, ensure_ascii=False),
+             int(plan.get("spesen_id") or 0), plan.get("spesen_name") or "",
+             float(plan.get("spesen_satz") or 0), float(plan.get("rk_faktor") or 0),
+             json.dumps(plan.get("menu_nk_pos") or {}, ensure_ascii=False),
+             int(plan.get("hotel_id") or 0), plan.get("hotel_name") or "",
+             int(plan.get("rk_id") or 0), plan.get("rk_name") or "", user_name),
+        )
+        rows = plan.get("rows") or []
+        conn.executemany(
+            "INSERT INTO crew_rows (id, project_id, group_key, label, resource_id, "
+            "  tagessatz, eigenkosten, hotel_naechte, hotel_satz, rk_anzahl, "
+            "  rk_satz, sort_order) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [(int(r["id"]), project_id, r.get("group_key") or "", r.get("label") or "",
+              int(r.get("resource_id") or 0), float(r.get("tagessatz") or 0),
+              float(r.get("eigenkosten") or 0),
+              int(r.get("hotel_naechte") or 0), float(r.get("hotel_satz") or 0),
+              int(r.get("rk_anzahl") or 0), float(r.get("rk_satz") or 0),
+              int(r.get("sort_order") or 0)) for r in rows],
+        )
+        conn.executemany(
+            "INSERT INTO crew_cells (project_id, row_id, day, persons) VALUES (?, ?, ?, ?)",
+            [(project_id, int(r["id"]), day, int(n))
+             for r in rows for day, n in (r.get("cells") or {}).items() if int(n or 0) > 0],
+        )
+        conn.executemany(
+            "INSERT INTO crew_segments (project_id, row_id, day_from, day_to, item_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [(project_id, int(r["id"]), s["from"], s["to"], s["item_id"])
+             for r in rows for s in _segments_of(r.get("assign") or {})],
+        )
+
+
+def _spalte(row, name: str, vorgabe):
+    """Spaltenwert lesen, der in älteren DBs fehlen kann."""
+    try:
+        wert = row[name]
+    except (IndexError, KeyError):
+        return vorgabe
+    return vorgabe if wert is None else wert
+
+
+def _json_obj(row, spalte: str) -> dict:
+    """JSON-Objekt aus einer Spalte lesen, die in älteren DBs fehlen kann."""
+    try:
+        wert = json.loads(row[spalte] or "{}")
+        return wert if isinstance(wert, dict) else {}
+    except (ValueError, TypeError, IndexError, KeyError):
+        return {}
+
+
+def _json_list(row, spalte: str) -> list:
+    """JSON-Liste aus einer Spalte lesen, die in älteren DBs fehlen kann."""
+    try:
+        return json.loads(row[spalte] or "[]")
+    except (ValueError, TypeError, IndexError, KeyError):
+        return []
+
+
+def load_crew_plan(project_id: int) -> dict | None:
+    """Gibt die gespeicherte Planung als Dict für ``CrewPlan.from_dict()`` zurück."""
+    with get_conn() as conn:
+        head = conn.execute(
+            "SELECT * FROM crew_plans WHERE project_id = ?", (project_id,)
+        ).fetchone()
+        if not head:
+            return None
+        rows = conn.execute(
+            "SELECT * FROM crew_rows WHERE project_id = ? ORDER BY sort_order, id",
+            (project_id,),
+        ).fetchall()
+        cells = conn.execute(
+            "SELECT row_id, day, persons FROM crew_cells WHERE project_id = ?",
+            (project_id,),
+        ).fetchall()
+        segs = conn.execute(
+            "SELECT row_id, day_from, day_to, item_id FROM crew_segments "
+            "WHERE project_id = ? ORDER BY day_from",
+            (project_id,),
+        ).fetchall()
+
+    by_row: dict[int, dict] = {}
+    for c in cells:
+        by_row.setdefault(int(c["row_id"]), {})[c["day"]] = int(c["persons"])
+
+    seg_by_row: dict[int, list] = {}
+    for s in segs:
+        seg_by_row.setdefault(int(s["row_id"]), []).append(dict(s))
+
+    try:
+        phases = json.loads(head["phases_json"] or "[]")
+    except (ValueError, TypeError):
+        phases = []
+
+    try:
+        pos_modes = json.loads(head["pos_modes_json"] or "{}")
+    except (ValueError, TypeError, IndexError, KeyError):
+        pos_modes = {}
+    try:
+        positions = json.loads(head["positions_json"] or "[]")
+    except (ValueError, TypeError, IndexError, KeyError):
+        positions = []
+    try:
+        custom = json.loads(head["custom_json"] or "{}")
+    except (ValueError, TypeError, IndexError, KeyError):
+        custom = {}
+
+    return {
+        "v": 1,
+        "date_from": head["date_from"], "date_to": head["date_to"],
+        "hotel_satz": head["hotel_satz"], "rk_satz": head["rk_satz"],
+        "next_row_id": head["next_row_id"], "phases": phases,
+        "positions": positions,
+        "manual": _json_list(head, "manual_json"),
+        "dismissed": _json_list(head, "dismissed_json"),
+        "pos_modes": pos_modes,
+        "custom_titles": custom,
+        "menu_positions": _json_obj(head, "menupos_json"),
+        "menu_nk_pos": _json_obj(head, "menunk_json"),
+        "spesen_id": _spalte(head, "spesen_id", 123),
+        "spesen_name": _spalte(head, "spesen_name", "Spesensatz Inland"),
+        "spesen_satz": _spalte(head, "spesen_satz", 32.0),
+        "rk_faktor": _spalte(head, "rk_faktor", 0.5),
+        "hotel_id": _spalte(head, "hotel_id", 37),
+        "hotel_name": _spalte(head, "hotel_name", "Hotelkosten"),
+        "rk_id": _spalte(head, "rk_id", 126),
+        "rk_name": _spalte(head, "rk_name", "Reisekosten Pauschal"),
+        "next_custom": (head["next_custom"] if "next_custom" in head.keys() else 1) or 1,
+        "rows": [{**dict(r),
+                  "cells": by_row.get(int(r["id"]), {}),
+                  "assign": _assign_of(seg_by_row.get(int(r["id"]), []))}
+                 for r in rows],
+    }
 
 
 # ── Import-Entwürfe (Zwischenspeichern vor dem Hochladen) ─────────────────────

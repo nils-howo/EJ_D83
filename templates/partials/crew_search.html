@@ -1,0 +1,16 @@
+{# Ressourcensuche. Steht bewusst AUSSERHALB von #crew-panel: das Panel wird bei
+   jeder Änderung als Ganzes getauscht, und läge die Suche darin, verschwände sie
+   beim Hinzufügen einer Ressource kurz samt Trefferliste und Eingabefokus — das
+   sichtbare Flackern. Hier bleibt sie stehen, und man kann mehrere Ressourcen
+   hintereinander hinzufügen. #}
+<div id="crew-search" class="crew-search" hidden>
+  <div class="crew-search-head">
+    <input type="text" id="crew-add-q" placeholder="Ressource suchen …" autocomplete="off"
+           hx-get="/api/crew/resource/search" hx-target="#crew-search-results"
+           hx-trigger="keyup changed delay:250ms, load" name="q">
+    <span class="crew-search-note" id="crew-search-note">
+      Neue Zeilen landen unter dem oben gewählten Menüpunkt
+    </span>
+  </div>
+  <div class="ej-table-wrap" id="crew-search-results"></div>
+</div>

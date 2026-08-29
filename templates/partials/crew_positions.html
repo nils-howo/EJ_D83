@@ -1,0 +1,132 @@
+{# Positionen und Menüpunkte als Chips — gleichzeitig Palette und Kontext.
+
+   Linksklick wählt: die gewählte Position ist danach das Ziel für alles, was man
+   tut. Manntage, die man in eine Zelle tippt, laufen auf sie; eine neu angelegte
+   Ressource wird unter ihr einsortiert; im Band überstreichen ordnet Tagesblöcke zu.
+   Rechtsklick schaltet zwischen Menüpunkt und Sammelposition.
+
+   Menüpunkt = eigene Überschrift in der Matrix, eigene Gruppe in Easyjob.
+   Sammelposition = hängt am Menüpunkt darüber und läuft in dessen Gruppe. #}
+{% macro eur(v) %}{{ "{:,.0f}".format(v|round(0)|int).replace(",", ".") }} €{% endmacro %}
+
+<div class="crew-pos" id="crew-pos">
+  <div class="crew-pos-head">
+    <span class="crew-pos-title">Positionen</span>
+    <span class="crew-pos-hint" id="crew-pos-hint">
+      {%- if crew_positions -%}
+      Anklicken wählt das Ziel · Rechtsklick macht daraus einen eigenen Abschnitt
+      {%- else -%}
+      Noch keine Position — gematchtes Personal erscheint hier von selbst
+      {%- endif -%}
+    </span>
+    {% if crew_unassigned %}
+    <span class="crew-pos-warn" title="Diese Manntage sind geplant, laufen aber auf keine Position — sie würden in keinem Preis auftauchen.">
+      ⚠ {{ crew_unassigned|sum(attribute='mt') }} Manntage ohne Position
+      <button type="button" class="crew-warn-btn"
+              hx-post="/api/crew/assign-open" hx-target="#crew-panel" hx-swap="outerHTML"
+              hx-vals='js:{"item_id": window.crewActivePos(), "row_id": 0}'
+              title="Alle offenen Tage der oben gewählten Position zuschlagen. Schon zugeordnete Tage bleiben unberührt.">
+        → der gewählten Position
+      </button>
+    </span>
+    {% endif %}
+  </div>
+
+  <div class="crew-chips">
+    {% for p in crew_positions %}
+    <button type="button"
+            class="crew-chip{{ ' crew-chip-menu' if p.mode == 'menu' }}{{ ' crew-chip-warn' if p.fehlt }}"
+            data-item-id="{{ p.item_id }}" data-mode="{{ p.mode }}"
+            title="{{ p.desc }}&#10;{{ 'Eigener Abschnitt in der Matrix' if p.mode == 'menu' else 'Zuordnungsziel — ohne eigenen Abschnitt' }}&#10;Rechtsklick zum Umschalten">
+      <span class="crew-chip-dot" style="background:{{ p.color }}"></span>
+      {% if p.mode == 'menu' %}<span class="crew-chip-arrow" title="eigener Abschnitt">▸</span>{% endif %}
+      <span class="crew-chip-oz mono">{{ p.oz or '—' }}</span>
+      <span class="crew-chip-name">{{ p.desc[:34] }}</span>
+      {% if p.mt %}<span class="crew-chip-mt mono">{{ p.mt }} MT</span>{% endif %}
+      {% if not p.menge_ok %}<span class="crew-chip-flag" title="Menge weicht von der Forderung des LV ab">≠</span>{% endif %}
+    </button>
+    {% endfor %}
+
+    <button type="button" class="crew-chip crew-chip-erase" data-item-id="" data-mode="menu"
+            title="Radierer: gewählt, dann im Band überstreichen — hebt die Zuordnung auf">
+      <span class="crew-chip-dot crew-chip-dot-erase"></span> Zuordnung löschen
+    </button>
+  </div>
+
+  {% if crew.phases and crew_positions %}
+  <div class="crew-pos-fill">
+    Offene Tage einer Phase auf die gewählte Position legen:
+    {% for ph in crew.phases %}
+    <button type="button" class="btn btn-flat btn-sm crew-fill-btn" data-phase="{{ loop.index0 }}"
+            title="Alle besetzten, noch nicht zugeordneten Tage von „{{ ph.name }}“ — über alle Zeilen">
+      {{ ph.name }}
+    </button>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if crew_positions %}
+  <details class="crew-pos-details">
+    <summary>Soll / Ist je Position</summary>
+    <div class="tbl-scroll">
+      <table class="crew-pos-table">
+        <thead>
+          <tr>
+            <th>OZ</th><th>Position</th><th>Art</th>
+            <th class="crew-pos-num">gefordert</th>
+            <th class="crew-pos-num">geplant</th>
+            <th class="crew-pos-num">Zeilen</th>
+            <th class="crew-pos-num crew-cost">Kosten</th>
+            <th class="crew-pos-num crew-cost">EP-Vorschlag</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for p in crew_positions %}
+          <tr class="crew-pos-row{{ ' crew-pos-batch' if p.mode == 'batch' }}" data-item-id="{{ p.item_id }}">
+            <td class="mono crew-pos-c-oz" style="color:{{ p.color }}">{{ p.oz or '—' }}</td>
+            <td class="crew-pos-desc">
+              {% if p.mode == 'batch' %}<span class="crew-pos-arrow" title="hängt an {{ p.parent_oz or 'nichts' }}">↳</span>{% endif %}
+              {{ p.desc[:90] }}
+              {% if p.fehlt %}<span class="crew-pos-badge crew-pos-badge-warn">nicht mehr im LV</span>{% endif %}
+            </td>
+            <td class="crew-pos-c-mode">
+              <button type="button" class="crew-mode-btn{{ ' crew-mode-on' if p.mode == 'menu' }}"
+                      hx-post="/api/crew/pos/mode" hx-target="#crew-panel" hx-swap="outerHTML"
+                      hx-vals='{"item_id": {{ p.item_id|tojson }}, "mode": "{{ 'batch' if p.mode == 'menu' else 'menu' }}"}'>
+                {{ 'Abschnitt' if p.mode == 'menu' else 'nur Ziel' }}
+              </button>
+            </td>
+            <td class="crew-pos-num mono">
+              {%- if p.pauschal %}pausch.{% else %}{{ '%g'|format(p.soll) }} {{ p.unit }}{% endif -%}
+            </td>
+            <td class="crew-pos-num mono">{{ p.mt }} MT</td>
+            <td class="crew-pos-num mono">{{ p.rows or '—' }}</td>
+            <td class="crew-pos-num mono crew-cost">{{ eur(p.cost) if p.cost else '—' }}</td>
+            <td class="crew-pos-num mono crew-cost">
+              {%- if p.ep -%}<b>{{ eur(p.ep) }}</b>{% if not p.pauschal %} / {{ p.unit }}{% endif %}
+              {%- else -%}—{%- endif -%}
+            </td>
+            <td class="crew-pos-c-act">
+              <button type="button" class="crew-x crew-pos-mv" title="nach oben"
+                      hx-post="/api/crew/pos/move" hx-target="#crew-panel" hx-swap="outerHTML"
+                      hx-vals='{"item_id": {{ p.item_id|tojson }}, "delta": -1}'
+                      {% if loop.first %}disabled{% endif %}>↑</button>
+              <button type="button" class="crew-x crew-pos-mv" title="nach unten"
+                      hx-post="/api/crew/pos/move" hx-target="#crew-panel" hx-swap="outerHTML"
+                      hx-vals='{"item_id": {{ p.item_id|tojson }}, "delta": 1}'
+                      {% if loop.last %}disabled{% endif %}>↓</button>
+              <button type="button" class="crew-x" title="aus der Planung nehmen"
+                      hx-post="/api/crew/pos/remove" hx-target="#crew-panel" hx-swap="outerHTML"
+                      hx-vals='{"item_id": {{ p.item_id|tojson }}}'
+                      hx-confirm="{{ p.oz }} aus der Planung nehmen?{% if p.mt %} Die {{ p.mt }} zugeordneten Manntage stehen danach als offen da.{% endif %}">×</button>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+  {% endif %}
+
+</div>

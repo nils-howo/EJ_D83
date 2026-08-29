@@ -1,0 +1,23 @@
+{# Die Kennzahlenzeile über der Positionsliste. Eigene Vorlage, weil sie auch dann
+   frisch sein muss, wenn nicht die Liste getauscht wird: die Personalplanung ändert
+   die Personalkosten, tauscht aber nur ihre eigene Matrix. Sie kommt dann als
+   Out-of-band-Stück mit (`metrics_oob_html` in routes/import_.py).
+
+   Die Hülle steht immer — ohne sie fände ein späterer Austausch sein Ziel nicht. #}
+<div class="metrics-row" id="imp-metrics" style="margin-bottom:8px"{% if metrics_oob %} hx-swap-oob="true"{% endif %}>
+{% if imp_metrics and imp_metrics.total %}
+  <div class="metric-card"><div class="metric-val">{{ imp_metrics.total }}</div><div class="metric-lbl">Positionen</div></div>
+  <div class="metric-card"><div class="metric-val">{{ imp_metrics.matched }}/{{ imp_metrics.total }}</div><div class="metric-lbl">Zugeordnet</div></div>
+  <div class="metric-card"><div class="metric-val">{{ imp_metrics.confident }}</div><div class="metric-lbl">Sicher (≥85%)</div></div>
+  <div class="metric-card"><div class="metric-val" style="color:#1a237e">{{ imp_metrics.art_count }}</div><div class="metric-lbl">Artikel</div></div>
+  <div class="metric-card" title="Zugeordnete Ressourcen — Personal, Arbeitsmittel und Fahrzeuge"><div class="metric-val" style="color:#5c35b0">{{ imp_metrics.res_count }}</div><div class="metric-lbl">Ressourcen</div></div>
+  <div class="metric-card"><div class="metric-val" style="color:#5c35b0">{{ ('%g'|format(einsatztage))|replace('.', ',') }}</div><div class="metric-lbl">Einsatztage</div></div>
+  {% if imp_metrics.cost_mat %}<div class="metric-card" title="Näherung ohne Set-Zubehör (Stücklisten-Komponenten, die EJ beim Buchen automatisch mit eigenem Preis ergänzt). Die exakte Summe steht nach dem Import in EJ."><div class="metric-val" style="font-size:1rem">ca. {{ "%.0f €"|format(imp_metrics.cost_mat) }}</div><div class="metric-lbl">Mat.-Kosten</div></div>{% endif %}
+  {# Fahrzeuge stehen im Stamm neben dem Personal und liefen bisher in derselben
+     Zahl mit — ein LKW in den „Personalkosten" ist beim Gegenrechnen nicht zu
+     finden. Getrennt ausgewiesen. #}
+  {% if imp_metrics.cost_pers %}<div class="metric-card" title="Personal samt Spesen, Hotel und Reisekosten — ohne Fahrzeuge und ohne Pauschalen wie Handling oder Rüstkosten"><div class="metric-val" style="font-size:1rem">{{ "%.0f €"|format(imp_metrics.cost_pers) }}</div><div class="metric-lbl">Pers.-Kosten</div></div>{% endif %}
+  {% if imp_metrics.cost_trans %}<div class="metric-card" title="Ressourcen der Art Fahrzeug"><div class="metric-val" style="font-size:1rem">{{ "%.0f €"|format(imp_metrics.cost_trans) }}</div><div class="metric-lbl">Transport</div></div>{% endif %}
+  {% if imp_metrics.cost_sonst %}<div class="metric-card" title="Arbeitsmittel, die weder Personal noch Fahrzeug sind — Handling, Rüstkosten, Pauschalen"><div class="metric-val" style="font-size:1rem">{{ "%.0f €"|format(imp_metrics.cost_sonst) }}</div><div class="metric-lbl">Sonstiges</div></div>{% endif %}
+{% endif %}
+</div>

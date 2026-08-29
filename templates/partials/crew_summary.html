@@ -1,0 +1,14 @@
+{# Kennzahlen in der Kopfzeile des Personalplanungs-Panels. Steht außerhalb von
+   #crew-panel (im <summary>), wird deshalb bei jedem Panel-Tausch als
+   Out-of-band-Fragment mitgeschickt — sonst bliebe dort „noch nicht angelegt"
+   stehen, während die Matrix darunter schon gefüllt ist. #}
+<span id="crew-summary-meta" class="crew-summary-meta"{% if crew_oob %} hx-swap-oob="true"{% endif %}>
+  {%- if crew and crew_totals.rows -%}
+  {{ crew_totals.rows }} Zeile{{ 'n' if crew_totals.rows != 1 }} · {{ crew_totals.manntage }} Manntage
+  <span class="crew-cost">· {{ "{:,.0f}".format(crew_totals.summe|round(0)|int).replace(",", ".") }} €</span>
+  {%- elif crew -%}
+  Zeitraum steht · noch keine Zeilen
+  {%- else -%}
+  noch nicht angelegt
+  {%- endif -%}
+</span>

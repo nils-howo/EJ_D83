@@ -1,0 +1,373 @@
+{# Personalplanung (Crew-Matrix). Erwartet den Kontext aus routes/crew.py:crew_ctx().
+   Das ganze Panel wird als Einheit getauscht (hx-target="#crew-panel"), außer beim
+   Tippen in den Zellen — das läuft über /api/crew/cell und aktualisiert nur die
+   Summen, damit der Eingabefokus stehen bleibt. #}
+{% macro eur(v) %}{{ "{:,.0f}".format(v|round(0)|int).replace(",", ".") }} €{% endmacro %}
+
+{% if crew_oob %}{% include "partials/crew_summary.html" %}{% endif %}
+<div id="crew-panel"{% if crew_panel_oob %} hx-swap-oob="true"{% endif %}>
+{% if not crew %}
+
+  {# ── Startzustand: Zeitachse festlegen ─────────────────────────────────── #}
+  <div class="crew-empty">
+    <p class="crew-empty-lead">
+      Die Personalplanung ersetzt die Excel-Personalliste: eine Zeile je Ressource,
+      eine Spalte je Tag, in der Zelle die Personenzahl.
+    </p>
+    {% if crew_lv_schedule %}
+    <div class="crew-detect">
+      <div class="crew-detect-head">Aus dem Leistungsverzeichnis gelesen</div>
+      <div class="crew-detect-phases">
+        {% for ph in crew_lv_schedule.phases %}
+        <span class="crew-detect-phase">
+          <b>{{ ph.name }}</b>
+          <span class="mono">{{ ph.day_from[8:10] }}.{{ ph.day_from[5:7] }}. – {{ ph.day_to[8:10] }}.{{ ph.day_to[5:7] }}.</span>
+        </span>
+        {% endfor %}
+      </div>
+      <div class="crew-detect-note">
+        Steht im Klartext in den Vorbemerkungen. Bitte gegenprüfen — die Zeiten werden
+        aus dem Text gelesen, nicht aus einem Feld.
+      </div>
+    </div>
+    {% endif %}
+    <form hx-post="/api/crew/range" hx-target="#crew-panel" hx-swap="outerHTML"
+          class="crew-range-form">
+      <label>Von
+        <input type="date" name="date_from" value="{{ crew_default_range['from'] }}" required>
+      </label>
+      <label>Bis
+        <input type="date" name="date_to" value="{{ crew_default_range['to'] }}"
+               min="{{ crew_default_range['from'] }}" required>
+      </label>
+      <button type="submit" class="btn-primary">Planung beginnen</button>
+      {% if crew_default_range.get('quelle') == 'lv' %}
+      <span class="crew-detect-src">Zeitraum aus dem LV übernommen</span>
+      {% endif %}
+    </form>
+    {% if crew_lv_count %}
+    <p class="crew-empty-hint">
+      Im Leistungsverzeichnis stehen <b>{{ crew_lv_count }}</b> Personalposition{{ 'en' if crew_lv_count != 1 }}.
+      Sie erscheinen sofort als Menüpunkte mit ihren Ressourcen — ohne weiteren Klick.
+    </p>
+    {% endif %}
+  </div>
+
+{% else %}
+
+  {# ── Kopfleiste ────────────────────────────────────────────────────────── #}
+  <div class="crew-bar">
+    <form hx-post="/api/crew/range" hx-target="#crew-panel" hx-swap="outerHTML"
+          class="crew-range-form crew-range-inline">
+      <input type="date" name="date_from" value="{{ crew.date_from }}"
+             hx-post="/api/crew/range" hx-target="#crew-panel" hx-swap="outerHTML"
+             hx-include="closest form" hx-trigger="change">
+      <span class="crew-range-dash">–</span>
+      <input type="date" name="date_to" value="{{ crew.date_to }}"
+             min="{{ crew.date_from }}"
+             hx-post="/api/crew/range" hx-target="#crew-panel" hx-swap="outerHTML"
+             hx-include="closest form" hx-trigger="change">
+    </form>
+
+    {# Nebenkosten. Gewählt wird nur der Spesensatz — den gibt es je Land, und welches
+       gilt, entscheidet sich am Projekt. Hotel und Reisekosten haben in der
+       Angebotsphase je nur eine Ressource, die stehen fest (crew_plan.py). Gebucht
+       wird in Easyjob auf genau diese Ressourcen und nicht als Zuschlag auf den
+       Tagessatz der Techniker. #}
+    <details class="crew-spesen">
+      <summary title="Spesen: voller Satz für Tage mit Übernachtung, halber für Tage ohne">
+        {{ crew.spesen_name }} <span class="mono">{{ crew.spesen_satz|de_num }} €</span>
+      </summary>
+      <div hx-get="/api/crew/kosten/list?art=spesen" hx-trigger="load"
+           hx-swap="innerHTML"></div>
+    </details>
+
+    <label class="crew-hotelsatz"
+           title="Preis je Hotelnacht, gilt für die ganze Planung. Gebucht wird auf {{ crew.hotel_name }}.">
+      Hotel
+      <input type="text" inputmode="decimal" name="value" value="{{ crew.hotel_satz|de_num }}"
+             aria-label="Preis je Hotelnacht"
+             hx-post="/api/crew/hotelsatz" hx-target="#crew-panel" hx-swap="outerHTML"
+             hx-trigger="change"> €
+    </label>
+
+    <div class="crew-metrics">
+      <span><b id="crew-tot-rows">{{ crew_totals.rows }}</b> Zeilen</span>
+      <span><b id="crew-tot-mt">{{ crew_totals.manntage }}</b> Manntage</span>
+      <span class="crew-cost"><b id="crew-tot-sum">{{ eur(crew_totals.summe) }}</b></span>
+      <span>Spitze <b id="crew-tot-peak">{{ crew_totals.peak }}</b> Pers.</span>
+    </div>
+
+    <div class="crew-actions">
+      {# Zwei Varianten aus denselben Daten. Die Kundenversion ohne Preise geht als
+         Beilage mit der Ausschreibung raus, die Kalkulation bleibt im Haus — die
+         Variante steckt deshalb auch im Dateinamen. #}
+      <details class="crew-spesen crew-export">
+        <summary title="Die Planung als Datei">Export</summary>
+        <div class="crew-spesen-list">
+          <a class="crew-spesen-opt" href="/api/crew/export/pdf?variante=kunde"
+             title="Nur die Besetzung, keine Sätze und Beträge — Beilage zur Ausschreibung">
+            <span class="crew-spesen-name">PDF · Kundenversion</span>
+          </a>
+          <a class="crew-spesen-opt" href="/api/crew/export/pdf?variante=kalkulation"
+             title="Mit Tagessatz, Spesen, Hotel, Reisen und Summen">
+            <span class="crew-spesen-name">PDF · Kalkulation</span>
+          </a>
+          <a class="crew-spesen-opt" href="/api/crew/export/xlsx?variante=kunde"
+             title="Nur die Besetzung, als Tabelle zum Weiterarbeiten">
+            <span class="crew-spesen-name">Excel · Kundenversion</span>
+          </a>
+          <a class="crew-spesen-opt" href="/api/crew/export/xlsx?variante=kalkulation"
+             title="Mit Formeln — wer eine Zahl ändert, sieht sofort, was es kostet">
+            <span class="crew-spesen-name">Excel · Kalkulation</span>
+          </a>
+        </div>
+      </details>
+      <button type="button" class="btn-flat btn-sm crew-danger"
+              hx-post="/api/crew/reset" hx-target="#crew-panel" hx-swap="outerHTML"
+              hx-confirm="Personalplanung verwerfen? Alle Zeilen und Tage gehen verloren.">
+        Verwerfen
+      </button>
+    </div>
+  </div>
+
+  {% include "partials/crew_phases.html" %}
+
+  {# ── Matrix ────────────────────────────────────────────────────────────── #}
+  <div class="crew-scroll">
+    <table class="crew-table" id="crew-table">
+      <thead>
+        <tr>
+          <th class="crew-head" rowspan="3">Ressourcentyp</th>
+          {% for m in crew_months %}
+          <th class="crew-month" colspan="{{ m.span }}">{{ m.name }}</th>
+          {% endfor %}
+          <th class="crew-num crew-cost" rowspan="3">MT</th>
+          <th class="crew-num crew-cost" rowspan="3">TS</th>
+          <th class="crew-num crew-cost" rowspan="3"
+              title="{{ crew.spesen_name }}: {{ crew.spesen_satz|de_num }} € mit Übernachtung, {{ (crew.spesen_satz / 2)|de_num }} € ohne">Spesen</th>
+          <th class="crew-num crew-cost" rowspan="3"
+              title="Nächte × {{ crew.hotel_satz|de_num }} €">Hotel</th>
+          <th class="crew-num crew-cost" rowspan="3"
+              title="Reisen × halber Tagessatz">RK</th>
+          <th class="crew-num crew-cost crew-wide" rowspan="3">Summe</th>
+        </tr>
+        <tr>
+          {% for p in crew_phases %}
+          <th class="crew-phase" colspan="{{ p.span }}"
+              style="background:{{ p.color if p.name else 'transparent' }}">{{ p.name }}</th>
+          {% endfor %}
+        </tr>
+        <tr>
+          {% for d in crew_days %}
+          <th class="crew-day{{ ' crew-we' if d.we }}" data-day="{{ d.key }}">
+            <span class="crew-dow">{{ d.dow }}</span>{{ d.num }}
+          </th>
+          {% endfor %}
+        </tr>
+      </thead>
+
+      <tbody>
+      {% for menu_key, rows in crew_groups %}
+        <tr class="crew-gewerk{{ ' crew-gewerk-offen' if not menu_key }}"
+            data-menu="{{ menu_key }}" data-drop="1"
+            title="{% if menu_key %}Anklicken: neue Ressourcen landen unter diesem Abschnitt{% else %}Zeilen ohne Abschnitt{% endif %}">
+          <td class="crew-head" title="{{ crew_menu_titles.get(menu_key, '') }}">
+            {%- if menu_key.startswith('eigen:') -%}
+            {# Einfachklick wählt den Abschnitt, Doppelklick benennt ihn um. Das
+               Eingabefeld nimmt sonst die ganze Zelle ein und es bliebe nichts zum
+               Anklicken übrig; deshalb liegt es bis zum Doppelklick „unter" der Zelle
+               (pointer-events:none, siehe style.css). #}
+            <input class="crew-head-input" type="text" name="title"
+                   value="{{ crew.menu_title(menu_key) }}" placeholder="Bezeichnung …"
+                   {% if menu_key == crew_fresh_menu %}data-fresh="1"{% endif %}
+                   aria-label="Bezeichnung des Abschnitts (Doppelklick zum Ändern)"
+                   title="Doppelklick zum Umbenennen"
+                   hx-post="/api/crew/menu/rename" hx-target="#crew-panel"
+                   hx-swap="outerHTML" hx-vals='{"key": {{ menu_key|tojson }}}'
+                   hx-trigger="change">
+            {%- else -%}
+            {{ crew_menu_titles.get(menu_key, menu_key)[:38] }}
+            {%- endif -%}
+          </td>
+          {# Die Marken kleben genau neben der Kopfspalte. Der Anschlag wird gemessen
+             und nicht geraten: eine feste Zahl stimmt nur, solange die Namensspalte
+             exakt so breit ist — sonst rutscht die Leiste bis dahin mit. #}
+          <td colspan="{{ crew_days|length + 6 }}" class="crew-menu-bar">
+            <span class="crew-mp-bar">
+            {% if menu_key.startswith('eigen:') %}
+            <button type="button" class="crew-mp-x" title="Abschnitt entfernen — die
+                    Zeilen darin bleiben und stehen danach oben ohne Abschnitt"
+                    hx-post="/api/crew/pos/remove" hx-target="#crew-panel" hx-swap="outerHTML"
+                    hx-vals='{"item_id": {{ menu_key|tojson }}}'>×</button>
+            {% endif %}
+            {% if menu_key %}
+            {# Zwei Marken, gleich aufgebaut: worauf die Manntage dieses Abschnitts
+               laufen, und wohin seine Nebenkosten gehen. Je Abschnitt genau eine
+               Position — mehrere wären nicht eindeutig. Gesetzt wird sie, indem man
+               oben eine Position anklickt und hier bestätigt. #}
+            {% for marke, titel, aktion, leer in [
+                 (crew_menu_pos.get(menu_key), 'Ziel', '/api/crew/menu/positions',
+                  'Position wählen'),
+                 (crew_menu_nk.get(menu_key), 'NK', '/api/crew/menu/nk',
+                  'anteilig')] %}
+            <span class="crew-mp" title="{{ 'Manntage dieses Abschnitts laufen auf diese Position' if titel == 'Ziel' else 'Spesen, Hotel und Reisekosten dieses Abschnitts laufen auf diese Position. Ohne Angabe anteilig nach Manntagen.' }}">
+              <span class="crew-mp-titel">{{ titel }}</span>
+              {%- if marke %}
+              <span class="crew-mp-dot" style="background:{{ marke.color }}"></span>
+              <span class="mono" title="{{ marke.desc }}">{{ marke.oz }}</span>
+              <button type="button" class="crew-mp-x" title="wieder herausnehmen"
+                      hx-post="{{ aktion }}" hx-target="#crew-panel" hx-swap="outerHTML"
+                      hx-vals='{"key": {{ menu_key|tojson }}, "item_id": "", "action": "remove"}'>×</button>
+              {%- else %}
+              <button type="button" class="crew-mp-add"
+                      hx-post="{{ aktion }}" hx-target="#crew-panel" hx-swap="outerHTML"
+                      hx-vals='js:{"key": "{{ menu_key }}", "item_id": window.crewActivePos(), "action": "add"}'
+                      title="Die oben gewählte Position übernehmen">{{ leer }}</button>
+              {%- endif %}
+            </span>
+            {% endfor %}
+            {% endif %}
+            </span>
+          </td>
+        </tr>
+        {% for r in rows %}
+        {% set st = crew_row_stats[r.id] %}
+        <tr class="crew-row" data-row="{{ r.id }}">
+          <td class="crew-head" draggable="true" data-row="{{ r.id }}"
+              title="{{ r.label }} · Ressource {{ r.resource_id }}&#10;Ziehen, um die Zeile einem anderen Abschnitt zuzuordnen">
+            <span class="crew-head-inner">
+            <span class="crew-grip" aria-hidden="true">⠿</span>
+            <span class="crew-label">{{ r.label }}</span>
+            {% if st.std_oz %}
+            <span class="crew-std" title="Eingaben in dieser Zeile laufen auf {{ st.std_titel }}">
+              <span class="crew-std-dot" style="background:{{ st.std_color }}"></span>
+              <span class="mono">{{ st.std_oz }}</span>
+            </span>
+            {% endif %}
+            <button type="button" class="crew-x crew-row-x" title="Zeile entfernen"
+                    hx-post="/api/crew/row/{{ r.id }}/delete"
+                    hx-target="#crew-panel" hx-swap="outerHTML"
+                    hx-confirm="Zeile „{{ r.label }}“ entfernen?{% if st.mt %} Die {{ st.mt }} eingetragenen Manntage gehen mit verloren.{% endif %}">×</button>
+            </span>
+          </td>
+          {% for d in crew_days %}
+          {% set n = r.cells.get(d.key) %}
+          {% set b = crew_bands[r.id][loop.index0] %}
+          <td class="crew-cell{{ ' crew-we' if d.we }}{{ ' crew-filled' if n }}{{ ' crew-open' if b.offen }}"
+              data-row="{{ r.id }}" data-day="{{ d.key }}" data-item="{{ b.item_id }}"
+              {% if b.fill %}style="box-shadow:inset 0 0 0 2px {{ b.fill }}"{% endif %}
+              {% if b.titel %}title="{{ b.titel }}"{% elif b.offen %}title="Besetzt, aber keiner Position zugeordnet"{% endif %}>
+            <input class="crew-in" type="text" inputmode="numeric" maxlength="2"
+                   data-row="{{ r.id }}" data-day="{{ d.key }}"
+                   value="{{ n or '' }}"
+                   aria-label="{{ r.label }} am {{ d.key }}">
+          </td>
+          {% endfor %}
+          <td class="crew-num crew-cost"><b id="crew-mt-{{ r.id }}">{{ st.mt }}</b></td>
+          <td class="crew-num crew-cost">
+            <input class="crew-rate" type="text" inputmode="decimal" value="{{ r.tagessatz|de_num }}"
+                   data-row="{{ r.id }}" data-field="tagessatz" aria-label="Tagessatz">
+          </td>
+          {# Spesen werden gerechnet: voller Satz für Tage mit Übernachtung,
+             halber für Tage ohne. Nur die Nächte werden eingegeben. #}
+          <td class="crew-num crew-cost"
+              title="{{ st.mt - st.naechte }} × {{ (crew.spesen_satz / 2)|de_num }} € + {{ st.naechte }} × {{ crew.spesen_satz|de_num }} €">
+            <span id="crew-sp-{{ r.id }}">{{ eur(st.spesen) }}</span></td>
+          <td class="crew-num crew-cost crew-hotel">
+            {# Anzahl mal Preis, mit dem × dazwischen: so ist zu sehen, dass die
+               beiden Felder zusammengehören. Der Preis bleibt leer, solange die
+               Vorgabe gilt — eingetragen wird nur, was davon abweicht. #}
+            <input class="crew-rate crew-cnt" type="text" inputmode="numeric" value="{{ r.hotel_naechte }}"
+                   data-row="{{ r.id }}" data-field="hotel_naechte"
+                   aria-label="Hotelnächte"
+                   title="Anzahl Nächte · {{ crew.hotel_satz_of(r)|de_num }} € je Nacht = {{ eur(st.hotel) }}">
+            <span class="crew-mal" aria-hidden="true">×</span>
+            <input class="crew-rate crew-cnt crew-satz" type="text" inputmode="decimal"
+                   value="{{ r.hotel_satz|de_num if r.hotel_satz else '' }}"
+                   placeholder="{{ crew.hotel_satz|de_num }}"
+                   data-row="{{ r.id }}" data-field="hotel_satz"
+                   aria-label="Hotelpreis je Nacht für diese Zeile"
+                   title="Preis je Nacht nur für diese Zeile. Leer = {{ crew.hotel_satz|de_num }} € aus der Leiste.">
+            <span class="crew-nk-sum" id="crew-ho-{{ r.id }}" hidden>{{ eur(st.hotel) }}</span>
+          </td>
+          <td class="crew-num crew-cost crew-hotel">
+            {# Wie beim Hotel: Anzahl mal Preis. Der Preis ist vorbelegt mit einem
+               halben Tagessatz der Zeile — ein Rigger reist günstiger als ein
+               Lichtdesigner —, und wer für den Flug einen anderen ansetzt, trägt ihn
+               hier ein. #}
+            <input class="crew-rate crew-cnt" type="text" inputmode="numeric" value="{{ r.rk_anzahl }}"
+                   data-row="{{ r.id }}" data-field="rk_anzahl"
+                   aria-label="Anzahl Reisen"
+                   title="Anzahl Reisen · {{ crew.rk_satz_of(r)|de_num }} € je Reise = {{ eur(st.rk) }}">
+            <span class="crew-mal" aria-hidden="true">×</span>
+            <input class="crew-rate crew-cnt crew-satz" type="text" inputmode="decimal"
+                   value="{{ r.rk_satz|de_num if r.rk_satz else '' }}"
+                   placeholder="{{ (r.tagessatz * crew.rk_faktor)|de_num }}"
+                   data-row="{{ r.id }}" data-field="rk_satz"
+                   aria-label="Preis je Reise für diese Zeile"
+                   title="Preis je Reise nur für diese Zeile. Leer = halber Tagessatz ({{ (r.tagessatz * crew.rk_faktor)|de_num }} €).">
+            <span class="crew-nk-sum" id="crew-rk-{{ r.id }}" hidden>{{ eur(st.rk) }}</span>
+          </td>
+          <td class="crew-num crew-cost crew-wide">
+            <b id="crew-sum-{{ r.id }}">{{ eur(st.total) }}</b></td>
+        </tr>
+        {% endfor %}
+      {% else %}
+        <tr>
+          <td class="crew-head crew-none">Noch keine Zeilen</td>
+          <td colspan="{{ crew_days|length + 6 }}" class="crew-none">
+            Gematchtes Personal aus dem LV erscheint hier von selbst. Weitere über
+            „+ Ressource“ am Fuß der Matrix.
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+
+      <tfoot>
+        <tr class="crew-total">
+          <td class="crew-head">Personen / Tag</td>
+          {% for d in crew_days %}
+          <td class="crew-num-day{{ ' crew-we' if d.we }}{{ ' crew-peak' if d.peak }}"
+              id="crew-dt-{{ d.key }}">{{ d.total or '' }}</td>
+          {% endfor %}
+          <td class="crew-num crew-cost">{{ crew_totals.manntage }}</td>
+          <td class="crew-cost"></td>
+          <td class="crew-num crew-cost">{{ eur(crew_totals.spesen) }}</td>
+          <td class="crew-num crew-cost">{{ eur(crew_totals.hotel) }}</td>
+          <td class="crew-num crew-cost">{{ eur(crew_totals.rk) }}</td>
+          <td class="crew-num crew-cost crew-wide">{{ eur(crew_totals.summe) }}</td>
+        </tr>
+        {# Neuer Abschnitt am Fuß der Matrix, in derselben Spalte wie die übrigen
+           Überschriften — dort steht er, wo er entsteht. #}
+        <tr class="crew-neu">
+          <td class="crew-head">
+            <button type="button" class="crew-neu-btn"
+                    hx-post="/api/crew/menu/add" hx-target="#crew-panel"
+                    hx-swap="outerHTML" hx-vals='{"title": ""}'
+                    title="Eigenen Abschnitt anlegen — für Personal, das im LV keine eigene Position hat">
+              + Menüpunkt
+            </button>
+          </td>
+          <td colspan="{{ crew_days|length + 6 }}" class="crew-menu-bar">
+            {# Im klebenden Streifen wie die Marken der Überschriften — sonst wäre der
+               Knopf weg, sobald jemand nach rechts scrollt. #}
+            <span class="crew-mp-bar">
+              <button type="button" class="crew-neu-btn" onclick="crewToggleSearch()"
+                      title="Ressource aus dem Personalstamm suchen und als Zeile anlegen">
+                + Ressource
+              </button>
+            </span>
+          </td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+
+  <p class="crew-sel-hint" id="crew-sel-hint" hidden></p>
+
+
+  {% include "partials/crew_positions.html" %}
+
+{% endif %}
+</div>

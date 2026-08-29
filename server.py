@@ -23,6 +23,7 @@ from routes.d83 import router as d83_router
 from routes.admin import router as admin_router
 from routes.import_ import router as import_router
 from routes.projects import router as projects_router
+from routes.crew import router as crew_router
 
 
 # ─── Startup / Shutdown ───────────────────────────────────────────────────────
@@ -190,6 +191,7 @@ app.include_router(d83_router)
 app.include_router(admin_router)
 app.include_router(import_router)
 app.include_router(projects_router)
+app.include_router(crew_router)
 
 # ─── Direkt starten ───────────────────────────────────────────────────────────
 

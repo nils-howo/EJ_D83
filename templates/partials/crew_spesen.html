@@ -1,0 +1,22 @@
+{# Auswahl einer Nebenkosten-Ressource: Spesensatz, Hotel oder Reisekosten. Alle
+   drei liegen im Easyjob-Stamm und werden einmal je Planung gewählt, nicht je
+   Zeile — sie hängen am Projekt, nicht an der Person. Beim Spesensatz kommt der
+   Satz mit; beim Hotel steht dort 0 €, der Preis kommt aus dem Angebot des Hauses,
+   und Reisekosten bleiben ein halber Tagessatz der jeweiligen Ressource. #}
+<div class="crew-spesen-list">
+  {% for s in saetze %}
+  <button type="button"
+          class="crew-spesen-opt{{ ' crew-spesen-on' if aktiv == s.id }}"
+          hx-post="/api/crew/kosten" hx-target="#crew-panel" hx-swap="outerHTML"
+          hx-vals='{"art": {{ art|tojson }}, "resource_id": {{ s.id }}}'>
+    <span class="crew-spesen-name">{{ s.funktion }}</span>
+    {% if mit_satz and s.tagessatz %}
+    <span class="mono crew-spesen-satz">{{ '%g'|format(s.tagessatz) }} €</span>
+    {% endif %}
+  </button>
+  {% else %}
+  <p class="crew-spesen-leer">
+    {{ leer_text }} Der Stamm kommt mit dem nächtlichen Abgleich.
+  </p>
+  {% endfor %}
+</div>

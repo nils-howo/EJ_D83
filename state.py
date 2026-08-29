@@ -10,6 +10,7 @@ from fastapi.templating import Jinja2Templates
 
 load_dotenv()
 
+from crew_plan import CrewPlan
 from gaeb_parser import GaebProject
 from matcher import MatchResult, UnifiedMatcher, resolve_time_factor
 from easyjob_api import EjLiveClient
@@ -38,6 +39,12 @@ def _autolink(text: str) -> _Markup:
     return _Markup(linked)
 
 templates.env.filters["autolink"] = _autolink
+
+# Zahlen in Eingabefeldern deutsch darstellen (520,5 statt 520.5). Ohne das schreibt
+# die Vorlage einen Punkt heraus, den die Eingabe dann als Tausenderpunkt zurückliest.
+from crew_plan import format_number as _format_number
+
+templates.env.filters["de_num"] = _format_number
 templates.env.globals["resolve_time_factor"] = resolve_time_factor
 
 
@@ -147,6 +154,12 @@ class UserSession:
         self.d83_alt_active:       dict = {}   # alt_key → "primary"|"alt"|"both"
         self.d83_booking_qtys:     dict = {}   # item_id → {"qty": float, "lfm_converted": bool}
         self.einsatztage:          float = 2.0  # Berechnungstage für Preis-Progression (Job.CommitmentDays), Dezimal erlaubt
+        # Personalplanung (Crew-Matrix). Arbeitskopie in der Session wie matches/bundles;
+        # gespeichert wird sie in den crew_*-Tabellen an der Projekt-/Entwurfszeile.
+        self.crew: Optional[CrewPlan] = None
+        # Aus den LV-Vorbemerkungen gelesener Terminplan (Aufbau/Veranstaltung/
+        # Abbau). Einmal je Import ermittelt — die Vorbemerkungen sind 50 kB Text.
+        self.crew_schedule: dict = {}
         self.import_filename: str = ""  # zuletzt hochgeladene Datei auf /import
         self.draft_id:   Optional[int] = None  # geladener Entwurf (projects.status='draft'); None = frischer Import
         self.d83_draft_setup: dict = {}         # setup-Felder aus dem Entwurf (Seitenleiste vorbefüllen)

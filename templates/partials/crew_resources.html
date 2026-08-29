@@ -1,0 +1,24 @@
+{# Ressourcen-Trefferliste für neue Zeilen der Personalplanung.
+   Klick legt die Zeile an; das Gewerk kommt aus dem Feld daneben. #}
+{% if resources %}
+<table class="ej-table">
+  <thead><tr><th>Art</th><th>Funktion</th><th>Tagessatz</th><th></th></tr></thead>
+  <tbody>
+  {% for r in resources %}
+  <tr class="crew-res-row"
+      hx-post="/api/crew/row/add"
+      hx-vals='js:{"resource_id": {{ r.id }}, "group_key": window.crewActiveMenu()}'
+      hx-target="#crew-panel"
+      hx-swap="outerHTML">
+    <td><span class="res-art-badge">{{ r.ressourcenart }}</span></td>
+    <td>{{ r.funktion }}</td>
+    <td style="font-size:.78rem;color:#666;text-align:right">
+      {{ '%.2f'|format(r.tagessatz or 0) }} €</td>
+    <td style="width:1%"><span class="crew-res-add">+ Zeile</span></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p style="font-size:.78rem;color:#888;padding:8px">Keine Treffer{% if q %} für „{{ q }}“{% endif %}.</p>
+{% endif %}

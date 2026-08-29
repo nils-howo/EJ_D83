@@ -1,18 +1,7 @@
 {# Marker: JS liest data-suffix für syncJobName #}
 <span id="import-std-job-data" data-suffix="{{ standard_job_name }}" style="display:none"></span>
 
-{% if imp_metrics and imp_metrics.total %}
-<div class="metrics-row" style="margin-bottom:8px">
-  <div class="metric-card"><div class="metric-val">{{ imp_metrics.total }}</div><div class="metric-lbl">Positionen</div></div>
-  <div class="metric-card"><div class="metric-val">{{ imp_metrics.matched }}/{{ imp_metrics.total }}</div><div class="metric-lbl">Zugeordnet</div></div>
-  <div class="metric-card"><div class="metric-val">{{ imp_metrics.confident }}</div><div class="metric-lbl">Sicher (≥85%)</div></div>
-  <div class="metric-card"><div class="metric-val" style="color:#1a237e">{{ imp_metrics.art_count }}</div><div class="metric-lbl">Artikel</div></div>
-  <div class="metric-card"><div class="metric-val" style="color:#5c35b0">{{ imp_metrics.res_count }}</div><div class="metric-lbl">Personal</div></div>
-  <div class="metric-card"><div class="metric-val" style="color:#5c35b0">{{ ('%g'|format(einsatztage))|replace('.', ',') }}</div><div class="metric-lbl">Einsatztage</div></div>
-  {% if imp_metrics.cost_mat %}<div class="metric-card" title="Näherung ohne Set-Zubehör (Stücklisten-Komponenten, die EJ beim Buchen automatisch mit eigenem Preis ergänzt). Die exakte Summe steht nach dem Import in EJ."><div class="metric-val" style="font-size:1rem">ca. {{ "%.0f €"|format(imp_metrics.cost_mat) }}</div><div class="metric-lbl">Mat.-Kosten</div></div>{% endif %}
-  {% if imp_metrics.cost_pers %}<div class="metric-card"><div class="metric-val" style="font-size:1rem">{{ "%.0f €"|format(imp_metrics.cost_pers) }}</div><div class="metric-lbl">Pers.-Kosten</div></div>{% endif %}
-</div>
-{% endif %}
+{% include "partials/import_metrics.html" %}
 
 <div class="lj-header">
   <span class="lj-lbl">Jobs:</span>
@@ -164,7 +153,38 @@
               hx-swap="innerHTML">
         {% if m and m.matched and not m.article and m.score > 0 %}🔄 Ressource bearbeiten{% else %}👤 Ressource{% endif %}
       </button>
+      {# Personal aus der Personalplanung: dann muss hier keine Ressource gebucht
+         werden — Menge und Preis kommen aus der Matrix. #}
+      {% if pos.item_id in crew_covered %}
+      <button class="btn btn-flat btn-sm crew-covered-btn"
+              hx-post="/api/import/crew-position"
+              hx-vals='{"item_id": {{ pos.item_id|tojson }}, "action": "remove"}'
+              hx-target="#import-groups" hx-swap="innerHTML focus-scroll:false"
+              hx-confirm="Position aus der Personalplanung nehmen?{% if crew_covered[pos.item_id].mt %} Die {{ crew_covered[pos.item_id].mt }} zugeordneten Manntage stehen danach als offen da.{% endif %}"
+              title="Personal kommt aus der Personalplanung — hier klicken, um das wieder aufzuheben">
+        📋 Personalplanung{% if crew_covered[pos.item_id].mt %} · {{ crew_covered[pos.item_id].mt }} MT{% endif %}
+      </button>
+      {% else %}
+      <button class="btn btn-flat btn-sm" style="color:#5c35b0"
+              hx-post="/api/import/crew-position"
+              hx-vals='{"item_id": {{ pos.item_id|tojson }}, "action": "add"}'
+              hx-target="#import-groups" hx-swap="innerHTML focus-scroll:false"
+              title="Personal dieser Position in der Personalplanung planen statt hier eine Ressource zu buchen">
+        📋 über Personalplanung
+      </button>
+      {% endif %}
     </div>
+    {% if pos.item_id in crew_covered %}
+    <div class="crew-covered-note">
+      Personal kommt aus der Personalplanung:
+      {% if crew_covered[pos.item_id].mt %}
+      <b>{{ crew_covered[pos.item_id].mt }} Manntage</b> ·
+      <b>{{ "{:,.0f}".format(crew_covered[pos.item_id].cost|round(0)|int).replace(",", ".") }} €</b>
+      {% else %}
+      <span class="crew-covered-open">noch keine Tage zugeordnet</span>
+      {% endif %}
+    </div>
+    {% endif %}
 
     {# Haupt-Match als Bundle-Karte #}
     {% if m and m.article %}

@@ -1,0 +1,70 @@
+{# Termine der Planung — bearbeitbar. Vorbelegt aus dem Terminplan der
+   LV-Vorbemerkungen; hier lassen sie sich verschieben, umbenennen, löschen und
+   ergänzen (Proben, Anlieferung, Umbautag). Termine dürfen sich nicht überlappen:
+   ein Tag gehört zu genau einer Phase, sonst wäre „Phase füllen" nicht eindeutig.
+   Verlängert man einen Termin in einen anderen hinein, weicht dessen Grenze. #}
+<details class="crew-terms" {% if not crew_phase_list %}open{% endif %}>
+  <summary>
+    Termine
+    <span class="crew-terms-sum">
+      {%- for ph in crew_phase_list -%}
+      {{ ph.name }} {{ ph['from'][8:10] }}.{{ ph['from'][5:7] }}.–{{ ph.to[8:10] }}.{{ ph.to[5:7] }}.{{ " · " if not loop.last }}
+      {%- else -%}
+      keine
+      {%- endfor -%}
+    </span>
+  </summary>
+
+  <table class="crew-terms-table">
+    <tbody>
+    {% for ph in crew_phase_list %}
+      <tr>
+        <td>
+          <input class="crew-term-name" type="text" value="{{ ph.name }}" name="name"
+                 aria-label="Bezeichnung"
+                 hx-post="/api/crew/phase" hx-target="#crew-panel" hx-swap="outerHTML"
+                 hx-vals='{"index": {{ ph.index }}}' hx-trigger="change">
+        </td>
+        <td>
+          <input type="date" name="day_from" value="{{ ph['from'] }}"
+                 min="{{ crew.date_from }}" max="{{ crew.date_to }}" aria-label="von"
+                 hx-post="/api/crew/phase" hx-target="#crew-panel" hx-swap="outerHTML"
+                 hx-vals='{"index": {{ ph.index }}}' hx-trigger="change">
+        </td>
+        <td class="crew-term-dash">–</td>
+        <td>
+          <input type="date" name="day_to" value="{{ ph.to }}"
+                 min="{{ ph['from'] }}" max="{{ crew.date_to }}" aria-label="bis"
+                 hx-post="/api/crew/phase" hx-target="#crew-panel" hx-swap="outerHTML"
+                 hx-vals='{"index": {{ ph.index }}}' hx-trigger="change">
+        </td>
+        <td class="crew-term-days mono">{{ ph.days }} Tage</td>
+        <td>
+          <button type="button" class="crew-x" title="Termin entfernen"
+                  hx-post="/api/crew/phase/remove" hx-target="#crew-panel" hx-swap="outerHTML"
+                  hx-vals='{"index": {{ ph.index }}}'>×</button>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <form class="crew-term-new"
+        hx-post="/api/crew/phase/add" hx-target="#crew-panel" hx-swap="outerHTML">
+    <input type="text" name="name" placeholder="z.B. Proben" required
+           aria-label="Bezeichnung des neuen Termins">
+    <input type="date" name="day_from" value="{{ crew.date_from }}"
+           min="{{ crew.date_from }}" max="{{ crew.date_to }}" required aria-label="von">
+    <span class="crew-term-dash">–</span>
+    <input type="date" name="day_to" value="{{ crew.date_from }}"
+           min="{{ crew.date_from }}" max="{{ crew.date_to }}" required aria-label="bis">
+    <button type="submit" class="btn btn-flat btn-sm">+ Termin</button>
+    {% if crew_lv_schedule %}
+    <button type="button" class="btn btn-flat btn-sm"
+            hx-post="/api/crew/phases/from-lv" hx-target="#crew-panel" hx-swap="outerHTML"
+            title="Verwirft die Termine hier und liest sie erneut aus dem Terminplan in den Vorbemerkungen des LV — nützlich, wenn man sich beim Verschieben verrannt hat.">
+      Termine neu aus dem LV lesen
+    </button>
+    {% endif %}
+  </form>
+</details>

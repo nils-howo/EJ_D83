@@ -47,9 +47,21 @@
     </div>
     {% endif %}
     {% if metrics.cost_pers %}
-    <div class="metric-card">
+    <div class="metric-card" title="Personal samt Spesen, Hotel und Reisekosten — ohne Fahrzeuge und ohne Pauschalen">
       <div class="metric-val" style="font-size:.95rem;color:#5c35b0">{{ "%.0f €"|format(metrics.cost_pers) }}</div>
       <div class="metric-lbl">Personal</div>
+    </div>
+    {% endif %}
+    {% if metrics.cost_trans %}
+    <div class="metric-card" title="Ressourcen der Art Fahrzeug">
+      <div class="metric-val" style="font-size:.95rem;color:#5c35b0">{{ "%.0f €"|format(metrics.cost_trans) }}</div>
+      <div class="metric-lbl">Transport</div>
+    </div>
+    {% endif %}
+    {% if metrics.cost_sonst %}
+    <div class="metric-card" title="Arbeitsmittel, die weder Personal noch Fahrzeug sind — Handling, Rüstkosten, Pauschalen">
+      <div class="metric-val" style="font-size:.95rem;color:#5c35b0">{{ "%.0f €"|format(metrics.cost_sonst) }}</div>
+      <div class="metric-lbl">Sonstiges</div>
     </div>
     {% endif %}
     {% if metrics.cost_total %}

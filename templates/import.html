@@ -9,6 +9,7 @@
   <!-- Farb-Pinsel des Excel-Mapping-Dialogs. Einmalig hier, nicht im Partial: der
        Dialog wird per htmx getauscht und würde seine Listener sonst doppelt binden. -->
   <script src="{{ asset('excel_mapping.js') }}" defer></script>
+  <script src="{{ asset('crew_matrix.js') }}" defer></script>
   <style>
     body { margin:0; font-family:system-ui,sans-serif; background:#f4f4f6; }
 
@@ -398,10 +399,17 @@
             hx-indicator="#imp-spin"
             hx-disabled-elt="#imp-create-btn"
             hx-confirm="Die Daten werden jetzt in Easyjob angelegt — Jobs, Gruppen und die zugeordneten Buchungen.&#10;&#10;Wirklich fortfahren?"
+            hx-disinherit="hx-confirm"
             data-confirm-title="In Easyjob schreiben?"
             data-confirm-icon="📤"
             data-confirm-ok="Ja, anlegen"
-            hx-on::before-request="this.querySelector('#imp-create-btn').textContent='⏳ Wird erstellt …'">
+            {# htmx-Ereignisse steigen auf: ohne die Ausnahme sprang der Knopf auch
+               beim Zwischenspeichern um, weil dessen Anfrage aus einem Element im
+               selben Formular kommt. Geprüft wird das auslösende Element — der
+               Vergleich mit dem Formular selbst griff zu kurz: bei einem
+               Absende-Knopf ist das Ziel der Knopf, und damit sprang der Knopf gar
+               nicht mehr um. #}
+            hx-on::before-request="if (event.detail.elt.id !== 'imp-draft-save-btn') this.querySelector('#imp-create-btn').textContent='⏳ Wird erstellt …'">
 
         <!-- Modus-Umschalter: neues Projekt vs. Jobs zu bestehendem Projekt -->
         <div class="mode-toggle">
@@ -603,9 +611,13 @@
         <span id="imp-spin" class="htmx-indicator" style="font-size:.8rem;color:#888">
           ⏳ Wird erstellt …
         </span>
+        {# Eigener Indikator und eigene Sperre: htmx vererbt beides aus dem
+           Formular, und das Zwischenspeichern ließ sonst den Anlege-Knopf auf
+           „Wird erstellt …" springen. #}
         <button type="button" class="btn-secondary" id="imp-draft-save-btn"
                 {% if not S.d83_project %}disabled{% endif %}
                 hx-post="/api/import/draft/save"
+                hx-indicator="this" hx-disabled-elt="this"
                 hx-target="#imp-draft-msg" hx-swap="innerHTML">💾 Zwischenspeichern</button>
         <span id="imp-draft-msg"
               style="display:block;text-align:center;font-size:.82rem;margin-top:6px"></span>
@@ -655,8 +667,32 @@
 
   </div><!-- /linke Spalte -->
 
-  <!-- Rechte Spalte: Gruppen + Artikel-Matches -->
+  <!-- Rechte Spalte: Personalplanung + Gruppen + Artikel-Matches -->
   <div class="imp-main">
+
+    <details class="imp-panel crew-panel-wrap"{% if crew %} open{% endif %}>
+      <summary class="crew-summary">
+        <h2 style="display:inline">3. Personalplanung</h2>
+        {% include "partials/crew_summary.html" %}
+      </summary>
+      {% include "partials/crew_matrix.html" %}
+      {# Die Suche steht unter der Matrix und der Positionsliste: dort wird
+         zugeordnet, und eine neu gesuchte Ressource landet gleich daneben statt eine
+         Bildschirmhöhe darüber. #}
+      {% include "partials/crew_search.html" %}
+      {# Die Anleitung steht ganz unten: sie liest sich einmal und steht danach nur
+         noch im Weg. #}
+      <p class="crew-foot">
+        Zahl eintippen, mit Tab oder den Pfeiltasten weiter. Leere Zelle = niemand.
+        Mehrere Felder mit der Maus aufziehen oder mit Shift anklicken, dann Zahl und Enter.
+        Die Hinterlegung einer Zelle zeigt die Position, auf die ihre Manntage laufen —
+        Felder auswählen und eine Position anklicken hängt sie um. In den Kostenspalten
+        rechts wählt dasselbe Ziehen ganze Zeilen aus — Tagessatz, Nächte, Preis und Reisen
+        gelten dann mit Enter für alle davon. Spesen rechnen sich je Manntag, der Preis je
+        Nacht steht in der Leiste und lässt sich je Zeile überschreiben.
+      </p>
+
+    </details>
 
     <div class="imp-panel">
       <h2 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
