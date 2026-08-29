@@ -11,7 +11,7 @@ class EjLiveClient:
                  totp: str | None = None):
         self._client = _OAuthClient(base_url, username, password, totp)
 
-    def search(self, query: str, limit: int = 30) -> list[dict]:
+    def search(self, query: str, limit: int = 100) -> list[dict]:
         """Sucht Artikel in Easyjob. Gibt Liste von Artikel-Dicts zurück."""
         try:
             results = self._client.items_list(searchtext=query)

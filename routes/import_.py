@@ -2001,7 +2001,7 @@ async def import_ej_search(item_id: str, request: Request, q: str = ""):
     if ck not in ss.ej_cache:
         loop = asyncio.get_event_loop()
         ss.ej_cache[ck] = await loop.run_in_executor(
-            None, lambda: ss.ej_client.search(q, limit=40)
+            None, lambda: ss.ej_client.search(q, limit=100)
         )
     raw = ss.ej_cache.get(ck, [])
     results = []
@@ -2020,7 +2020,7 @@ async def import_ej_search(item_id: str, request: Request, q: str = ""):
             "_raw_json":   _json.dumps(r),
         })
     return templates.TemplateResponse(request, "partials/ej_results.html", {
-        "results": results, "item_id": item_id,
+        "results": results, "item_id": item_id, "limit": 100
     })
 
 
@@ -3048,6 +3048,15 @@ async def _do_create_bg(
                         if ss.source_kind == "excel" else "",
                     ),
                 )
+            # Die Personalplanung an das Projekt schreiben. Bisher geschah das nur
+            # beim Zwischenspeichern am Entwurf — ein Projekt, das ohne Entwurf
+            # hochgeladen wurde, hatte danach keine Planung mehr, und der Export in
+            # der Projektübersicht fehlte. Festgehalten wird der Stand beim
+            # Hochladen: genau der wurde nach Easyjob gebucht.
+            _db.save_crew_plan(project_db_id,
+                               ss.crew.to_dict() if ss.crew else None,
+                               ss.ej_user or "")
+
             from matcher import resolve_time_factor as _resolve_tf
             _curves = _db.load_time_factor_curves_db()
             # Einzelpreis je Buchung aus dem TATSÄCHLICH gebuchten Artikel (Haupt- ODER

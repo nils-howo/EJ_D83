@@ -26,5 +26,5 @@
     </tbody>
   </table>
 </div>
-<div class="search-status">{{ results|length }} Treffer</div>
+<div class="search-status">{{ results|length }} Treffer{% if limit and results|length >= limit %} (gekürzt – Suche eingrenzen){% endif %}</div>
 {% endif %}

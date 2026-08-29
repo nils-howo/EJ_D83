@@ -48,7 +48,7 @@ async def ej_search(item_id: str, request: Request, q: str = ""):
     if ck not in ss.ej_cache:
         loop = asyncio.get_event_loop()
         ss.ej_cache[ck] = await loop.run_in_executor(
-            None, lambda: ss.ej_client.search(q, limit=40)
+            None, lambda: ss.ej_client.search(q, limit=100)
         )
     raw = ss.ej_cache.get(ck, [])
     results = []
@@ -67,5 +67,5 @@ async def ej_search(item_id: str, request: Request, q: str = ""):
             "_raw_json":   json.dumps(r),
         })
     return templates.TemplateResponse(request, "partials/ej_results.html", {
-        "results": results, "item_id": item_id
+        "results": results, "item_id": item_id, "limit": 100
     })
