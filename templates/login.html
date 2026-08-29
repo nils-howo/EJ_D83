@@ -30,6 +30,7 @@
     .field-row { margin-bottom: 10px; }
     .field-row label { display: block; font-size: .8rem; font-weight: 500; color: #444; margin-bottom: 3px; }
     .field-row input { width: 100%; }
+    .totp-hint { font-size: .74rem; color: #666; margin-top: 4px; }
 
     .login-btn {
       width: 100%; margin-top: 18px; padding: 9px; font-size: .95rem;
@@ -53,12 +54,24 @@
     <form method="post" action="/login" id="login-form">
       <div class="field-row">
         <label>Benutzer</label>
-        <input type="text" name="ej_user" placeholder="Benutzer" required autofocus>
+        <input type="text" name="ej_user" placeholder="Benutzer" required
+               value="{{ ej_user or '' }}" {% if not needs_totp %}autofocus{% endif %}>
       </div>
       <div class="field-row">
         <label>Passwort</label>
-        <input type="password" name="ej_pass" placeholder="Passwort" required>
+        <input type="password" name="ej_pass" placeholder="Passwort" required
+               {% if needs_totp %}autofocus{% endif %}>
       </div>
+      {% if needs_totp %}
+      {# Erscheint erst, wenn Easyjob fuer diesen Benutzer 2FA meldet. #}
+      <div class="field-row">
+        <label>2FA-Code</label>
+        <input type="text" name="ej_totp" placeholder="6-stelliger Code" required
+               inputmode="numeric" pattern="[0-9]*" maxlength="8"
+               autocomplete="one-time-code">
+        <div class="totp-hint">Aus deiner Authenticator-App.</div>
+      </div>
+      {% endif %}
       <button type="submit" class="login-btn" id="login-btn">Anmelden</button>
     </form>
   </div>

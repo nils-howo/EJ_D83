@@ -7,8 +7,9 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class EjLiveClient:
-    def __init__(self, base_url: str, username: str, password: str):
-        self._client = _OAuthClient(base_url, username, password)
+    def __init__(self, base_url: str, username: str, password: str,
+                 totp: str | None = None):
+        self._client = _OAuthClient(base_url, username, password, totp)
 
     def search(self, query: str, limit: int = 30) -> list[dict]:
         """Sucht Artikel in Easyjob. Gibt Liste von Artikel-Dicts zurück."""

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from easyjob_api import EjLiveClient
+from easyjob_client import EjTotpInvalid, EjTotpRequired
 from state import get_session, drop_session, _build_db_conn, is_admin_login, templates
 
 router = APIRouter()
@@ -46,7 +47,8 @@ def _check_db(db_conn: str) -> None:
 
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    return templates.TemplateResponse(request, "login.html", {"error": ""})
+    return templates.TemplateResponse(
+        request, "login.html", {"error": "", "needs_totp": False, "ej_user": ""})
 
 
 @router.post("/login", response_class=HTMLResponse)
@@ -54,10 +56,13 @@ async def login_submit(
     request:  Request,
     ej_user:  str = Form(""),
     ej_pass:  str = Form(""),
+    ej_totp:  str = Form(""),
 ):
-    def _fail(msg: str, status: int = 422):
-        return templates.TemplateResponse(request, "login.html",
-                                          {"error": msg}, status_code=status)
+    def _fail(msg: str, status: int = 422, needs_totp: bool = False):
+        return templates.TemplateResponse(
+            request, "login.html",
+            {"error": msg, "needs_totp": needs_totp, "ej_user": ej_user},
+            status_code=status)
 
     ip = request.client.host if request.client else "?"
     if _too_many_attempts(ip):
@@ -83,8 +88,22 @@ async def login_submit(
         return _fail("Datenbankverbindung fehlgeschlagen.")
 
     try:
-        client  = await loop.run_in_executor(None, lambda: EjLiveClient(ej_url, ej_user, ej_pass))
+        client  = await loop.run_in_executor(
+            None, lambda: EjLiveClient(ej_url, ej_user, ej_pass, ej_totp))
         user_id = await loop.run_in_executor(None, client.get_current_user_id)
+    except EjTotpRequired:
+        # Benutzer und Passwort stimmen — es fehlt nur der Einmal-Code.
+        # Zählt daher nicht als Fehlversuch, sonst wäre die Bremse nach acht
+        # normalen Anmeldungen von 2FA-Nutzern ausgelöst.
+        logging.info("Login: 2FA-Code angefordert (%s)", ip)
+        return _fail("Für diesen Benutzer ist 2FA aktiv. Bitte Passwort und "
+                     "Authenticator-Code eingeben.", needs_totp=True)
+    except EjTotpInvalid:
+        logging.warning("Login: 2FA-Code abgelehnt (%s)", ip)
+        _record_fail(ip)
+        return _fail("Der 2FA-Code ist falsch oder abgelaufen. Bitte den "
+                     "aktuellen Code aus der Authenticator-App eingeben.",
+                     needs_totp=True)
     except Exception as exc:
         logging.warning("Login: EasyJob-Verbindung fehlgeschlagen (%s): %s", ip, exc)
         _record_fail(ip)

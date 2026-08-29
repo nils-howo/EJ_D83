@@ -1,30 +1,48 @@
 """
 Easyjob WebApi v6 – Python Client
-Auth: OAuth2 Password Flow (Bearer Token)
+Auth: OAuth2 Password Flow (Bearer Token), optional mit 2FA (TOTP).
 """
+
+import os
 
 import requests
 from datetime import datetime, timedelta
 
+# Feldname, unter dem der TOTP-Code im /token-Request mitgeschickt wird.
+# Die WebApi-Spec dokumentiert ihn nicht; der Server meldet einen fehlenden
+# Code als "missing_totp", daher "totp" als Vorgabe. Falls der Server ein
+# anderes Feld erwartet, ohne Codeänderung per EJ_TOTP_FIELD umstellbar.
+_TOTP_FIELD = os.environ.get("EJ_TOTP_FIELD", "").strip() or "totp"
+
+
+class EjTotpRequired(RuntimeError):
+    """Für den Benutzer ist 2FA aktiv — /token braucht zusätzlich einen Code."""
+
+
+class EjTotpInvalid(RuntimeError):
+    """Der übergebene TOTP-Code wurde vom Server abgelehnt."""
+
 
 class EasyjobClient:
-    def __init__(self, base_url: str, username: str, password: str):
+    def __init__(self, base_url: str, username: str, password: str,
+                 totp: str | None = None):
         self.base_url = base_url.rstrip("/")
         self.username = username
         self.password = password
+        # Einmal-Code aus dem Login-Formular; wird nach dem Token-Holen verworfen.
+        self._totp: str | None = (totp or "").strip() or None
         self._token: str | None = None
         self._refresh_token: str | None = None
         self._token_expires: datetime = datetime.min
         self._session = requests.Session()
         # TLS-Prüfung standardmäßig AN. Für ein self-signed-EJ: EJ_CA_CERT=<Pfad zur CA-PEM>.
         # Notausstieg (unsicher, MITM möglich): EJ_TLS_INSECURE=true.
-        import os as _os
-        if _os.environ.get("EJ_TLS_INSECURE", "").strip().lower() == "true":
+        if os.environ.get("EJ_TLS_INSECURE", "").strip().lower() == "true":
             self._session.verify = False
             import urllib3 as _u3
             _u3.disable_warnings()
         else:
-            self._session.verify = _os.environ.get("EJ_CA_CERT", "").strip() or True
+            self._session.verify = os.environ.get("EJ_CA_CERT", "").strip() or True
         self._timeout = (5, 30)  # (connect, read) Sekunden — verhindert Event-Loop-Freeze
 
     # ------------------------------------------------------------------
@@ -34,30 +52,75 @@ class EasyjobClient:
     # Pflicht-Header laut Protonic-Doku für volle API-Funktionalität (inkl. Refresh Token)
     _EJ_HEADER = {"ej-webapi-client": "ThirdParty"}
 
-    def _fetch_token(self):
-        resp = self._session.post(
-            f"{self.base_url}/token",
-            data={
-                "grant_type": "password",
-                "username": self.username,
-                "password": self.password,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded", **self._EJ_HEADER},
-            timeout=self._timeout,
-        )
-        if not resp.ok:
-            raise RuntimeError(
-                f"Token-Fehler {resp.status_code}: {resp.text[:300]}"
-            )
-        data = resp.json()
+    @staticmethod
+    def _oauth_error(resp) -> str:
+        """OAuth-Fehlercode aus einer abgelehnten /token-Antwort, klein geschrieben."""
+        try:
+            return str(resp.json().get("error", "")).lower()
+        except Exception:
+            return ""
+
+    def _apply_token(self, data: dict) -> None:
         self._token = data["access_token"]
-        self._refresh_token = data.get("refresh_token")
+        self._refresh_token = data.get("refresh_token") or self._refresh_token
         expires_in = int(data.get("expires_in", 3600))
         self._token_expires = datetime.now() + timedelta(seconds=expires_in - 30)
 
+    def _post_token(self, data: dict):
+        return self._session.post(
+            f"{self.base_url}/token",
+            data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded", **self._EJ_HEADER},
+            timeout=self._timeout,
+        )
+
+    def _fetch_token(self):
+        data = {
+            "grant_type": "password",
+            "username": self.username,
+            "password": self.password,
+        }
+        if self._totp:
+            data[_TOTP_FIELD] = self._totp
+
+        resp = self._post_token(data)
+        if not resp.ok:
+            err = self._oauth_error(resp)
+            if err == "missing_totp":
+                raise EjTotpRequired("Für diesen Benutzer ist 2FA aktiviert.")
+            if "totp" in err:            # invalid_totp o. ä.
+                raise EjTotpInvalid("Der 2FA-Code wurde abgelehnt.")
+            raise RuntimeError(
+                f"Token-Fehler {resp.status_code}: {resp.text[:300]}"
+            )
+        self._apply_token(resp.json())
+        # Ein TOTP-Code gilt nur einmal und nur ~30 s. Nach dem Token-Holen
+        # verwerfen, damit ein späterer Aufruf ihn nicht wiederverwendet.
+        self._totp = None
+
+    def _renew_via_refresh(self) -> bool:
+        """Token über den Refresh-Token erneuern. True bei Erfolg."""
+        if not self._refresh_token:
+            return False
+        try:
+            resp = self._post_token({
+                "grant_type": "refresh_token",
+                "refresh_token": self._refresh_token,
+            })
+            if not resp.ok:
+                return False
+            self._apply_token(resp.json())
+            return True
+        except Exception:
+            return False
+
     def _auth_header(self) -> dict:
         if not self._token or datetime.now() >= self._token_expires:
-            self._fetch_token()
+            # Erst den Refresh-Token versuchen: bei 2FA-Benutzern ist der
+            # Einmal-Code längst verbraucht, ein neuer Password-Grant würde
+            # nach Ablauf des Tokens die ganze Sitzung abbrechen.
+            if not self._renew_via_refresh():
+                self._fetch_token()
         return {"Authorization": f"Bearer {self._token}", **self._EJ_HEADER}
 
     # ------------------------------------------------------------------
