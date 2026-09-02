@@ -81,6 +81,8 @@
 {% set bqty = bq.qty if bq else pos.qty %}
 {% set lfm  = bq.lfm_converted if bq else false %}
 {% set plen = bq.piece_len if bq else none %}
+{% set qmc  = bq.qm_converted if bq else false %}
+{% set mpq  = bq.modules_per_qm if bq else none %}
 {% if is_alt_style %}
   {% set border_clr = '#e65100' %}
 {% elif pct >= 85 %}
@@ -201,6 +203,7 @@
           </form>
           {{ m.article.einheit }}
           {% if lfm %}<i style="color:#1565c0">({{ pos.qty }} {{ pos.unit }} ÷ {{ "%g"|format(plen) }} m/Stück)</i>{% endif %}
+          {% if qmc %}<i style="color:#1565c0">({{ "%g"|format(pos.qty) }} {{ pos.unit }} × {{ "%g"|format(mpq) }} Module/m²)</i>{% endif %}
         </span>
         {% if m.article.mietpreis %}
         {% set tf = resolve_time_factor(time_factor_curves, m.article.id_time_factor, einsatztage) %}

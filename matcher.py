@@ -348,6 +348,9 @@ _POINTS_TO_HD = {1: "1", 3: "3", 4: "4"}
 TRAVERSE_STANDARD_LENGTH_M = 3.0
 # Laufmeter-Einheiten die eine lfm→Stück-Umrechnung auslösen
 TRAVERSE_LFM_UNITS = {"lfm", "m", "lm", "lfm.", "lm.", "rm", "rm."}
+# m²-Einheiten: LED-Wände werden in m² ausgeschrieben, im Stamm aber in Modulen
+# (Stück) geführt → m²→Modulanzahl umrechnen.
+QM_UNITS = {"m²", "m2", "qm", "sqm", "m^2", "quadratmeter"}
 
 
 @dataclass
@@ -578,6 +581,46 @@ def booking_qty_for(article, total_qty: float, unit: str) -> tuple[float, Option
         if pieces is not None:
             return float(pieces), piece_len
     return float(total_qty or 0), None
+
+
+_LED_MODULE_DIM_RE = re.compile(r'(\d{3,4})\s*[x×]\s*(\d{3,4})')
+
+
+def _is_led_module(article) -> bool:
+    """Ist der Artikel ein LED-Wand-/Boden-Modul (in Stück geführt, m²-umrechenbar)?"""
+    if article is None:
+        return False
+    wg  = (getattr(article, "warengruppe", "") or "").lower()
+    bez = (getattr(article, "bezeichnung", "") or "").lower()
+    if "modul" not in bez and "videoboden" not in bez:
+        return False
+    return "led" in wg or "led" in bez
+
+
+def led_modules_per_qm(bezeichnung: str) -> float:
+    """Module pro m² aus den Modulmaßen in der Bezeichnung (größtes plausibles
+    Breite×Höhe-Paar, z.B. „500x500" → 0,25 m² → 4/m²). Fallback 4 — die meisten
+    Module sind 500×500."""
+    best = 0.0
+    for m in _LED_MODULE_DIM_RE.finditer(bezeichnung or ""):
+        area = int(m.group(1)) / 1000.0 * int(m.group(2)) / 1000.0
+        if 0.02 <= area <= 4.0 and area > best:
+            best = area
+    return (1.0 / best) if best > 0 else 4.0
+
+
+def led_module_qty_for(article, total_qty: float, unit: str) -> tuple[float, Optional[float]]:
+    """Buchungsmenge für m²-Positionen: (Modulanzahl, Module/m²). Greift nur, wenn die
+    Position in m² ausgeschrieben ist UND der Artikel ein LED-Modul ist — sonst
+    (Menge, None). Aufgerundet, damit die Fläche voll abgedeckt ist."""
+    if (unit or "").strip().lower().replace(" ", "") not in QM_UNITS:
+        return float(total_qty or 0), None
+    if not _is_led_module(article):
+        return float(total_qty or 0), None
+    per_qm = led_modules_per_qm(getattr(article, "bezeichnung", ""))
+    if per_qm <= 0:
+        return float(total_qty or 0), None
+    return float(math.ceil(float(total_qty or 0) * per_qm)), per_qm
 
 GAEB_SYNONYM_TAG = "[GAEB-Synonyme:"
 GAEB_SYNONYM_END = "]"

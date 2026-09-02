@@ -19,6 +19,7 @@ from gaeb_parser import GaebProject, parse_gaeb
 import math as _math
 from matcher import (UnifiedMatcher, load_articles_db, load_resources_db,
                      make_article_from_ej, MatchResult, booking_qty_for,
+                     led_module_qty_for,
                      is_motor_position, is_motor_article,
                      is_kalkulations_position)
 import time as _time
@@ -394,6 +395,12 @@ def _booking_entry(article, item) -> dict:
     qty, piece_len = booking_qty_for(article, float(item.qty or 0), item.unit or "")
     if piece_len:
         return {"qty": float(qty), "lfm_converted": True, "piece_len": piece_len}
+    # m²-Position auf LED-Modul → Fläche in Modulanzahl umrechnen (aus den Modulmaßen).
+    modules, per_qm = led_module_qty_for(article, float(item.qty or 0), item.unit or "")
+    if per_qm:
+        return {"qty": float(modules), "lfm_converted": False, "piece_len": None,
+                "qm_converted": True, "modules_per_qm": per_qm,
+                "area_qm": float(item.qty or 0)}
     return {"qty": _bqty(item.qty), "lfm_converted": False, "piece_len": None}
 
 
@@ -1960,11 +1967,13 @@ async def import_booking_qty(item_id: str, request: Request,
                                    None, ss.matcher)
     entry = _booking_entry(art, item)
     return {
-        "qty":       entry["qty"],
-        "converted": entry["lfm_converted"],
-        "piece_len": entry["piece_len"],
-        "src_qty":   float(item.qty or 0),
-        "unit":      item.unit or "",
+        "qty":            entry["qty"],
+        "converted":      entry["lfm_converted"],
+        "piece_len":      entry["piece_len"],
+        "qm_converted":   entry.get("qm_converted", False),
+        "modules_per_qm": entry.get("modules_per_qm"),
+        "src_qty":        float(item.qty or 0),
+        "unit":           item.unit or "",
     }
 
 
