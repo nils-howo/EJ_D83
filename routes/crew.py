@@ -646,11 +646,34 @@ def _kosten_liste(art: str) -> list[dict]:
 # mit der Ausschreibung raus, die Kalkulation bleibt im Haus. Deshalb steckt die
 # Variante im Dateinamen — eine falsch verschickte Datei fällt sonst niemandem auf.
 
-def _export_name(projekt: str, variante: str, endung: str) -> str:
-    sauber = "".join(ch if ch.isalnum() or ch in " -_" else "_"
-                     for ch in (projekt or "Projekt")).strip()
-    teil = "Kalkulation" if variante == "kalkulation" else "Besetzung"
-    return f"Personalplanung_{sauber[:60]}_{teil}.{endung}"
+def _export_name(projekt: str, variante: str, endung: str,
+                 nummer: str = "") -> str:
+    """``Projektnummer_Projektname_Personalplanung.pdf``.
+
+    Die Nummer vergibt Easyjob erst beim Anlegen; solange es das Projekt dort noch
+    nicht gibt, fällt sie weg statt als Platzhalter mitzulaufen. Die Kalkulation
+    trägt zusätzlich ihren Namen — sie bleibt im Haus, und zwei gleich heißende
+    Dateien im Downloadordner sind genau die Verwechslung, die man nicht bemerkt.
+    """
+    def sauber(text: str) -> str:
+        # Sonderzeichen ersetzen und dabei nicht mehrere Trenner hintereinander
+        # stehen lassen: aus „Electric: HMI" würde sonst „Electric_ HMI".
+        roh = "".join(ch if ch.isalnum() or ch in " -_" else "_" for ch in text)
+        aus = []
+        for ch in roh:
+            if ch in " _" and (not aus or aus[-1] == "_"):
+                if aus:
+                    continue
+                continue
+            aus.append("_" if ch == " " else ch)
+        return "".join(aus).strip(" _")
+
+    teile = [sauber(nummer)] if nummer.strip() else []
+    teile.append(sauber(projekt or "Projekt")[:60] or "Projekt")
+    teile.append("Personalplanung")
+    if variante == "kalkulation":
+        teile.append("Kalkulation")
+    return "_".join(teile) + "." + endung
 
 
 def _menu_titel(plan, items: dict) -> dict:
@@ -680,7 +703,7 @@ def _menu_titel(plan, items: dict) -> dict:
 
 
 def _projekt_planung(projekt_id: int):
-    """Planung, Projektname und Positionsbeschriftungen eines abgelegten Projekts.
+    """Planung, Projektname, Positionsbeschriftungen und Nummer eines Projekts.
 
     Der Export soll auch dann noch gehen, wenn der Import längst vorbei ist — beim
     Nachreichen einer Beilage etwa. Die Beschriftungen kommen aus dem lokalen Abbild
@@ -688,7 +711,7 @@ def _projekt_planung(projekt_id: int):
     """
     roh = _db.load_crew_plan(projekt_id)
     if not roh:
-        return None, "", {}
+        return None, "", {}, ""
     proj = _db.get_project(projekt_id) or {}
     items = {}
     for b in _db.get_project_bookings(projekt_id):
@@ -696,7 +719,8 @@ def _projekt_planung(projekt_id: int):
         if iid and iid not in items:
             items[iid] = {"oz": b.get("oz") or "",
                           "description": b.get("description") or ""}
-    return CrewPlan.from_dict(roh), proj.get("name") or "", items
+    return (CrewPlan.from_dict(roh), proj.get("name") or "", items,
+            proj.get("ej_project_number") or "")
 
 
 @router.get("/api/crew/export/{art}")
@@ -710,7 +734,7 @@ async def crew_export(request: Request, art: str, variante: str = "kalkulation",
     if art not in ("pdf", "xlsx"):
         return PlainTextResponse("Unbekanntes Format.", status_code=400)
     if projekt_id:
-        plan, projekt, items = _projekt_planung(projekt_id)
+        plan, projekt, items, nummer = _projekt_planung(projekt_id)
         if plan is None:
             return PlainTextResponse("Für dieses Projekt gibt es keine "
                                      "Personalplanung.", status_code=404)
@@ -722,6 +746,9 @@ async def crew_export(request: Request, art: str, variante: str = "kalkulation",
                                      status_code=404)
         projekt = (ss.d83_project.name if ss.d83_project else "") or ss.d83_name or ""
         items = _lv_items(ss)
+        # Während des Imports gibt es das Projekt in Easyjob noch nicht — also auch
+        # keine Nummer.
+        nummer = ""
     kalk = variante != "kunde"
     titel = _menu_titel(plan, items)
     try:
@@ -738,7 +765,7 @@ async def crew_export(request: Request, art: str, variante: str = "kalkulation",
         # reportlab fehlt in der Umgebung — als Klartext melden statt mit einem
         # Serverfehler, sonst sucht das jemand im falschen Modul.
         return PlainTextResponse(f"Export nicht möglich: {e}", status_code=500)
-    name = _export_name(projekt, variante, art)
+    name = _export_name(projekt, variante, art, nummer)
     return Response(daten, media_type=typ, headers={
         "Content-Disposition": f'attachment; filename="{name}"'})
 

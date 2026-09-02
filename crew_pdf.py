@@ -227,11 +227,6 @@ def _seite(c: _canvas.Canvas, plan: CrewPlan, projekt: str, block: list[dict],
     if titel_zusatz:
         kopfzeile += f" · {titel_zusatz}"
     c.drawString(rand_l, y, _kurz(kopfzeile, c, "Helvetica", 10.5, breite - 340))
-    if not kalkulation:
-        c.setFont("Helvetica", 8)
-        c.setFillColor(BLASS)
-        c.drawRightString(rechts, y, "Besetzungsübersicht")
-
     y -= 12
     c.setStrokeColor(GELB)
     c.setLineWidth(2)
@@ -261,8 +256,14 @@ def _seite(c: _canvas.Canvas, plan: CrewPlan, projekt: str, block: list[dict],
                and block[lauf + span]["jahr"] == j):
             span += 1
         c.setFillColor(BLASS)
-        c.drawString(x_tage + lauf * tag_w + 2, y_monat + 3,
-                     f"{_MONAT[m - 1]} {j}")
+        # Nur so viel schreiben, wie in den Block passt. Fängt der Zeitraum am 31.
+        # an, ist der erste Monat einen Tag breit — der volle Name lief bisher quer
+        # über den nächsten und beide standen übereinander.
+        platz = span * tag_w - 3
+        for text in (f"{_MONAT[m - 1]} {j}", _MONAT[m - 1], _MONAT[m - 1][:3]):
+            if c.stringWidth(text, "Helvetica-Bold", 7) <= platz:
+                c.drawString(x_tage + lauf * tag_w + 2, y_monat + 3, text)
+                break
         lauf += span
 
     y_phase = y_monat - 11
@@ -399,7 +400,6 @@ def _seite(c: _canvas.Canvas, plan: CrewPlan, projekt: str, block: list[dict],
     c.setFont("Helvetica", 6.5)
     c.setFillColor(BLASS)
     stand = datetime.now().strftime("%d.%m.%Y")
-    hinweis = f"Stand {stand}"
-    if not kalkulation:
-        hinweis += "   ·   Besetzung ohne Preise"
-    c.drawString(rand_l, unten - 10, hinweis)
+    # Kein Hinweis auf die fehlenden Preise: das Blatt geht zum Kunden und ist dort
+    # die Besetzungsliste, nicht eine gekürzte Fassung von etwas anderem.
+    c.drawString(rand_l, unten - 10, f"Stand {stand}")

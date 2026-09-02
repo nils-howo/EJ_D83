@@ -127,6 +127,22 @@ for _name in ("Projektleiter", "Ton-Operator", "PROJEKTLEITUNG"):
     check("„" + _name + "“ in beiden", (_name in t_kalk, _name in t_kunde),
           (True, True))
 check("Phasen im Kopf", "VERANSTALTUNG" in t_kunde, True)
+# Die Kundenfassung trägt keinen Hinweis darauf, dass ihr etwas fehlt — sie ist die
+# Besetzungsliste, nicht die gekürzte Fassung von etwas anderem.
+check("kein Hinweis auf fehlende Preise",
+      ("bersicht" in t_kunde, "ohne Preise" in t_kunde), (False, False))
+# Der Monatsname wird auf die Breite seines Blocks gekürzt. Fängt der Zeitraum am
+# 31. an, ist der erste Monat einen Tag breit — der volle Name lief bisher quer
+# über den nächsten, und beide standen übereinander.
+_31 = CrewPlan(date_from="2026-03-31", date_to="2026-04-25")
+_31.positions = ["a"]
+_r31 = _31.add_row("Techniker", 501)
+for _k in _31.day_keys()[:12]:
+    _31.set_cell(_r31.id, _k, 1)
+_31.assign_days(_r31.id, _31.day_keys()[0], _31.day_keys()[11], "a")
+_t31 = _text(build_pdf(_31, "Start am 31."))
+check("kurzer Monat gekürzt", ("März 2026" in _t31, "März" in _t31), (False, True))
+check("der nächste voll", "April 2026" in _t31, True)
 # Der Briefbogen kommt als Bild aufs Blatt, nicht als Text — sonst müsste die Adresse
 # hier gepflegt werden und liefe der echten irgendwann hinterher.
 check("Briefbogen ist ein Bild", "Leonberg" in t_kunde, False)
@@ -228,15 +244,22 @@ class _Req:
 crew.get_session = lambda _s: _ss          # type: ignore[assignment]
 crew._lv_items = lambda _s: {}             # type: ignore[assignment]
 
+# Dateiname: Projektnummer_Projektname_Personalplanung. Die Nummer vergibt Easyjob
+# erst beim Anlegen — solange fällt sie weg. Die Kalkulation trägt zusätzlich ihren
+# Namen: sie bleibt im Haus, und zwei gleich heißende Dateien im Downloadordner sind
+# genau die Verwechslung, die man nicht bemerkt.
 for art, kopf in (("pdf", b"%PDF-"), ("xlsx", b"PK")):
-    for variante, teil in (("kalkulation", "Kalkulation"), ("kunde", "Besetzung")):
+    for variante, teil in (("kalkulation", "Personalplanung_Kalkulation"),
+                           ("kunde", "Personalplanung.")):
         r = run(crew.crew_export(_Req(), art=art, variante=variante))
         name = r.headers.get("content-disposition", "")
         check(f"{art}/{variante} liefert Daten", r.body[:len(kopf)], kopf)
         check(f"{art}/{variante} als Anhang", "attachment" in name, True)
         # Die Variante steht im Dateinamen: eine falsch verschickte Datei fällt
         # sonst niemandem auf.
-        check(f"{art}/{variante} benennt die Variante", teil in name, True)
+        check(f"{art}/{variante} nach dem Muster benannt", teil in name, True)
+        check(f"{art}/{variante} ohne Nummer im Import",
+              "filename=\"Schneider" in name, True)
         # Aus dem Dateinamen müssen Schrägstriche und Doppelpunkte heraus, sonst
         # zerlegt der Browser den Pfad oder verweigert das Speichern.
         check(f"{art}/{variante} ohne Sonderzeichen",
@@ -245,13 +268,16 @@ for art, kopf in (("pdf", b"%PDF-"), ("xlsx", b"PK")):
 # Aus einem abgelegten Projekt geht der Export auch dann noch, wenn der Import
 # längst vorbei ist — beim Nachreichen einer Beilage etwa.
 with _db.get_conn() as _cn:
-    _cn.execute("INSERT INTO projects (id, name, status) VALUES (77, ?, 'uploaded')",
-                ("Porsche D Summit 2026",))
+    _cn.execute("INSERT INTO projects (id, name, status, ej_project_number) "
+                "VALUES (77, ?, 'uploaded', ?)",
+                ("Porsche D Summit 2026", "26-0994"))
 _db.save_crew_plan(77, plan.to_dict(), "test")
 r = run(crew.crew_export(_Req(), art="pdf", variante="kunde", projekt_id=77))
 check("Export aus dem Projekt", r.body[:5], b"%PDF-")
-check("mit dem Projektnamen",
-      "Porsche" in r.headers.get("content-disposition", ""), True)
+_nam = r.headers.get("content-disposition", "")
+check("mit dem Projektnamen", "Porsche" in _nam, True)
+# Beim abgelegten Projekt steht die Easyjob-Nummer vorn.
+check("und der Projektnummer vorn", 'filename="26-0994_Porsche' in _nam, True)
 check("und ohne Sitzung",
       len(r.body) > 1000, True)
 r = run(crew.crew_export(_Req(), art="pdf", variante="kunde", projekt_id=999))

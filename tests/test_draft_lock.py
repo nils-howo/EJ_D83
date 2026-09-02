@@ -115,6 +115,42 @@ check("und verwirft dann die Kopie",
       "_verwerfe_arbeitskopie(ss)" in _quelle, True)
 
 
+# ─── 4. Die Planung muss am Projekt landen ──────────────────────────
+# Gespeichert wurde sie lange nur beim Zwischenspeichern am Entwurf. Wer ohne Entwurf
+# hochgeladen hat, bekam ein Projekt ohne Planung — gebucht wurde sie trotzdem, nur
+# der Export in der Projektübersicht fehlte danach, und der Stand war weg.
+print(chr(10) + "── 4. Planung am Projekt ──")
+
+_quelle_imp = open(os.path.join(os.path.dirname(__file__), "..", "routes",
+                                "import_.py"), encoding="utf-8").read()
+# Quelltextprüfung: die Projektanlage ist eine sehr lange Funktion mit Easyjob-
+# Verbindung, die sich nicht sinnvoll nachstellen lässt. Geprüft wird deshalb, dass
+# der Aufruf überhaupt dort steht — das war der ganze Fehler.
+check("Projektanlage speichert die Planung",
+      "_db.save_crew_plan(project_db_id," in _quelle_imp, True)
+# Und sie muss NACH der Fallunterscheidung Entwurf/Neuanlage stehen, sonst gibt es
+# die Projekt-ID noch gar nicht.
+check("nach der Vergabe der Projekt-ID",
+      _quelle_imp.index("_db.save_crew_plan(project_db_id,")
+      > _quelle_imp.index("project_db_id = _draft_id"), True)
+
+# Das Speichern selbst funktioniert für ein Projekt wie für einen Entwurf — beide
+# sind dieselbe Tabelle, promote_draft_to_project behält die ID.
+from crew_plan import CrewPlan as _CP                     # noqa: E402
+
+with _db.get_conn() as cn:
+    cn.execute("INSERT INTO projects (id, name, status) VALUES (9, 'P', 'uploaded')")
+_p = _CP(date_from="2026-03-09", date_to="2026-03-12")
+_p.positions = ["p1"]
+_z = _p.add_row("Ton", 501)
+_p.set_cell(_z.id, "2026-03-09", 2)
+_db.save_crew_plan(9, _p.to_dict(), "test")
+check("am hochgeladenen Projekt gespeichert",
+      _db.load_crew_plan(9) is not None, True)
+check("und wieder lesbar",
+      len(_CP.from_dict(_db.load_crew_plan(9)).rows), 1)
+
+
 print(chr(10) + "=" * 62)
 if _fails:
     print(f"FEHLGESCHLAGEN: {len(_fails)}")
